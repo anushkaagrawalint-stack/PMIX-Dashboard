@@ -5,9 +5,7 @@ import type { RenameRow } from '@/lib/types';
 interface Props { renames: RenameRow[] }
 
 const fmt$ = (v: number) =>
-  v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M`
-  : v >= 1_000   ? `$${(v / 1_000).toFixed(0)}K`
-  : `$${v.toFixed(0)}`;
+  `$${Math.round(v).toLocaleString('en-US')}`;
 
 export default function RenamesAudit({ renames }: Props) {
   const [search, setSearch] = useState('');

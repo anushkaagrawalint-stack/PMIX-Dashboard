@@ -1,14 +1,12 @@
 'use client';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import type { BikkyRow } from '@/lib/types';
 
 interface Props { bikky: BikkyRow[] }
 
 const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 const fmt$ = (v: number) =>
-  v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M`
-  : v >= 1_000   ? `$${(v / 1_000).toFixed(0)}K`
-  : `$${v.toFixed(0)}`;
+  `$${Math.round(v).toLocaleString('en-US')}`;
 
 function rateClass(v: number): string {
   if (v >= 0.25) return 'rate-tag rh';
@@ -17,34 +15,54 @@ function rateClass(v: number): string {
 }
 
 type SortKey = 'return_rate' | 'reorder_rate' | 'revenue' | 'qty';
+type Source   = 'all' | 'instore' | '3pd_loyalty';
+
+const SOURCE_LABELS: Record<Source, string> = {
+  all:         'All',
+  instore:     'In-Store',
+  '3pd_loyalty': '3PD + Loyalty',
+};
 
 export default function CustomerRetention({ bikky }: Props) {
   const [search, setSearch] = useState('');
   const [sort,   setSort]   = useState<SortKey>('return_rate');
   const [desc,   setDesc]   = useState(true);
+  const [source, setSource] = useState<Source>('all');
+
+  // Derive sorted unique periods from all rows
+  const periods = useMemo(() => {
+    const set = new Set(bikky.map(r => r.period));
+    return [...set].sort((a, b) => b.localeCompare(a));
+  }, [bikky]);
+
+  const [period, setPeriod] = useState<string>('');
+  const activePeriod = period || periods[0] || '';
 
   function toggleSort(key: SortKey) {
     if (sort === key) setDesc(d => !d);
     else { setSort(key); setDesc(true); }
   }
 
-  const avgReturn  = bikky.length > 0 ? bikky.reduce((s, r) => s + r.return_rate,  0) / bikky.length : 0;
-  const avgReorder = bikky.length > 0 ? bikky.reduce((s, r) => s + r.reorder_rate, 0) / bikky.length : 0;
-  const topRet     = bikky.length > 0 ? [...bikky].sort((a, b) => b.return_rate  - a.return_rate )[0] : null;
-  const botRet     = bikky.length > 0 ? [...bikky].sort((a, b) => a.return_rate  - b.return_rate )[0] : null;
+  const filtered = useMemo(() => {
+    return bikky
+      .filter(r => r.period === activePeriod)
+      .filter(r => source === 'all' || r.source === source)
+      .filter(r => !search || r.item_name.toLowerCase().includes(search.toLowerCase()))
+      .sort((a, b) => {
+        const mul = desc ? -1 : 1;
+        return mul * (a[sort] - b[sort]);
+      });
+  }, [bikky, activePeriod, source, search, sort, desc]);
 
-  const filtered = bikky
-    .filter(r => !search || r.item_name.toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) => {
-      const mul = desc ? -1 : 1;
-      return mul * (a[sort] - b[sort]);
-    });
+  const avgReturn  = filtered.length > 0 ? filtered.reduce((s, r) => s + r.return_rate,  0) / filtered.length : 0;
+  const avgReorder = filtered.length > 0 ? filtered.reduce((s, r) => s + r.reorder_rate, 0) / filtered.length : 0;
+  const topRet     = filtered.length > 0 ? [...filtered].sort((a, b) => b.return_rate  - a.return_rate )[0] : null;
+  const botRet     = filtered.length > 0 ? [...filtered].sort((a, b) => a.return_rate  - b.return_rate )[0] : null;
 
   const thStyle = (key: SortKey): React.CSSProperties => ({
     cursor: 'pointer',
     color: sort === key ? 'var(--accent)' : undefined,
   });
-
   const arrow = (key: SortKey) => sort === key ? (desc ? ' ↓' : ' ↑') : '';
 
   if (!bikky.length) {
@@ -70,7 +88,32 @@ export default function CustomerRetention({ bikky }: Props) {
       <div className="info-banner blue">
         <i className="ti ti-info-circle" />
         <div>
-          Bikky tracks guest-level item retention — return rate (% of guests who bought again within 90 days) and reorder rate (same item again). Data shown for period <strong>{bikky[0]?.period ?? '—'}</strong>.
+          Bikky tracks guest-level item retention — return rate (% of guests who bought again within 90 days) and reorder rate (same item again).
+        </div>
+      </div>
+
+      {/* Period + source filter bar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--muted)' }}>Period</span>
+        <div className="chp">
+          {periods.map(p => (
+            <button
+              key={p}
+              onClick={() => setPeriod(p)}
+              className={`cp all${activePeriod === p ? ' on' : ''}`}
+            >{p}</button>
+          ))}
+        </div>
+        <div className="fb-sep" />
+        <span style={{ fontSize: 11, color: 'var(--muted)' }}>Source</span>
+        <div className="chp">
+          {(['all', 'instore', '3pd_loyalty'] as Source[]).map(s => (
+            <button
+              key={s}
+              onClick={() => setSource(s)}
+              className={`cp all${source === s ? ' on' : ''}`}
+            >{SOURCE_LABELS[s]}</button>
+          ))}
         </div>
       </div>
 
@@ -101,38 +144,46 @@ export default function CustomerRetention({ bikky }: Props) {
       {/* Table */}
       <div className="tw">
         <div className="th2">
-          <h3>Item-level retention · {bikky[0]?.period ?? ''}</h3>
+          <h3>Item-level retention · {activePeriod} · {SOURCE_LABELS[source]}</h3>
           <input
             value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search items…" className="srch"
           />
         </div>
-        <div style={{ overflowX: 'auto' }}>
-          <table>
-            <thead>
-              <tr>
-                <th>Item</th>
-                <th>Category</th>
-                <th style={thStyle('revenue')} onClick={() => toggleSort('revenue')}>Revenue{arrow('revenue')}</th>
-                <th style={thStyle('qty')} onClick={() => toggleSort('qty')}>Qty{arrow('qty')}</th>
-                <th style={thStyle('return_rate')} onClick={() => toggleSort('return_rate')}>Return Rate{arrow('return_rate')}</th>
-                <th style={thStyle('reorder_rate')} onClick={() => toggleSort('reorder_rate')}>Reorder Rate{arrow('reorder_rate')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r, i) => (
-                <tr key={`${r.item_name}-${i}`}>
-                  <td style={{ fontWeight: 600 }}>{r.item_name}</td>
-                  <td style={{ fontSize: 10, color: 'var(--muted)' }}>{r.category}</td>
-                  <td>{r.revenue > 0 ? fmt$(r.revenue) : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
-                  <td>{r.qty > 0 ? r.qty.toLocaleString() : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
-                  <td><span className={rateClass(r.return_rate)}>{pct(r.return_rate)}</span></td>
-                  <td><span className={rateClass(r.reorder_rate)}>{pct(r.reorder_rate)}</span></td>
+        {filtered.length === 0 ? (
+          <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+            No data for {activePeriod} / {SOURCE_LABELS[source]}.
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Category</th>
+                  <th>Source</th>
+                  <th style={thStyle('revenue')} onClick={() => toggleSort('revenue')}>Revenue{arrow('revenue')}</th>
+                  <th style={thStyle('qty')} onClick={() => toggleSort('qty')}>Qty{arrow('qty')}</th>
+                  <th style={thStyle('return_rate')} onClick={() => toggleSort('return_rate')}>Return Rate{arrow('return_rate')}</th>
+                  <th style={thStyle('reorder_rate')} onClick={() => toggleSort('reorder_rate')}>Reorder Rate{arrow('reorder_rate')}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {filtered.map((r, i) => (
+                  <tr key={`${r.item_name}-${r.source}-${i}`}>
+                    <td style={{ fontWeight: 600 }}>{r.item_name}</td>
+                    <td style={{ fontSize: 10, color: 'var(--muted)' }}>{r.category}</td>
+                    <td style={{ fontSize: 10, color: 'var(--muted)' }}>{SOURCE_LABELS[r.source]}</td>
+                    <td>{r.revenue > 0 ? fmt$(r.revenue) : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                    <td>{r.qty > 0 ? r.qty.toLocaleString() : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                    <td><span className={rateClass(r.return_rate)}>{pct(r.return_rate)}</span></td>
+                    <td><span className={rateClass(r.reorder_rate)}>{pct(r.reorder_rate)}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -2,10 +2,7 @@
 import { useState } from 'react';
 import type { PaymentRow } from '@/lib/types';
 
-const fmt$ = (v: number) =>
-  v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M`
-  : v >= 1_000   ? `$${(v / 1_000).toFixed(0)}K`
-  : `$${v.toFixed(2)}`;
+const fmt$ = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 
 export default function PaymentSource({ payments }: { payments: PaymentRow[] }) {
   const [search, setSearch] = useState('');

@@ -9,7 +9,7 @@ interface HBarChartProps {
 }
 
 export default function HBarChart({ data, color = '#9f7cef', formatter, height = 220 }: HBarChartProps) {
-  const fmt = formatter ?? ((v: number) => `$${(v / 1000).toFixed(0)}K`);
+  const fmt = formatter ?? ((v: number) => `$${Math.round(v).toLocaleString('en-US')}`);
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} layout="vertical" margin={{ top: 0, right: 40, left: 0, bottom: 0 }}>

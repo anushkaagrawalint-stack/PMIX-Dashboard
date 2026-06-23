@@ -1,22 +1,143 @@
 'use client';
-import { useMemo } from 'react';
-import type { ModifierRow } from '@/lib/types';
+import { useState, useMemo } from 'react';
+import type { ModifierRow, ItemRow } from '@/lib/types';
+
+const fmtCost = (v: number) =>
+  `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtRev = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
+const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`;
 
 const MOD_LABEL: Record<string, string> = {
-  main: 'Main', base: 'Base', sauce: 'Sauce',
-  veggie: 'Veggie', topping: 'Toppings', chutney: 'Chutney + Dressing',
+  main:       'Mains',
+  half_main:  '½ Mains (Half & Half)',
+  base_grain: 'Base',
+  base_salad: 'Base',
+  base_gg:    'Base',
+  base_other: 'Base',
+  sauce:      'Sauce',
+  veggie:     'Veggie',
+  topping:    'Toppings',
+  chutney:    'Chutney + Dressing',
 };
-const MOD_ORDER = ['main', 'base', 'sauce', 'veggie', 'topping', 'chutney'];
 
-export default function BYOBreakdown({ modifiers }: { modifiers: ModifierRow[] }) {
+const MOD_PCT_DESC: Record<string, string> = {
+  main:       '% share of all main selections in this bowl',
+  half_main:  '% share of all ½-main selections in this bowl',
+  base_grain: '% share of base selections in Grain Bowl orders',
+  base_salad: '% share of base selections in Salad Bowl orders',
+  base_gg:    '% share of base selections in Greens + Grains Bowl orders',
+  base_other: '% share of base selections in other bowl types',
+  sauce:      '% share of all sauce selections in this bowl',
+  veggie:     '% share of all veggie selections in this bowl',
+  topping:    '% share of all topping selections in this bowl',
+  chutney:    '% share of all chutney + dressing selections in this bowl',
+};
+
+const MOD_ORDER = ['main','half_main','base_grain','base_salad','base_gg','base_other','sauce','veggie','topping','chutney'];
+
+function PillToggle<T extends string>({
+  options, value, onChange,
+}: { options: { value: T; label: string }[]; value: T; onChange: (v: T) => void }) {
+  return (
+    <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
+      {options.map(o => (
+        <button key={o.value} onClick={() => onChange(o.value)} style={{
+          fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer',
+          background: value === o.value ? 'var(--accent)' : 'transparent',
+          color: value === o.value ? '#fff' : '#6b7280',
+          boxShadow: value === o.value ? '0 1px 4px rgba(99,102,241,.35)' : 'none',
+          transition: 'all .15s',
+        }}>{o.label}</button>
+      ))}
+    </div>
+  );
+}
+
+export default function BYOBreakdown({
+  modifiers,
+  items,
+}: {
+  modifiers: ModifierRow[];
+  items: ItemRow[];
+}) {
+  const [selectedBowl, setSelectedBowl] = useState<string>('__all__');
+  const [view,         setView]         = useState<'pct' | 'qty'>('pct');
+
+  // Unique bowls that have modifier data, sorted by total qty desc
+  const bowls = useMemo(() => {
+    const totals = new Map<string, number>();
+    modifiers.forEach(r => {
+      if (r.mod_type === 'main' || r.mod_type === 'half_main') {
+        totals.set(r.parent_item, (totals.get(r.parent_item) ?? 0) + r.qty);
+      }
+    });
+    return [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name);
+  }, [modifiers]);
+
+  // Item-level data (qty, revenue, avg_price) keyed by canonical_name
+  const itemMap = useMemo(() => {
+    const m = new Map<string, { qty: number; revenue: number; avgPrice: number }>();
+    items.forEach(it => {
+      const prev = m.get(it.canonical_name);
+      if (prev) {
+        prev.qty     += it.qty;
+        prev.revenue += it.revenue;
+        prev.avgPrice = prev.revenue / prev.qty;
+      } else {
+        m.set(it.canonical_name, { qty: it.qty, revenue: it.revenue, avgPrice: it.avg_price });
+      }
+    });
+    return m;
+  }, [items]);
+
+  // Per-bowl estimated total modifier cost (mirrors AppScript totalModCost accumulation)
+  // Excludes: half_main (display-only; cost captured via '1/2 and 1/2 Mains' composite in main section)
+  //           individual '1/2 X' base entries (display-only; cost captured via their composite)
+  const bowlModCost = useMemo(() => {
+    const byBowlType = new Map<string, Map<string, { sumCostQty: number; sumQty: number }>>();
+    modifiers.forEach(r => {
+      if (r.avg_cost == null) return;
+      // half_main entries are sub-table display only per AppScript
+      if (r.mod_type === 'half_main') return;
+      // individual half-base entries (e.g. '1/2 Basmati Rice') are sub-table display only;
+      // the composite '1/2 and 1/2 Grains' in the same mod_type already carries their cost
+      const isHalfBase = ['base_grain','base_salad','base_gg','base_other'].includes(r.mod_type)
+        && r.modifier_name.toLowerCase().startsWith('1/2 ')
+        && !r.modifier_name.toLowerCase().startsWith('1/2 and 1/2 ');
+      if (isHalfBase) return;
+
+      if (!byBowlType.has(r.parent_item)) byBowlType.set(r.parent_item, new Map());
+      const byType = byBowlType.get(r.parent_item)!;
+      if (!byType.has(r.mod_type)) byType.set(r.mod_type, { sumCostQty: 0, sumQty: 0 });
+      const t = byType.get(r.mod_type)!;
+      t.sumCostQty += r.qty * r.avg_cost;
+      t.sumQty     += r.qty;
+    });
+    const result = new Map<string, number>();
+    byBowlType.forEach((byType, bowl) => {
+      let total = 0;
+      byType.forEach(t => { if (t.sumQty > 0) total += t.sumCostQty / t.sumQty; });
+      result.set(bowl, total);
+    });
+    return result;
+  }, [modifiers]);
+
+  // Filtered modifiers for the selected bowl
+  const filtered = useMemo(() =>
+    selectedBowl === '__all__'
+      ? modifiers
+      : modifiers.filter(r => r.parent_item === selectedBowl),
+  [modifiers, selectedBowl]);
+
+  // Group by mod_type
   const byType = useMemo(() => {
     const m: Record<string, ModifierRow[]> = {};
-    modifiers.forEach(r => {
+    filtered.forEach(r => {
       if (!m[r.mod_type]) m[r.mod_type] = [];
       m[r.mod_type].push(r);
     });
     return m;
-  }, [modifiers]);
+  }, [filtered]);
 
   const types = MOD_ORDER.filter(t => byType[t]?.length);
 
@@ -30,31 +151,155 @@ export default function BYOBreakdown({ modifiers }: { modifiers: ModifierRow[] }
 
   return (
     <div>
-      <div className="info-banner yellow">
-        <i className="ti ti-info-circle" aria-hidden="true" />
-        Mains are logged on every order. Base · Sauce · Veggie · Topping · Chutney are online-only (App + 3PD). In-house records only the protein.
+      {/* ── Summary Table ─────────────────────────────────────────── */}
+      <div className="card" style={{ marginBottom: 16, overflowX: 'auto' }}>
+        <h3 style={{ marginBottom: 10, fontSize: 13 }}>BYO Items — Overview</h3>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ borderBottom: '2px solid #e5e7eb' }}>
+              {['Bowl / Item','Qty','Revenue','Avg Price','Est. Modifier Cost','Modifier Cost/Order'].map(h => (
+                <th key={h} style={{
+                  padding: '4px 10px', textAlign: h === 'Bowl / Item' ? 'left' : 'right',
+                  fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
+                  letterSpacing: '.04em', whiteSpace: 'nowrap',
+                }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {bowls.map((bowl, i) => {
+              const it      = itemMap.get(bowl);
+              const modCost = bowlModCost.get(bowl);
+              return (
+                <tr
+                  key={bowl}
+                  onClick={() => setSelectedBowl(selectedBowl === bowl ? '__all__' : bowl)}
+                  style={{
+                    borderBottom: '1px solid #f3f4f6',
+                    cursor: 'pointer',
+                    background: selectedBowl === bowl ? 'rgba(99,102,241,.07)' : i % 2 === 0 ? '#fafafa' : '#fff',
+                  }}
+                >
+                  <td style={{ padding: '6px 10px', fontWeight: 600, color: 'var(--text)' }}>
+                    <span style={{
+                      display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                      background: selectedBowl === bowl ? 'var(--accent)' : '#d1d5db',
+                      marginRight: 8, flexShrink: 0,
+                    }} />
+                    {bowl}
+                  </td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text)' }}>
+                    {it ? it.qty.toLocaleString() : '—'}
+                  </td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text)' }}>
+                    {it ? fmtRev(it.revenue) : '—'}
+                  </td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text)' }}>
+                    {it ? fmtCost(it.avgPrice) : '—'}
+                  </td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right', color: modCost != null ? 'var(--text)' : 'var(--muted)' }}>
+                    {modCost != null ? fmtCost(modCost) : '—'}
+                  </td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>
+                    {it && modCost != null ? (
+                      <span style={{ fontSize: 10, color: 'var(--muted)' }}>
+                        {fmtPct(modCost / it.avgPrice)} of avg price
+                      </span>
+                    ) : '—'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6, fontStyle: 'italic' }}>
+          Click a row to filter modifier cards below to that bowl. Click again to clear.
+          Est. Modifier Cost = weighted avg cost across all modifier types for that bowl.
+        </div>
       </div>
 
-      <div className="gr3">
-        {types.map(t => {
-          const rows = byType[t].slice(0, 10);
-          const max = rows[0]?.pct ?? 1;
-          return (
-            <div key={t} className="byo-col">
-              <h3>{MOD_LABEL[t] ?? t}</h3>
-              {rows.map(r => (
-                <div key={r.modifier_name} className="byo-item">
-                  <span className="byo-name">{r.modifier_name}</span>
-                  <div className="byo-bar-bg">
-                    <div className="byo-bar-fill" style={{ width: `${(r.pct / max) * 100}%` }} />
-                  </div>
-                  <span className="byo-pct">{r.pct}%</span>
-                </div>
-              ))}
-            </div>
-          );
-        })}
+      {/* ── Bowl selector dropdown ────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600 }}>Item</span>
+        <select
+          className="fb-sel"
+          value={selectedBowl}
+          onChange={e => setSelectedBowl(e.target.value)}
+          style={{ minWidth: 220 }}
+        >
+          <option value="__all__">All</option>
+          {bowls.map(bowl => (
+            <option key={bowl} value={bowl}>{bowl}</option>
+          ))}
+        </select>
       </div>
+
+      {/* ── Info banner ───────────────────────────────────────────── */}
+      <div className="info-banner yellow" style={{ marginBottom: 8 }}>
+        <i className="ti ti-info-circle" aria-hidden="true" />
+        Mains are logged on every order. Base · Sauce · Veggie · Topping · Chutney are online-only (App + 3PD) — in-house records only the protein.
+        ½ Mains are half-and-half protein choices. Modifier cost uses the pink sheet rule: ½ X = half the cost of X.
+      </div>
+
+      {/* ── Toggles ───────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 10, gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 10, color: 'var(--muted)' }}>Selection</span>
+          <PillToggle
+            value={view}
+            onChange={setView}
+            options={[
+              { value: 'pct', label: '% Share' },
+              { value: 'qty', label: 'Qty' },
+            ]}
+          />
+        </div>
+      </div>
+
+      {/* ── Modifier cards ────────────────────────────────────────── */}
+      {types.length === 0 ? (
+        <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+          No modifier data for this selection.
+        </div>
+      ) : (
+        <div className="gr3">
+          {types.map(t => {
+            const rows = byType[t].slice(0, 10);
+            const max  = view === 'pct' ? (rows[0]?.pct ?? 1) : (rows[0]?.qty ?? 1);
+
+            return (
+              <div key={t} className="byo-col">
+                <div style={{ marginBottom: 6 }}>
+                  <h3 style={{ marginBottom: 2 }}>{MOD_LABEL[t] ?? t}</h3>
+                  <div style={{ fontSize: 9, color: 'var(--muted)', fontStyle: 'italic' }}>
+                    {view === 'pct' ? (MOD_PCT_DESC[t] ?? '% share of selections') : 'exact qty ordered'}
+                  </div>
+                </div>
+
+                {/* Column headers */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0 5px', borderBottom: '2px solid #e5e7eb', marginBottom: 2 }}>
+                  <span style={{ flex: 1, fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Modifier</span>
+                  <span style={{ width: 56, fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right' }}>
+                    {view === 'pct' ? '% Share' : 'Qty'}
+                  </span>
+                </div>
+
+                {rows.map(r => (
+                  <div key={r.modifier_name + r.parent_item} className="byo-item" style={{ alignItems: 'center' }}>
+                    <span className="byo-name">{r.modifier_name}</span>
+                    <div className="byo-bar-bg" style={{ flex: 1 }}>
+                      <div className="byo-bar-fill" style={{ width: `${(view === 'pct' ? r.pct : r.qty) / max * 100}%` }} />
+                    </div>
+                    <span className="byo-pct" style={{ width: 44, textAlign: 'right', flexShrink: 0 }}>
+                      {view === 'pct' ? `${r.pct}%` : r.qty.toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

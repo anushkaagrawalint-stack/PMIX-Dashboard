@@ -1,23 +1,14 @@
 'use client';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { CHANNELS } from '@/lib/constants';
+import { CHANNEL_LABEL, CHANNEL_COLOR } from '@/lib/constants';
 import type { ChannelRow } from '@/lib/types';
-
-const COLOR_MAP: Record<string, string> = {
-  IN_HOUSE: '#9f7cef', CATERING: '#f5a623', TPD: '#ef7ccf',
-  APP: '#7cb9ef', OFFSITE: '#2ec4b6', OTHER: '#9ca3af',
-};
-const LABEL_MAP: Record<string, string> = {
-  IN_HOUSE: 'In-House', CATERING: 'Catering', TPD: '3PD',
-  APP: 'App', OFFSITE: 'Offsites', OTHER: 'Other',
-};
 
 export default function ChannelDonut({ data }: { data: ChannelRow[] }) {
   const chartData = data.map(r => ({
-    name: LABEL_MAP[r.channel_code] ?? r.channel_code,
+    name:  CHANNEL_LABEL[r.channel] ?? r.channel,
     value: r.revenue,
-    pct: r.pct,
-    fill: COLOR_MAP[r.channel_code] ?? '#9ca3af',
+    pct:   r.pct,
+    fill:  CHANNEL_COLOR[r.channel] ?? '#9ca3af',
   }));
   return (
     <ResponsiveContainer width="100%" height={160}>
@@ -31,7 +22,7 @@ export default function ChannelDonut({ data }: { data: ChannelRow[] }) {
             const rev = typeof v === 'number' ? v : 0;
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const pct = (entry as any)?.payload?.pct ?? 0;
-            return [`$${(rev / 1000).toFixed(0)}K (${pct}%)`, ''];
+            return [`$${Math.round(rev).toLocaleString('en-US')} (${pct}%)`, ''];
           }}
           contentStyle={{ fontSize: 11, borderRadius: 8 }}
         />

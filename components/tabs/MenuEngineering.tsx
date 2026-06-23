@@ -4,9 +4,7 @@ import type { MERow } from '@/lib/types';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend } from 'recharts';
 
 const fmt$ = (v: number) =>
-  v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M`
-  : v >= 1_000   ? `$${(v / 1_000).toFixed(0)}K`
-  : `$${v.toFixed(0)}`;
+  `$${Math.round(v).toLocaleString('en-US')}`;
 
 const pct = (v: number, d = 1) => `${(v * 100).toFixed(d)}%`;
 
@@ -23,9 +21,8 @@ const QUAD_COLORS: Record<string, string> = {
 const CAT_ORDER = ['Entrees', 'Sides', 'NA Drinks', 'Sweets', 'Kids Meal', 'Alc Drinks', 'Retail', 'Other'];
 
 export default function MenuEngineering({ meItems }: { meItems: MERow[] }) {
-  const [search, setSearch]       = useState('');
+  const [search, setSearch]         = useState('');
   const [quadFilter, setQuadFilter] = useState('all');
-  const [catFilter, setCatFilter]   = useState('all');
   const [view, setView]             = useState<'table' | 'scatter'>('table');
 
   const quadCounts = useMemo(() => {
@@ -34,20 +31,13 @@ export default function MenuEngineering({ meItems }: { meItems: MERow[] }) {
     return c;
   }, [meItems]);
 
-  const categories = useMemo(() => {
-    const seen = new Set<string>();
-    meItems.forEach(i => seen.add(i.category));
-    return CAT_ORDER.filter(c => seen.has(c));
-  }, [meItems]);
-
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     return meItems.filter(i =>
       (!q || i.canonical_name.toLowerCase().includes(q) || i.sub_category.toLowerCase().includes(q)) &&
-      (quadFilter === 'all' || i.quadrant === quadFilter) &&
-      (catFilter  === 'all' || i.category  === catFilter)
+      (quadFilter === 'all' || i.quadrant === quadFilter)
     );
-  }, [meItems, search, quadFilter, catFilter]);
+  }, [meItems, search, quadFilter]);
 
   const scatterData = useMemo(() =>
     meItems.map(i => ({
@@ -154,10 +144,6 @@ export default function MenuEngineering({ meItems }: { meItems: MERow[] }) {
               <option value="Plow Horse">Plow Horses</option>
               <option value="Puzzle">Puzzles</option>
               <option value="Dog">Dogs</option>
-            </select>
-            <select value={catFilter} onChange={e => setCatFilter(e.target.value)} className="fb-sel">
-              <option value="all">All categories</option>
-              {categories.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{filtered.length} items</span>
           </div>

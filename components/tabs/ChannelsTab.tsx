@@ -1,6 +1,7 @@
 'use client';
 import { useState, useMemo } from 'react';
 import dynamic from 'next/dynamic';
+import { CHANNEL_LABEL, CHANNEL_COLOR } from '@/lib/constants';
 import type { ChannelRow, ChannelItemRow, ChannelCategoryRow, MERow } from '@/lib/types';
 
 const HBarChart = dynamic(() => import('../charts/HBarChart'), { ssr: false });
@@ -12,18 +13,8 @@ interface Props {
   meItems:           MERow[];
 }
 
-const CHANNEL_LABELS: Record<string, string> = {
-  IN_HOUSE: 'In-House', TPD: '3PD', APP: 'App', OTHER: 'Other',
-};
-
-const CHANNEL_COLORS: Record<string, string> = {
-  IN_HOUSE: '#9f7cef', TPD: '#ef7ccf', APP: '#7cb9ef', OTHER: '#f5a623',
-};
-
 const fmt$ = (v: number) =>
-  v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M`
-  : v >= 1_000   ? `$${(v / 1_000).toFixed(0)}K`
-  : `$${v.toFixed(0)}`;
+  `$${Math.round(v).toLocaleString('en-US')}`;
 
 type SortKey = 'total' | 'inhouse' | 'tpd' | 'app';
 
@@ -40,7 +31,7 @@ export default function ChannelsTab({ channels, channelItems, channelCategories,
   // Per-channel category data for charts
   const catForChannel = (code: string) =>
     channelCategories
-      .filter(cc => cc.channel_code === code)
+      .filter(cc => cc.channel === code)
       .map(cc => ({ name: cc.category, value: cc.revenue }));
 
   // Item-level channel split
@@ -56,9 +47,9 @@ export default function ChannelsTab({ channels, channelItems, channelCategories,
         });
       }
       const item = map.get(ci.canonical_name)!;
-      if (ci.channel_code === 'IN_HOUSE') item.inhouse += ci.revenue;
-      else if (ci.channel_code === 'TPD')   item.tpd    += ci.revenue;
-      else if (ci.channel_code === 'APP')   item.app    += ci.revenue;
+      if (ci.channel === 'IN_HOUSE') item.inhouse += ci.revenue;
+      else if (ci.channel === 'TPD')   item.tpd    += ci.revenue;
+      else if (ci.channel === 'APP')   item.app    += ci.revenue;
       item.total = item.inhouse + item.tpd + item.app;
     });
 
@@ -70,9 +61,11 @@ export default function ChannelsTab({ channels, channelItems, channelCategories,
     return arr.slice(0, 50);
   }, [channelItems, meItems, sort, desc]);
 
-  const inHouseCats = catForChannel('IN_HOUSE');
-  const tpdCats     = catForChannel('TPD');
-  const appCats     = catForChannel('APP');
+  const inHouseCats  = catForChannel('IN_HOUSE');
+  const tpdCats      = catForChannel('TPD');
+  const appCats      = catForChannel('APP');
+  const cateringCats = catForChannel('CATERING');
+  const offsiteCats  = catForChannel('OFFSITE');
 
   return (
     <div>
@@ -80,18 +73,18 @@ export default function ChannelsTab({ channels, channelItems, channelCategories,
       <div className="krow" style={{ gridTemplateColumns: `repeat(${channels.length}, 1fr)` }}>
         {channels.map(ch => (
           <div
-            key={ch.channel_code}
+            key={ch.channel}
             className="kc"
-            style={{ borderLeftColor: CHANNEL_COLORS[ch.channel_code] ?? '#999', borderLeftWidth: 3, borderLeftStyle: 'solid' }}
+            style={{ borderLeftColor: CHANNEL_COLOR[ch.channel] ?? '#999', borderLeftWidth: 3, borderLeftStyle: 'solid' }}
           >
-            <div className="kl">{CHANNEL_LABELS[ch.channel_code] ?? ch.channel_code}</div>
+            <div className="kl">{CHANNEL_LABEL[ch.channel] ?? ch.channel}</div>
             <div className="kv">{fmt$(ch.revenue)}</div>
             <div className="ks">{ch.pct}% of total · {ch.qty.toLocaleString()} sold</div>
           </div>
         ))}
       </div>
 
-      {/* Category breakdown charts */}
+      {/* Category breakdown charts — row 1: In-House, 3PD, App */}
       {(inHouseCats.length > 0 || tpdCats.length > 0 || appCats.length > 0) && (
         <div className="gr3">
           {inHouseCats.length > 0 && (
@@ -115,6 +108,28 @@ export default function ChannelsTab({ channels, channelItems, channelCategories,
               <h3>App by category</h3>
               <div style={{ position: 'relative', height: 200 }}>
                 <HBarChart data={appCats} color="#7cb9ef" height={200} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Category breakdown charts — row 2: Catering, Offsite */}
+      {(cateringCats.length > 0 || offsiteCats.length > 0) && (
+        <div className="gr3">
+          {cateringCats.length > 0 && (
+            <div className="cc">
+              <h3>Catering by category</h3>
+              <div style={{ position: 'relative', height: 200 }}>
+                <HBarChart data={cateringCats} color="#f59e0b" height={200} />
+              </div>
+            </div>
+          )}
+          {offsiteCats.length > 0 && (
+            <div className="cc">
+              <h3>Offsite by category</h3>
+              <div style={{ position: 'relative', height: 200 }}>
+                <HBarChart data={offsiteCats} color="#10b981" height={200} />
               </div>
             </div>
           )}
