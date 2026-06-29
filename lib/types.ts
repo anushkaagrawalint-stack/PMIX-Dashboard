@@ -99,6 +99,7 @@ export interface MERow {
   menu_group:          string;
   category:            string;
   sub_category:        string;
+  // blended totals
   qty:                 number;
   net_sales:           number;
   avg_price:           number;
@@ -109,12 +110,65 @@ export interface MERow {
   cogs_pct:            number;
   mix_pct:             number;
   sls_pct_category:    number;
+  // per-channel quantities
+  qty_ih:              number;
+  qty_lo:              number;
+  qty_3pd:             number;
+  // per-channel revenues
+  net_sales_ih:        number;
+  net_sales_lo:        number;
+  net_sales_3pd:       number;
+  // per-channel avg prices (3PD price includes ×1.22 markup)
+  avg_price_ih:        number;
+  avg_price_lo:        number;
+  avg_price_3pd:       number;
+  avg_price_bl:        number;
+  // per-channel avg costs (3PD cost includes ×1.18 markup)
+  avg_cost_ih:         number;
+  avg_cost_lo:         number;
+  avg_cost_3pd:        number;
+  avg_cost_bl:         number;
+  // per-channel total costs
+  total_cost_ih:       number;
+  total_cost_lo:       number;
+  total_cost_3pd:      number;
+  // BL (LO+3PD combined)
+  qty_bl:              number;
+  net_sales_bl:        number;
+  total_cost_bl:       number;
+  // ME classification (always blended)
   quadrant:            'Star' | 'Plow Horse' | 'Puzzle' | 'Dog';
   margin_flag:         'High' | 'Low';
   mix_flag:            'High' | 'Low';
   margin_threshold:    number;
   mix_threshold:       number;
   is_open_item:        boolean;
+}
+
+// ─── Pink Sheet modifier-level detail ────────────────────────────────────────
+export interface PinkSheetDetailRow {
+  parent_item:   string;
+  section:       string;   // modifier_type (e.g. "Bowls - Bases", "Bowls - Main")
+  modifier_name: string;
+  channel:       string;   // 'online' | 'ih'
+  qty:           number;
+  unit_cost:     number;
+  total_cost:    number;   // qty × unit_cost
+}
+
+// ─── Pink Sheets (cost breakdown per item) ───────────────────────────────────
+export interface PinkSheetRow {
+  canonical_name:     string;
+  menu_group:         string;
+  base_cost_ih:       number;   // r365 IH base cost (full recipe)
+  base_cost_online:   number;   // r365 online/delivery base cost (packaging)
+  total_mod_cost:     number;   // Σ mod_qty × mod_cost for online orders
+  total_ih_mod_cost:  number;   // Σ mod_qty × mod_cost for IH orders
+  online_qty:         number;   // LO + 3PD actual order count (pink sheet denominator)
+  ih_qty:             number;   // IH actual order count
+  avg_cost_ih:        number;   // = base_cost_ih + total_ih_mod_cost / ih_qty
+  avg_cost_online:    number;   // = base_cost_online + total_mod_cost / online_qty
+  avg_cost_3pd:       number;   // = avg_cost_online × 1.18
 }
 
 // ─── BYO modifiers ────────────────────────────────────────────────────────────
@@ -241,6 +295,7 @@ export interface VendorRow {
 export interface DashboardData {
   dateRange:          DateRange;
   summary:            Summary;
+  prevSummary:        Summary | null;   // previous comparable period for KPI deltas
   channels:           ChannelRow[];
   weekly:             WeekRow[];
   daily:              DailyRow[];
@@ -262,6 +317,8 @@ export interface DashboardData {
   uncategorizedItems:   UncategorizedItemRow[];
   openItems:            OpenItemRow[];
   openItemsSummary:     OpenItemsSummary;
+  pinkSheets:         PinkSheetRow[];
+  pinkSheetDetails:   PinkSheetDetailRow[];
   periods:            FiscalPeriodRow[];
   cateringVendors:    VendorRow[];
   offsiteVendors:     VendorRow[];

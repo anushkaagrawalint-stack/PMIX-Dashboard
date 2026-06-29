@@ -1,12 +1,13 @@
 'use client';
 import { useState, useMemo } from 'react';
-import type { MERow } from '@/lib/types';
+import type { MERow, PinkSheetRow } from '@/lib/types';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend } from 'recharts';
 
 const fmt$ = (v: number) =>
   `$${Math.round(v).toLocaleString('en-US')}`;
 
 const pct = (v: number, d = 1) => `${(v * 100).toFixed(d)}%`;
+
 
 const QUAD_STYLE: Record<string, { bg: string; border: string; text: string; label: string }> = {
   'Star':       { bg: '#dcfce7', border: '#86efac', text: '#14532d', label: 'Stars' },
@@ -20,10 +21,58 @@ const QUAD_COLORS: Record<string, string> = {
 
 const CAT_ORDER = ['Entrees', 'Sides', 'NA Drinks', 'Sweets', 'Kids Meal', 'Alc Drinks', 'Retail', 'Other'];
 
-export default function MenuEngineering({ meItems }: { meItems: MERow[] }) {
+type ChannelView = 'Blended' | 'IH' | 'LO' | '3PD';
+const CH_LABELS: Record<ChannelView, string> = {
+  Blended: 'Blended', IH: 'In House', LO: 'Loyalty / APP', '3PD': '3rd Party',
+};
+
+function displayValues(i: MERow, cv: ChannelView, psMap: Map<string, PinkSheetRow>) {
+  const ps = psMap.get(i.canonical_name);
+  let price: number, cost: number, totalCost: number, netSales: number, qty: number;
+  switch (cv) {
+    case 'IH':
+      price = i.avg_price_ih; qty = i.qty_ih; netSales = i.net_sales_ih;
+      cost = ps ? ps.avg_cost_ih : i.avg_cost_ih;
+      totalCost = cost * qty; break;
+    case 'LO':
+      price = i.avg_price_lo; qty = i.qty_lo; netSales = i.net_sales_lo;
+      cost = ps ? ps.avg_cost_online : i.avg_cost_lo;
+      totalCost = cost * qty; break;
+    case '3PD':
+      price = i.avg_price_3pd; qty = i.qty_3pd; netSales = i.net_sales_3pd;
+      cost = ps ? ps.avg_cost_3pd : i.avg_cost_3pd;
+      totalCost = cost * qty; break;
+    default:
+      price = i.avg_price; qty = i.qty; netSales = i.net_sales;
+      if (ps) {
+        const tq = i.qty_ih + i.qty_lo + i.qty_3pd;
+        cost = tq > 0
+          ? (ps.avg_cost_ih * i.qty_ih + ps.avg_cost_online * i.qty_lo + ps.avg_cost_3pd * i.qty_3pd) / tq
+          : ps.avg_cost_online;
+      } else {
+        cost = i.avg_cost;
+      }
+      totalCost = cost * qty;
+  }
+  const unitMargin  = price - cost;
+  const totalMargin = netSales - totalCost;
+  const marginPct   = price > 0 ? (price - cost) / price : 0;
+  const cogsPct     = price > 0 ? cost / price : 0;
+  return { price, cost, unitMargin, totalCost, netSales, qty, totalMargin, marginPct, cogsPct };
+}
+
+export default function MenuEngineering({ meItems, pinkSheets }: { meItems: MERow[]; pinkSheets: PinkSheetRow[] }) {
+  const grandTotalSales = useMemo(() => meItems.reduce((s, i) => s + i.net_sales, 0), [meItems]);
   const [search, setSearch]         = useState('');
   const [quadFilter, setQuadFilter] = useState('all');
   const [view, setView]             = useState<'table' | 'scatter'>('table');
+  const [channelView, setChannelView] = useState<ChannelView>('Blended');
+
+  const psMap = useMemo(() => {
+    const m = new Map<string, PinkSheetRow>();
+    (pinkSheets ?? []).forEach(p => m.set(p.canonical_name, p));
+    return m;
+  }, [pinkSheets]);
 
   const quadCounts = useMemo(() => {
     const c: Record<string, number> = { Star: 0, 'Plow Horse': 0, Puzzle: 0, Dog: 0 };
@@ -83,7 +132,7 @@ export default function MenuEngineering({ meItems }: { meItems: MERow[] }) {
       </div>
 
       {/* Threshold info + view toggle */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
         <div style={{ background: '#f5f3ff', color: '#381d7c', borderRadius: 10, padding: '6px 12px', fontSize: 10 }}>
           Margin threshold: <strong>{mt.toFixed(1)}%</strong>&nbsp;·&nbsp;
           Mix threshold: <strong>{mxt.toFixed(3)}%</strong>&nbsp;(1/n × 0.7)
@@ -99,6 +148,27 @@ export default function MenuEngineering({ meItems }: { meItems: MERow[] }) {
               }}>{v === 'table' ? 'Table' : 'Scatter'}</button>
           ))}
         </div>
+      </div>
+
+      {/* Channel cost view toggle */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+        <span style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 600 }}>Cost view:</span>
+        {(['Blended', 'IH', 'LO', '3PD'] as ChannelView[]).map(cv => (
+          <button key={cv} onClick={() => setChannelView(cv)}
+            style={{
+              padding: '3px 10px', borderRadius: 6, border: '1px solid var(--border)',
+              fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+              background: channelView === cv ? '#5b21b6' : 'var(--card)',
+              color: channelView === cv ? '#fff' : 'var(--muted)',
+            }}
+            title={CH_LABELS[cv]}
+          >{cv}</button>
+        ))}
+        {channelView !== 'Blended' && (
+          <span style={{ fontSize: 9, color: '#7c3aed', fontStyle: 'italic' }}>
+            {CH_LABELS[channelView]}{channelView === '3PD' ? ' · cost ×1.18, price ×1.22' : ''}
+          </span>
+        )}
       </div>
 
       {view === 'scatter' ? (
@@ -153,51 +223,52 @@ export default function MenuEngineering({ meItems }: { meItems: MERow[] }) {
             <div style={{ overflowX: 'auto' }}>
               <table>
                 <thead><tr>
-                  <th>Item</th>
-                  <th>ME</th>
-                  <th>Category</th>
-                  <th>Sub Cat</th>
-                  <th>Net Sales</th>
-                  <th>Sls % Cat</th>
-                  <th>Qty</th>
-                  <th>Mix %</th>
-                  <th>Margin %</th>
-                  <th>COGS %</th>
+                  <th style={{ minWidth: 160 }}>Item Name</th>
                   <th>Avg Price</th>
-                  <th>Avg Cost</th>
+                  <th>Avg Cost With Modifiers</th>
                   <th>Margin</th>
-                  <th>Mix</th>
+                  <th>Quantity</th>
+                  <th>Total Cost</th>
+                  <th>Net Sales</th>
+                  <th>Total Margin</th>
+                  <th>COGS%</th>
+                  <th>% Margin</th>
+                  <th>% Menu Mix</th>
+                  <th>Margin</th>
+                  <th>Menu Mix</th>
+                  <th>Menu Engineering</th>
+                  <th>Revenue Center</th>
+                  <th>Category</th>
+                  <th>Sub Category</th>
+                  <th>Sls %</th>
+                  <th>Sls % Category</th>
                 </tr></thead>
                 <tbody>
                   {filtered.map(i => {
                     const ms = QUAD_STYLE[i.quadrant];
+                    const dv = displayValues(i, channelView, psMap);
+                    const slsPct = grandTotalSales > 0 ? i.net_sales / grandTotalSales : 0;
                     return (
                       <tr key={`${i.canonical_name}|${i.menu_group}`}>
-                        <td style={{ fontWeight: 600, minWidth: 160 }}>{i.canonical_name}</td>
-                        <td>
-                          <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
-                            background: ms.bg, color: ms.text, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
-                            {i.quadrant}
-                          </span>
-                        </td>
-                        <td style={{ fontSize: 10, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{i.category}</td>
-                        <td style={{ fontSize: 10, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{i.sub_category || '—'}</td>
-                        <td style={{ fontWeight: 600 }}>{fmt$(i.net_sales)}</td>
-                        <td style={{ fontSize: 10 }}>{pct(i.sls_pct_category)}</td>
-                        <td>{i.qty.toLocaleString()}</td>
-                        <td style={{ fontSize: 10 }}>{pct(i.mix_pct, 3)}</td>
+                        <td style={{ fontWeight: 600 }}>{i.canonical_name}</td>
+                        <td>${dv.price.toFixed(2)}</td>
+                        <td>{dv.cost > 0 ? `$${dv.cost.toFixed(2)}` : '—'}</td>
+                        <td>${dv.unitMargin.toFixed(2)}</td>
+                        <td>{dv.qty.toLocaleString()}</td>
+                        <td>{fmt$(dv.totalCost)}</td>
+                        <td style={{ fontWeight: 600 }}>{fmt$(dv.netSales)}</td>
+                        <td>{fmt$(dv.totalMargin)}</td>
+                        <td style={{ fontSize: 10, color: dv.cogsPct > 0.35 ? '#ef4444' : 'inherit' }}>{pct(dv.cogsPct)}</td>
                         <td>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <div style={{ width: 40, background: '#e5e7eb', borderRadius: 3, height: 5, overflow: 'hidden' }}>
+                            <div style={{ width: 36, background: '#e5e7eb', borderRadius: 3, height: 5, overflow: 'hidden' }}>
                               <div style={{ height: '100%', borderRadius: 3, background: 'var(--accent)',
-                                width: `${Math.min(i.margin_pct * 100, 100)}%` }} />
+                                width: `${Math.min(dv.marginPct * 100, 100)}%` }} />
                             </div>
-                            <span>{pct(i.margin_pct)}</span>
+                            <span>{pct(dv.marginPct)}</span>
                           </div>
                         </td>
-                        <td style={{ fontSize: 10, color: i.cogs_pct > 0.35 ? '#ef4444' : 'inherit' }}>{pct(i.cogs_pct)}</td>
-                        <td>${i.avg_price.toFixed(2)}</td>
-                        <td>{i.avg_cost > 0 ? `$${i.avg_cost.toFixed(2)}` : '—'}</td>
+                        <td style={{ fontSize: 10 }}>{pct(i.mix_pct, 3)}</td>
                         <td>
                           <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
                             background: i.margin_flag === 'High' ? '#dcfce7' : '#fee2e2',
@@ -212,6 +283,29 @@ export default function MenuEngineering({ meItems }: { meItems: MERow[] }) {
                             {i.mix_flag}
                           </span>
                         </td>
+                        <td>
+                          <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+                            background: ms.bg, color: ms.text, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+                            {i.quadrant}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{i.menu_group}</td>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{i.category}</td>
+                        <td>
+                          {i.sub_category ? (
+                            <span style={{
+                              fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+                              background: '#f0ecfd', color: '#5b21b6',
+                              whiteSpace: 'nowrap', display: 'inline-block',
+                            }}>
+                              {i.sub_category}
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 10, color: 'var(--muted)' }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ fontSize: 10 }}>{pct(slsPct)}</td>
+                        <td style={{ fontSize: 10 }}>{pct(i.sls_pct_category)}</td>
                       </tr>
                     );
                   })}

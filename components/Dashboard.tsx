@@ -1,6 +1,6 @@
 'use client';
 import { useState, useMemo } from 'react';
-import type { DashboardData, ItemRow, MERow } from '@/lib/types';
+import type { DashboardData, ItemRow, MERow, ChannelRow, ChannelItemRow, ChannelCategoryRow } from '@/lib/types';
 import { CHANNELS, CHANNEL_LABEL } from '@/lib/constants';
 import DatePicker from './DatePicker';
 import Overview from './tabs/Overview';
@@ -9,12 +9,12 @@ import LocationCompare from './tabs/LocationCompare';
 import ChannelMenu from './tabs/ChannelMenu';
 import BYOBreakdown from './tabs/BYOBreakdown';
 import PaymentSource from './tabs/PaymentSource';
-import MenuEngineering from './tabs/MenuEngineering';
 import CustomerRetention from './tabs/CustomerRetention';
-import AllItems from './tabs/AllItems';
 import RenamesAudit from './tabs/RenamesAudit';
 import NeedsReview from './tabs/NeedsReview';
 import OpenItems from './tabs/OpenItems';
+import MEOverall from './tabs/MEOverall';
+import PinkSheets from './tabs/PinkSheets';
 
 const TABS = [
   { id: 'overview',   label: 'Overview',           icon: 'ti-layout-dashboard' },
@@ -23,9 +23,9 @@ const TABS = [
   { id: 'chanmenu',   label: 'Channels',             icon: 'ti-chart-pie' },
   { id: 'byo',        label: 'BYO Breakdown',       icon: 'ti-salad' },
   { id: 'payment',    label: 'Payment Source',      icon: 'ti-credit-card' },
-  { id: 'me',         label: 'Menu Engineering',    icon: 'ti-star' },
+  { id: 'meoverall',  label: 'Menu Engineering',    icon: 'ti-layout-grid' },
+  { id: 'pinksheets', label: 'Pink Sheets',         icon: 'ti-file-spreadsheet' },
   { id: 'bikky',      label: 'Customer Retention',  icon: 'ti-users' },
-  { id: 'allitems',   label: 'All Items',           icon: 'ti-table' },
   { id: 'renames',    label: 'Renames Audit',       icon: 'ti-refresh' },
   { id: 'needs',      label: 'Needs Review',        icon: 'ti-alert-triangle' },
   { id: 'openitems',  label: 'Open Items',          icon: 'ti-package' },
@@ -33,15 +33,38 @@ const TABS = [
 
 type TabId = typeof TABS[number]['id'];
 
+// Which universal filter controls are meaningful for each tab.
+// Hidden when not applicable so the bar stays uncluttered.
+const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location: boolean }> = {
+  overview:   { channel: true,  category: true,  location: true  },
+  itemmix:    { channel: true,  category: true,  location: true  },
+  loccompare: { channel: true,  category: true,  location: true  },
+  chanmenu:   { channel: true,  category: true,  location: true  },
+  byo:        { channel: false, category: false, location: true  },
+  payment:    { channel: false, category: false, location: false },
+  meoverall:  { channel: true,  category: true,  location: true  },
+  pinksheets: { channel: false, category: false, location: false },
+  bikky:      { channel: false, category: false, location: false },
+  renames:    { channel: false, category: false, location: false },
+  needs:      { channel: false, category: false, location: false },
+  openitems:  { channel: false, category: false, location: false },
+};
+
 const fmt$ = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 
 export default function Dashboard({ data }: { data: DashboardData }) {
-  const [tab, setTab]                   = useState<TabId>('overview');
-  const [selectedChannels, setChannels] = useState<string[]>([]);
-  const [chOpen, setChOpen]             = useState(false);
-  const [categoryFilter, setCategory]   = useState('all');
+  const [tab, setTab]                       = useState<TabId>('overview');
+  const [selectedChannels, setChannels]     = useState<string[]>([]);
+  const [chOpen, setChOpen]                 = useState(false);
+  const [categoryFilter, setCategory]       = useState('all');
+  const [selectedLocations, setLocations]   = useState<string[]>([]);
+  const [locOpen, setLocOpen]               = useState(false);
 
   const { dateRange: dr, summary } = data;
+
+  const showCh  = TAB_FILTERS[tab].channel;
+  const showCat = TAB_FILTERS[tab].category;
+  const showLoc = TAB_FILTERS[tab].location;
 
   const currentPeriod = data.periods.find(
     p => dr.start >= p.start_date && dr.end <= p.end_date,
@@ -53,24 +76,35 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     );
   }
 
+  function toggleLocation(code: string) {
+    setLocations(prev =>
+      prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code],
+    );
+  }
+
   const chLabel = selectedChannels.length === 0
     ? 'All Channels'
     : selectedChannels.length === 1
       ? CHANNEL_LABEL[selectedChannels[0]] ?? selectedChannels[0]
       : `${selectedChannels.length} Channels`;
 
-  // Category options mirror exactly what ItemMix shows for the selected channels:
-  // CATERING / CATERING_3PD / OFFSITE → category = menu_group (vendor/package name)
-  // All other channels                → category = AppScript category (Entrees, Sides…)
-  const VENDOR_CHANNELS = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE']);
+  const locLabel = selectedLocations.length === 0
+    ? 'All Locations'
+    : selectedLocations.length === 1
+      ? (data.locations.find(l => l.location_code === selectedLocations[0])?.display_name ?? selectedLocations[0])
+      : `${selectedLocations.length} Locations`;
+
+  // Category options: vendor channels (catering/offsite/markup) collapse to 'Other'
+  // to keep the dropdown short. Only IH/Loyalty/3PD show real categories.
+  const VENDOR_CHANNELS = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE', 'TPD_MARKUP']);
   const categoryOptions = useMemo(() => {
     const cats = new Set<string>();
     const chFilter = new Set(selectedChannels);
     data.items.forEach(i => {
       if (chFilter.size > 0 && !chFilter.has(i.channel)) return;
       const cat = VENDOR_CHANNELS.has(i.channel)
-        ? (i.menu_group || 'Other')
-        : (i.category   || 'Other');
+        ? 'Other'
+        : (i.category || 'Other');
       if (cat) cats.add(cat);
     });
     return [...cats].sort();
@@ -83,12 +117,118 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     return m;
   }, [data.items]);
 
-  // Channel-filtered items (aggregated from channelItems)
+  // Location base items: per-channel rows from data.items, revenue/qty scaled to selected location(s)
+  const locationBaseItems = useMemo((): ItemRow[] => {
+    if (selectedLocations.length === 0) return data.items;
+
+    // Sum location qty/revenue per canonical_name
+    const locAgg = new Map<string, { qty: number; revenue: number }>();
+    data.locationItems
+      .filter(li => selectedLocations.includes(li.location_code))
+      .forEach(li => {
+        const e = locAgg.get(li.canonical_name) ?? { qty: 0, revenue: 0 };
+        e.qty     += li.qty;
+        e.revenue += li.revenue;
+        locAgg.set(li.canonical_name, e);
+      });
+
+    // Sum total qty/revenue per canonical_name across all data.items rows
+    const totalAgg = new Map<string, { qty: number; revenue: number }>();
+    data.items.forEach(i => {
+      const e = totalAgg.get(i.canonical_name) ?? { qty: 0, revenue: 0 };
+      e.qty     += i.qty;
+      e.revenue += i.revenue;
+      totalAgg.set(i.canonical_name, e);
+    });
+
+    const totalLocRev = [...locAgg.values()].reduce((s, v) => s + v.revenue, 0);
+    const totalLocQty = [...locAgg.values()].reduce((s, v) => s + v.qty,     0);
+
+    return data.items.flatMap(i => {
+      const loc = locAgg.get(i.canonical_name);
+      if (!loc) return [];
+      const tot      = totalAgg.get(i.canonical_name)!;
+      const revScale = tot.revenue > 0 ? loc.revenue / tot.revenue : 0;
+      const qtyScale = tot.qty     > 0 ? loc.qty     / tot.qty     : 0;
+      const qty      = Math.round(i.qty * qtyScale);
+      const revenue  = Math.round(i.revenue * revScale * 100) / 100;
+      if (qty === 0 && revenue === 0) return [];
+      return [{
+        ...i, qty, revenue,
+        avg_price:   qty > 0 ? revenue / qty : i.avg_price,
+        revenue_pct: totalLocRev > 0 ? (revenue / totalLocRev) * 100 : 0,
+        qty_pct:     totalLocQty > 0 ? (qty     / totalLocQty) * 100 : 0,
+      }];
+    }).sort((a, b) => b.revenue - a.revenue);
+  }, [selectedLocations, data.locationItems, data.items]);
+
+  // Summary KPIs adjusted for selected location(s)
+  const locationAdjustedSummary = useMemo(() => {
+    if (selectedLocations.length === 0) return data.summary;
+    const locItems   = data.locationItems.filter(li => selectedLocations.includes(li.location_code));
+    const totalRev   = locItems.reduce((s, li) => s + li.revenue, 0);
+    const totalQty   = locItems.reduce((s, li) => s + li.qty,     0);
+    const uniqueItems = new Set(locItems.map(li => li.canonical_name)).size;
+    const topItem    = [...locItems].sort((a, b) => b.revenue - a.revenue)[0];
+    return {
+      ...data.summary,
+      total_revenue:    totalRev,
+      total_qty:        totalQty,
+      unique_items:     uniqueItems,
+      top_item:         topItem?.canonical_name ?? data.summary.top_item,
+      top_item_revenue: topItem?.revenue        ?? data.summary.top_item_revenue,
+      top_item_mix:     totalQty > 0 ? ((topItem?.qty ?? 0) / totalQty) * 100 : data.summary.top_item_mix,
+    };
+  }, [selectedLocations, data.locationItems, data.summary]);
+
+  // Location-adjusted channel revenue (aggregated from locationBaseItems, which already has per-channel location-scaled rows)
+  const locationAdjustedChannels = useMemo((): ChannelRow[] => {
+    if (selectedLocations.length === 0) return data.channels;
+    const agg = new Map<string, { qty: number; revenue: number }>();
+    locationBaseItems.forEach(i => {
+      const e = agg.get(i.channel) ?? { qty: 0, revenue: 0 };
+      e.qty += i.qty;
+      e.revenue += i.revenue;
+      agg.set(i.channel, e);
+    });
+    const totalRev = [...agg.values()].reduce((s, v) => s + v.revenue, 0);
+    return [...agg.entries()].map(([channel, { qty, revenue }]) => ({
+      channel, qty, revenue,
+      pct: totalRev > 0 ? Math.round(revenue / totalRev * 1000) / 10 : 0,
+    })).sort((a, b) => b.revenue - a.revenue);
+  }, [selectedLocations, locationBaseItems, data.channels]);
+
+  // Location-adjusted per-channel item rows (locationBaseItems already has location-scaled per-channel revenue)
+  const locationAdjustedChannelItems = useMemo((): ChannelItemRow[] => {
+    if (selectedLocations.length === 0) return data.channelItems;
+    return locationBaseItems.map(i => ({
+      canonical_name: i.canonical_name,
+      channel:        i.channel,
+      qty:            i.qty,
+      revenue:        i.revenue,
+    }));
+  }, [selectedLocations, locationBaseItems, data.channelItems]);
+
+  // Location-adjusted channel × category revenue (aggregated from locationBaseItems)
+  const locationAdjustedChannelCategories = useMemo((): ChannelCategoryRow[] => {
+    if (selectedLocations.length === 0) return data.channelCategories;
+    const agg = new Map<string, number>();
+    locationBaseItems.forEach(i => {
+      const key = `${i.channel}||${i.category || 'Other'}`;
+      agg.set(key, (agg.get(key) ?? 0) + i.revenue);
+    });
+    return [...agg.entries()].map(([key, revenue]) => {
+      const idx = key.indexOf('||');
+      return { channel: key.slice(0, idx), category: key.slice(idx + 2), revenue };
+    });
+  }, [selectedLocations, locationBaseItems, data.channelCategories]);
+
+  // Channel-filtered items — location already baked into locationAdjustedChannelItems
   const channelFilteredItems = useMemo((): ItemRow[] => {
-    if (selectedChannels.length === 0) return data.items;
+    if (selectedChannels.length === 0) return locationBaseItems;
 
     const agg = new Map<string, { qty: number; revenue: number }>();
-    data.channelItems
+    locationAdjustedChannelItems
       .filter(ci => selectedChannels.includes(ci.channel))
       .forEach(ci => {
         const e = agg.get(ci.canonical_name) ?? { qty: 0, revenue: 0 };
@@ -117,38 +257,36 @@ export default function Dashboard({ data }: { data: DashboardData }) {
         qty_pct:     totalQty > 0 ? (qty / totalQty) * 100 : 0,
       };
     }).sort((a, b) => b.revenue - a.revenue);
-  }, [selectedChannels, data.items, data.channelItems, itemMetaMap]);
+  }, [selectedChannels, locationBaseItems, locationAdjustedChannelItems, itemMetaMap]);
 
-  // Apply category filter
+  // Apply category filter on top of channel-filtered (location already baked in)
   const filteredItems = useMemo(() =>
     categoryFilter === 'all'
       ? channelFilteredItems
       : channelFilteredItems.filter(i => i.category === categoryFilter),
   [channelFilteredItems, categoryFilter]);
 
-  // Channel-filtered channelItems
+  // Channel-filtered channelItems — location already baked into locationAdjustedChannelItems
   const filteredChannelItems = useMemo(() => {
-    let r = data.channelItems;
+    let r = locationAdjustedChannelItems;
     if (selectedChannels.length > 0) r = r.filter(ci => selectedChannels.includes(ci.channel));
-    if (categoryFilter !== 'all') {
-      r = r.filter(ci => (itemMetaMap.get(ci.canonical_name)?.category ?? 'Other') === categoryFilter);
-    }
+    if (categoryFilter !== 'all')    r = r.filter(ci => (itemMetaMap.get(ci.canonical_name)?.category ?? 'Other') === categoryFilter);
     return r;
-  }, [selectedChannels, categoryFilter, data.channelItems, itemMetaMap]);
+  }, [selectedChannels, categoryFilter, locationAdjustedChannelItems, itemMetaMap]);
 
-  // Channel-filtered channels list
+  // Channel-filtered channels list — location already baked into locationAdjustedChannels
   const filteredChannels = useMemo(() =>
     selectedChannels.length === 0
-      ? data.channels
-      : data.channels.filter(c => selectedChannels.includes(c.channel)),
-  [selectedChannels, data.channels]);
+      ? locationAdjustedChannels
+      : locationAdjustedChannels.filter(c => selectedChannels.includes(c.channel)),
+  [selectedChannels, locationAdjustedChannels]);
 
-  // Channel-filtered channelCategories
+  // Channel-filtered channelCategories — location already baked into locationAdjustedChannelCategories
   const filteredChannelCategories = useMemo(() =>
     selectedChannels.length === 0
-      ? data.channelCategories
-      : data.channelCategories.filter(cc => selectedChannels.includes(cc.channel)),
-  [selectedChannels, data.channelCategories]);
+      ? locationAdjustedChannelCategories
+      : locationAdjustedChannelCategories.filter(cc => selectedChannels.includes(cc.channel)),
+  [selectedChannels, locationAdjustedChannelCategories]);
 
   // Channel-filtered location items
   const filteredLocationItems = useMemo(() => {
@@ -234,21 +372,33 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     });
   }, [selectedChannels, categoryFilter, data.meItems, data.channelItems]);
 
+  // Apply location filter on top of channel+category ME filter
+  const finalMEItems = useMemo(() => {
+    if (selectedLocations.length === 0) return filteredMEItems;
+    const locNames = new Set(locationBaseItems.map(i => i.canonical_name));
+    return filteredMEItems.filter(i => locNames.has(i.canonical_name));
+  }, [filteredMEItems, selectedLocations, locationBaseItems]);
+
   const filteredBikky = useMemo(() =>
     categoryFilter === 'all' ? data.bikky : data.bikky.filter(b => b.category === categoryFilter),
   [data.bikky, categoryFilter]);
 
   const filteredData = useMemo(() => ({
     ...data,
+    summary:           locationAdjustedSummary,
+    items:             locationBaseItems,
     channels:          filteredChannels,
     channelItems:      filteredChannelItems,
     channelCategories: filteredChannelCategories,
     locationItems:     filteredLocationItems,
-    meItems:           filteredMEItems,
-  }), [data, filteredChannels, filteredChannelItems, filteredChannelCategories, filteredLocationItems, filteredMEItems]);
+    meItems:           finalMEItems,
+  }), [data, locationAdjustedSummary, locationBaseItems, filteredChannels, filteredChannelItems, filteredChannelCategories, filteredLocationItems, finalMEItems]);
 
   return (
     <div className="container">
+
+      {/* ── STICKY HEADER + FILTER BAR ── */}
+      <div className="sticky-bar">
 
       {/* ── HEADER ── */}
       <div className="hdr">
@@ -279,48 +429,86 @@ export default function Dashboard({ data }: { data: DashboardData }) {
         <div className="fb-r">
           <span className="fb-lbl">Date range</span>
           <DatePicker dr={dr} periods={data.periods} />
-          <div className="fb-sep" />
+          {showCh && (
+            <>
+              <div className="fb-sep" />
+              <span className="fb-lbl">Channel</span>
+              <div className="drw" style={{ position: 'relative' }}>
+                <button className="drb" onClick={() => setChOpen(o => !o)} style={{ minWidth: 130 }}>
+                  {chLabel}
+                  <i className="ti ti-chevron-down" style={{ fontSize: 11 }} />
+                </button>
+                {chOpen && (
+                  <>
+                    <div style={{ position: 'fixed', inset: 0, zIndex: 199 }} onClick={() => setChOpen(false)} />
+                    <div className="drm open" style={{ minWidth: 170, zIndex: 200 }}>
+                      <label className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
+                        <input type="checkbox" checked={selectedChannels.length === 0}
+                          onChange={() => setChannels([])} style={{ accentColor: 'var(--accent)' }} />
+                        All Channels
+                      </label>
+                      <div className="dr-div" />
+                      {CHANNELS.map(({ code, label, color }) => (
+                        <label key={code} className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
+                          <input type="checkbox" checked={selectedChannels.includes(code)}
+                            onChange={() => toggleChannel(code)} style={{ accentColor: color }} />
+                          <span style={{ width: 8, height: 8, borderRadius: 2, background: color, display: 'inline-block', flexShrink: 0 }} />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </>
+          )}
 
-          {/* Channel multi-select */}
-          <span className="fb-lbl">Channel</span>
-          <div className="drw" style={{ position: 'relative' }}>
-            <button className="drb" onClick={() => setChOpen(o => !o)} style={{ minWidth: 130 }}>
-              {chLabel}
-              <i className="ti ti-chevron-down" style={{ fontSize: 11 }} />
-            </button>
-            {chOpen && (
-              <>
-                <div style={{ position: 'fixed', inset: 0, zIndex: 199 }} onClick={() => setChOpen(false)} />
-                <div className="drm open" style={{ minWidth: 170, zIndex: 200 }}>
-                  <label className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
-                    <input type="checkbox" checked={selectedChannels.length === 0}
-                      onChange={() => setChannels([])} style={{ accentColor: 'var(--accent)' }} />
-                    All Channels
-                  </label>
-                  <div className="dr-div" />
-                  {CHANNELS.map(({ code, label, color }) => (
-                    <label key={code} className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
-                      <input type="checkbox" checked={selectedChannels.includes(code)}
-                        onChange={() => toggleChannel(code)} style={{ accentColor: color }} />
-                      <span style={{ width: 8, height: 8, borderRadius: 2, background: color, display: 'inline-block', flexShrink: 0 }} />
-                      {label}
-                    </label>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
+          {showCat && (
+            <>
+              <div className="fb-sep" />
+              <span className="fb-lbl">Category</span>
+              <select className="fb-sel" value={categoryFilter} onChange={e => setCategory(e.target.value)}>
+                <option value="all">All Categories</option>
+                {categoryOptions.map(cat => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ))}
+              </select>
+            </>
+          )}
 
-          <div className="fb-sep" />
-
-          {/* Category filter */}
-          <span className="fb-lbl">Category</span>
-          <select className="fb-sel" value={categoryFilter} onChange={e => setCategory(e.target.value)}>
-            <option value="all">All Categories</option>
-            {categoryOptions.map(cat => (
-              <option key={cat} value={cat}>{cat}</option>
-            ))}
-          </select>
+          {showLoc && data.locations.length > 1 && (
+            <>
+              <div className="fb-sep" />
+              <span className="fb-lbl">Location</span>
+              <div className="drw" style={{ position: 'relative' }}>
+                <button className="drb" onClick={() => setLocOpen(o => !o)} style={{ minWidth: 120 }}>
+                  {locLabel}
+                  <i className="ti ti-chevron-down" style={{ fontSize: 11 }} />
+                </button>
+                {locOpen && (
+                  <>
+                    <div style={{ position: 'fixed', inset: 0, zIndex: 199 }} onClick={() => setLocOpen(false)} />
+                    <div className="drm open" style={{ minWidth: 170, zIndex: 200 }}>
+                      <label className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
+                        <input type="checkbox" checked={selectedLocations.length === 0}
+                          onChange={() => setLocations([])} style={{ accentColor: 'var(--accent)' }} />
+                        All Locations
+                      </label>
+                      <div className="dr-div" />
+                      {data.locations.map(loc => (
+                        <label key={loc.location_code} className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
+                          <input type="checkbox" checked={selectedLocations.includes(loc.location_code)}
+                            onChange={() => toggleLocation(loc.location_code)}
+                            style={{ accentColor: 'var(--accent)' }} />
+                          {loc.display_name}
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </>
+          )}
 
           <div className="fb-sep" />
           <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>
@@ -359,16 +547,18 @@ export default function Dashboard({ data }: { data: DashboardData }) {
         </div>
       </div>
 
+      </div>{/* end sticky-bar */}
+
       {/* ── TAB CONTENT ── */}
-      {tab === 'overview'   && <Overview         data={data} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
-      {tab === 'itemmix'    && <ItemMix          items={data.items} meItems={data.meItems} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
+      {tab === 'overview'   && <Overview         data={filteredData} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
+      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} meItems={finalMEItems} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
       {tab === 'loccompare' && <LocationCompare  data={filteredData} />}
       {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} />}
-      {tab === 'byo'        && <BYOBreakdown     modifiers={data.modifiers} items={data.items} />}
+      {tab === 'byo'        && <BYOBreakdown     modifiers={data.modifiers} items={locationBaseItems} pinkSheets={data.pinkSheets} meItems={finalMEItems} />}
       {tab === 'payment'    && <PaymentSource    payments={data.payments} />}
-      {tab === 'me'         && <MenuEngineering  meItems={filteredMEItems} />}
-      {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} />}
-      {tab === 'allitems'   && <AllItems         meItems={filteredMEItems} items={filteredItems} />}
+      {tab === 'meoverall'  && <MEOverall meItems={finalMEItems} pinkSheets={data.pinkSheets} />}
+      {tab === 'pinksheets' && <PinkSheets pinkSheets={data.pinkSheets} details={data.pinkSheetDetails} />}
+      {tab === 'bikky'      && <CustomerRetention bikky={data.bikky} meItems={finalMEItems} items={locationBaseItems} />}
       {tab === 'renames'    && <RenamesAudit     renames={data.renames} />}
       {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}

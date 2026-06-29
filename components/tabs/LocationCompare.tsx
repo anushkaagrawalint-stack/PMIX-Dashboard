@@ -190,7 +190,7 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
               <div className="kl" style={{ color: loc.color }}>{loc.display_name}</div>
               <div className="kv">{useQty ? qty.toLocaleString() : fmt$(rev)}</div>
               <div className="ks">{useQty ? 'items sold' : `${qty.toLocaleString()} items sold`}</div>
-              <div className="ks">{share.toFixed(1)}% of group {useQty ? 'qty' : 'revenue'}</div>
+              <div className="ks">{share.toFixed(1)}% of category {useQty ? 'qty' : 'revenue'}</div>
               {s?.topItem && (
                 <div className="ks" style={{ marginTop: 3, fontWeight: 700, color: 'var(--text)' }}>
                   ★ {s.topItem.slice(0, 22)}

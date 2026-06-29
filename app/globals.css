@@ -34,6 +34,10 @@ body {
 
 .container { max-width: 1440px; margin: 0 auto; padding: 12px 16px; }
 
+/* ── Sticky header + filter bar wrapper ── */
+.sticky-bar { position: sticky; top: 0; z-index: 100; background: var(--bg); margin-top: -12px; padding-top: 12px; padding-bottom: 12px; }
+.sticky-bar .tabs-o { margin-bottom: 0; }
+
 /* ── Header ── */
 .hdr { background: var(--header); border-radius: var(--radius); padding: 11px 18px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .hdr-l { display: flex; align-items: center; gap: 12px; }

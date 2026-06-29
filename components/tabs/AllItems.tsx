@@ -27,12 +27,37 @@ export default function AllItems({ meItems, items }: { meItems: MERow[]; items: 
     return m;
   }, [meItems]);
 
+  // Deduplicate items by canonical_name (items has one row per channel×menu combo)
+  const deduped = useMemo(() => {
+    const m = new Map<string, typeof items[number]>();
+    items.forEach(i => {
+      const prev = m.get(i.canonical_name);
+      if (prev) {
+        const newQty = prev.qty + i.qty;
+        const newRev = prev.revenue + i.revenue;
+        m.set(i.canonical_name, {
+          ...prev,
+          qty: newQty,
+          revenue: newRev,
+          avg_price: newQty > 0 ? newRev / newQty : 0,
+        });
+      } else {
+        m.set(i.canonical_name, { ...i });
+      }
+    });
+    const totalRev = [...m.values()].reduce((s, v) => s + v.revenue, 0);
+    return [...m.values()].map(i => ({
+      ...i,
+      revenue_pct: totalRev > 0 ? (i.revenue / totalRev) * 100 : 0,
+    }));
+  }, [items]);
+
   const merged = useMemo(() => {
-    return items.map(i => ({
+    return deduped.map(i => ({
       ...i,
       me: meMap[i.canonical_name] ?? null,
     }));
-  }, [items, meMap]);
+  }, [deduped, meMap]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -129,7 +154,7 @@ export default function AllItems({ meItems, items }: { meItems: MERow[]; items: 
                 const marginPct = me ? (me.margin_pct * 100).toFixed(1) : null;
                 const cogsPct   = marginPct ? (100 - Number(marginPct)).toFixed(1) : null;
                 return (
-                  <tr key={`${i.canonical_name}||${i.menu_group}||${i.menu_name}`}>
+                  <tr key={i.canonical_name}>
                     <td style={{ fontWeight: 600 }}>{i.canonical_name}</td>
                     <td>
                       {ms && <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: ms.bg, color: ms.text, textTransform: 'uppercase' }}>

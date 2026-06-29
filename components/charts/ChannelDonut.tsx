@@ -18,13 +18,18 @@ export default function ChannelDonut({ data }: { data: ChannelRow[] }) {
           {chartData.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
         </Pie>
         <Tooltip
-          formatter={(v, _n, entry) => {
-            const rev = typeof v === 'number' ? v : 0;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const pct = (entry as any)?.payload?.pct ?? 0;
-            return [`$${Math.round(rev).toLocaleString('en-US')} (${pct}%)`, ''];
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          content={({ payload }) => {
+            const p = payload?.[0]?.payload as any;
+            if (!p) return null;
+            return (
+              <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px', fontSize: 11 }}>
+                <div style={{ fontWeight: 700, marginBottom: 3, color: p.fill }}>{p.name}</div>
+                <div>${Math.round(p.value).toLocaleString('en-US')}</div>
+                <div style={{ color: 'var(--muted)' }}>{p.pct}% of total</div>
+              </div>
+            );
           }}
-          contentStyle={{ fontSize: 11, borderRadius: 8 }}
         />
         <Legend iconType="square" iconSize={8}
           formatter={(val) => <span style={{ fontSize: 9 }}>{val}</span>}

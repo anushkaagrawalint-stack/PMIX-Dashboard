@@ -24,12 +24,11 @@ function SectionLabel({ label }: { label: string }) {
 }
 
 export default function ChannelMenu({ data }: { data: DashboardData }) {
-  const { channels, channelItems, channelCategories, meItems } = data;
+  const { channels, channelItems, meItems } = data;
 
-  const [sort, setSort]     = useState<SortKey>('total');
-  const [desc, setDesc]     = useState(true);
-  const [topMetric, setTopMetric] = useState<'rev' | 'qty'>('rev');
-  const [topView,   setTopView]   = useState<'pct' | 'exact'>('pct');
+  const [sort, setSort]   = useState<SortKey>('total');
+  const [desc, setDesc]   = useState(true);
+  const [topView, setTopView] = useState<'pct' | 'exact'>('pct');
   const [meFilter,  setMeFilter]  = useState<Set<string>>(new Set());
   const [meOpen,    setMeOpen]    = useState(false);
 
@@ -83,22 +82,10 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
       .map(([name, value]) => ({ name: CHANNEL_LABEL[name] ?? name, value }));
   }, [channelItems]);
 
-  // Category breakdown per channel
-  const catForChannel = (code: string) =>
-    channelCategories
-      .filter(cc => cc.channel === code)
-      .sort((a, b) => b.revenue - a.revenue)
-      .map(cc => ({ name: cc.category, value: cc.revenue }));
-
   // Channels that actually have items — in display order
   const activeChannels = CH_ORDER
     .filter(code => (topByChannel[code]?.length ?? 0) > 0)
     .map(code => ({ code, label: CHANNEL_LABEL[code] ?? code, color: CHANNEL_COLOR[code] ?? '#9ca3af' }));
-
-  // Category charts: only channels that have category data
-  const catChannels = CH_ORDER
-    .map(code => ({ code, label: CHANNEL_LABEL[code] ?? code, color: CHANNEL_COLOR[code] ?? '#9ca3af', cats: catForChannel(code) }))
-    .filter(ch => ch.cats.length > 0);
 
   // Item-level channel split — all channels (top 50)
   const itemData = useMemo(() => {
@@ -126,10 +113,6 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
   // Split activeChannels into rows of 3
   const topItemRows: typeof activeChannels[] = [];
   for (let i = 0; i < activeChannels.length; i += 3) topItemRows.push(activeChannels.slice(i, i + 3));
-
-  // Split catChannels into rows of 3
-  const catRows: typeof catChannels[] = [];
-  for (let i = 0; i < catChannels.length; i += 3) catRows.push(catChannels.slice(i, i + 3));
 
   return (
     <div>
@@ -189,31 +172,16 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
         <>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, marginTop: 6, paddingLeft: 2 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)' }}>Top items by channel</div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              {/* Revenue vs Qty */}
-              <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
-                {(['rev', 'qty'] as const).map(m => (
-                  <button key={m} onClick={() => setTopMetric(m)} style={{
-                    fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer',
-                    background: topMetric === m ? 'var(--accent)' : 'transparent',
-                    color: topMetric === m ? '#fff' : '#6b7280',
-                    boxShadow: topMetric === m ? '0 1px 4px rgba(99,102,241,.35)' : 'none',
-                    transition: 'all .15s',
-                  }}>{m === 'rev' ? 'Revenue' : 'Qty'}</button>
-                ))}
-              </div>
-              {/* % vs Exact */}
-              <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
-                {(['pct', 'exact'] as const).map(v => (
-                  <button key={v} onClick={() => setTopView(v)} style={{
-                    fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer',
-                    background: topView === v ? 'var(--accent)' : 'transparent',
-                    color: topView === v ? '#fff' : '#6b7280',
-                    boxShadow: topView === v ? '0 1px 4px rgba(99,102,241,.35)' : 'none',
-                    transition: 'all .15s',
-                  }}>{v === 'pct' ? '%' : '#'}</button>
-                ))}
-              </div>
+            <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
+              {(['pct', 'exact'] as const).map(v => (
+                <button key={v} onClick={() => setTopView(v)} style={{
+                  fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                  background: topView === v ? 'var(--accent)' : 'transparent',
+                  color: topView === v ? '#fff' : '#6b7280',
+                  boxShadow: topView === v ? '0 1px 4px rgba(99,102,241,.35)' : 'none',
+                  transition: 'all .15s',
+                }}>{v === 'pct' ? '%' : '#'}</button>
+              ))}
             </div>
           </div>
           {topItemRows.map((row, ri) => (
@@ -226,46 +194,25 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 4, borderBottom: '2px solid #e5e7eb', marginBottom: 2 }}>
                     <span style={{ fontSize: 9, color: 'var(--muted)', width: 14, flexShrink: 0 }} />
                     <div style={{ flex: 1, fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Item</div>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right', minWidth: 60 }}>
-                      {topMetric === 'rev'
-                        ? (topView === 'pct' ? '% of ch rev' : 'Revenue')
-                        : (topView === 'pct' ? '% of ch qty' : 'Qty sold')}
+                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right', minWidth: 55 }}>
+                      {topView === 'pct' ? '% Rev' : 'Revenue'}
+                    </div>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right', minWidth: 45 }}>
+                      {topView === 'pct' ? '% Qty' : 'Qty'}
                     </div>
                   </div>
                   {(topByChannel[ch.code] ?? []).map((item, idx) => (
                     <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', borderBottom: '1px solid #f3f4f6' }}>
                       <span style={{ fontSize: 10, color: 'var(--muted)', width: 14, flexShrink: 0, textAlign: 'right' }}>{idx + 1}</span>
                       <div style={{ flex: 1, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</div>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', flexShrink: 0 }}>
-                        {topMetric === 'rev'
-                          ? topView === 'pct'
-                            ? `${item.revPct}%`
-                            : `$${item.rev.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                          : topView === 'pct'
-                            ? `${item.qtyPct}%`
-                            : item.qty.toLocaleString()}
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', flexShrink: 0, minWidth: 55, textAlign: 'right' }}>
+                        {topView === 'pct' ? `${item.revPct}%` : fmt$(item.rev)}
+                      </span>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', flexShrink: 0, minWidth: 45, textAlign: 'right' }}>
+                        {topView === 'pct' ? `${item.qtyPct}%` : item.qty.toLocaleString()}
                       </span>
                     </div>
                   ))}
-                </div>
-              ))}
-            </div>
-          ))}
-        </>
-      )}
-
-      {/* ── Category breakdown per channel (3 per row) ── */}
-      {catRows.length > 0 && (
-        <>
-          <SectionLabel label="Category breakdown by channel" />
-          {catRows.map((row, ri) => (
-            <div key={ri} className="gr3">
-              {row.map(ch => (
-                <div key={ch.code} className="cc">
-                  <h3 style={{ borderLeft: `3px solid ${ch.color}`, paddingLeft: 7, marginLeft: -4 }}>
-                    {ch.label} by category
-                  </h3>
-                  <HBarChart data={ch.cats} color={ch.color} height={180} />
                 </div>
               ))}
             </div>
@@ -283,16 +230,15 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
               <th style={{ textAlign: 'center', padding: '6px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Margin</th>
               <th style={{ textAlign: 'center', padding: '6px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Popularity</th>
               <th style={{ textAlign: 'left', padding: '6px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>What it means</th>
-              <th style={{ textAlign: 'left', padding: '6px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Action</th>
             </tr>
           </thead>
           <tbody>
             {[
-              { q: 'Star',       color: '#f59e0b', margin: 'High', pop: 'High', desc: 'High profit, high sales — best performers',            action: 'Protect & promote' },
-              { q: 'Puzzle',     color: '#6366f1', margin: 'High', pop: 'Low',  desc: 'High profit but not selling well — untapped potential', action: 'Reposition, bundle, promote' },
-              { q: 'Plow Horse', color: '#10b981', margin: 'Low',  pop: 'High', desc: 'Popular but thin margins — volume without profit',      action: 'Raise price or cut cost' },
-              { q: 'Dog',        color: '#94a3b8', margin: 'Low',  pop: 'Low',  desc: 'Low profit and low sales — drag on the menu',           action: 'Remove or redesign' },
-            ].map(({ q, color, margin, pop, desc, action }, i) => (
+              { q: 'Star',       color: '#f59e0b', margin: 'High', pop: 'High', desc: 'High profit, high sales' },
+              { q: 'Puzzle',     color: '#6366f1', margin: 'High', pop: 'Low',  desc: 'High profit but not selling well' },
+              { q: 'Plow Horse', color: '#10b981', margin: 'Low',  pop: 'High', desc: 'Popular but thin margins' },
+              { q: 'Dog',        color: '#94a3b8', margin: 'Low',  pop: 'Low',  desc: 'Low profit and low sales' },
+            ].map(({ q, color, margin, pop, desc }, i) => (
               <tr key={q} style={{ borderTop: '1px solid #f3f4f6', background: i % 2 === 1 ? '#fafafa' : 'transparent' }}>
                 <td style={{ padding: '8px 10px' }}>
                   <span className={`mb mb-${q.split(' ')[0]}`} style={{ background: color }}>{q}</span>
@@ -308,7 +254,6 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
                   </span>
                 </td>
                 <td style={{ padding: '8px 10px', fontSize: 11, color: 'var(--text)' }}>{desc}</td>
-                <td style={{ padding: '8px 10px', fontSize: 11, fontWeight: 600, color: 'var(--muted)' }}>{action}</td>
               </tr>
             ))}
           </tbody>

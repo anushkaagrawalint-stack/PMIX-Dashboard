@@ -1,8 +1,6 @@
 import { loadDashboardData } from '@/lib/queries';
 import Dashboard from '@/components/Dashboard';
 
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
 
 interface Props {
   searchParams: Promise<{ start?: string; end?: string; label?: string }>;

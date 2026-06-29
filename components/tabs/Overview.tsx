@@ -17,9 +17,29 @@ interface Props {
   categoryFilter: string;
 }
 
+function DeltaBadge({
+  curr, prev, positiveGood = true,
+}: { curr: number; prev: number; positiveGood?: boolean }) {
+  if (!prev) return null;
+  const pct = ((curr - prev) / Math.abs(prev)) * 100;
+  const up  = pct >= 0;
+  const good = positiveGood ? up : !up;
+  return (
+    <div style={{
+      fontSize: 10, fontWeight: 600, marginTop: 1,
+      color: good ? '#16a34a' : '#dc2626',
+    }}>
+      {up ? '↑' : '↓'} {Math.abs(pct).toFixed(1)}% vs prev
+    </div>
+  );
+}
+
 export default function Overview({ data, selectedChannels, categoryFilter }: Props) {
-  const { summary, channels, weekly, daily, periods, items, avgMargin,
+  const { summary, prevSummary, channels, weekly, daily, periods, items, avgMargin,
           channelItems, channelCategories, weeklyByChannel, dailyByChannel } = data;
+
+  // Only show deltas when no channel filter active (to avoid filtered-vs-total mismatch)
+  const showDelta = selectedChannels.length === 0 && prevSummary !== null;
 
   // Weekly trend filtered by selected channels
   const effectiveWeekly = useMemo(() => {
@@ -152,12 +172,16 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
         <div className="kc a">
           <div className="kl">Items Sold</div>
           <div className="kv">{Number(kpiQty).toLocaleString()}</div>
-          {selectedChannels.length > 0 && <div className="ks">filtered</div>}
+          {showDelta
+            ? <DeltaBadge curr={summary.total_qty} prev={prevSummary!.total_qty} />
+            : selectedChannels.length > 0 && <div className="ks">filtered</div>}
         </div>
         <div className="kc g">
           <div className="kl">Net Revenue</div>
           <div className="kv">{fmt$(kpiRevenue)}</div>
-          {selectedChannels.length > 0 && <div className="ks">filtered</div>}
+          {showDelta
+            ? <DeltaBadge curr={summary.total_revenue} prev={prevSummary!.total_revenue} />
+            : selectedChannels.length > 0 && <div className="ks">filtered</div>}
         </div>
         <div className="kc b">
           <div className="kl">Avg Margin</div>
@@ -167,12 +191,21 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
         <div className="kc p">
           <div className="kl">Unique Items</div>
           <div className="kv">{summary.unique_items}</div>
-          <div className="ks">real menu items</div>
+          {showDelta
+            ? <DeltaBadge curr={summary.unique_items} prev={prevSummary!.unique_items} positiveGood={false} />
+            : <div className="ks">real menu items</div>}
         </div>
         <div className="kc pk">
           <div className="kl">Top Item</div>
           <div className="kv-sm">{summary.top_item}</div>
-          <div className="ks">{summary.top_item_mix}% mix · {fmt$(summary.top_item_revenue)}</div>
+          <div className="ks">
+            {summary.top_item_mix.toFixed(1)}% mix · {fmt$(summary.top_item_revenue)}
+            {showDelta && prevSummary!.top_item !== summary.top_item && (
+              <span style={{ marginLeft: 4, color: 'var(--muted)', fontStyle: 'italic' }}>
+                (was {prevSummary!.top_item})
+              </span>
+            )}
+          </div>
         </div>
       </div>
 

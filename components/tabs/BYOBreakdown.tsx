@@ -1,11 +1,22 @@
 'use client';
 import { useState, useMemo } from 'react';
-import type { ModifierRow, ItemRow } from '@/lib/types';
+import type { ModifierRow, ItemRow, PinkSheetRow, MERow } from '@/lib/types';
 
 const fmtCost = (v: number) =>
   `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtRev = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`;
+
+// BYO parent_item names in orders vs canonical_name after byo_fix in pink sheet / ME queries
+const BYO_DISPLAY_TO_CANONICAL: Record<string, string> = {
+  'Grain Bowl':           'BYO Grain Bowl',
+  'Greens + Grains Bowl': 'BYO Greens + Grains Bowl',
+  'Salad Bowl':           'BYO Salad Bowl',
+};
+// reverse: canonical → display
+const BYO_CANONICAL_TO_DISPLAY: Record<string, string> = Object.fromEntries(
+  Object.entries(BYO_DISPLAY_TO_CANONICAL).map(([d, c]) => [c, d])
+);
 
 const MOD_LABEL: Record<string, string> = {
   main:       'Mains',
@@ -53,15 +64,49 @@ function PillToggle<T extends string>({
   );
 }
 
+type CostView = 'all' | 'ih' | 'online';
+const COST_VIEW_LABELS: Record<CostView, string> = {
+  all: 'Overall', ih: 'In-House', online: 'Online (LO+3PD)',
+};
+
 export default function BYOBreakdown({
   modifiers,
   items,
+  pinkSheets,
+  meItems,
 }: {
-  modifiers: ModifierRow[];
-  items: ItemRow[];
+  modifiers:  ModifierRow[];
+  items:      ItemRow[];
+  pinkSheets: PinkSheetRow[];
+  meItems:    MERow[];
 }) {
   const [selectedBowl, setSelectedBowl] = useState<string>('__all__');
   const [view,         setView]         = useState<'pct' | 'qty'>('pct');
+  const [costView,     setCostView]     = useState<CostView>('all');
+
+  const psMap = useMemo(() => {
+    const m = new Map<string, PinkSheetRow>();
+    (pinkSheets ?? []).forEach(p => {
+      m.set(p.canonical_name, p);
+      // Also register under display name so "Grain Bowl" lookup finds "BYO Grain Bowl" entry
+      const displayName = BYO_CANONICAL_TO_DISPLAY[p.canonical_name];
+      if (displayName) m.set(displayName, p);
+    });
+    return m;
+  }, [pinkSheets]);
+
+  // Fallback cost from ME query (base-only, no modifier adder) for items not in pink sheets
+  const meCostMap = useMemo(() => {
+    const m = new Map<string, { all: number; ih: number; online: number }>();
+    (meItems ?? []).forEach(i => {
+      const entry = { all: i.avg_cost, ih: i.avg_cost_ih, online: i.avg_cost_lo };
+      m.set(i.canonical_name, entry);
+      // Also register under display name for BYO-renamed items
+      const displayName = BYO_CANONICAL_TO_DISPLAY[i.canonical_name];
+      if (displayName) m.set(displayName, entry);
+    });
+    return m;
+  }, [meItems]);
 
   // Unique bowls that have modifier data, sorted by total qty desc
   const bowls = useMemo(() => {
@@ -90,37 +135,6 @@ export default function BYOBreakdown({
     return m;
   }, [items]);
 
-  // Per-bowl estimated total modifier cost (mirrors AppScript totalModCost accumulation)
-  // Excludes: half_main (display-only; cost captured via '1/2 and 1/2 Mains' composite in main section)
-  //           individual '1/2 X' base entries (display-only; cost captured via their composite)
-  const bowlModCost = useMemo(() => {
-    const byBowlType = new Map<string, Map<string, { sumCostQty: number; sumQty: number }>>();
-    modifiers.forEach(r => {
-      if (r.avg_cost == null) return;
-      // half_main entries are sub-table display only per AppScript
-      if (r.mod_type === 'half_main') return;
-      // individual half-base entries (e.g. '1/2 Basmati Rice') are sub-table display only;
-      // the composite '1/2 and 1/2 Grains' in the same mod_type already carries their cost
-      const isHalfBase = ['base_grain','base_salad','base_gg','base_other'].includes(r.mod_type)
-        && r.modifier_name.toLowerCase().startsWith('1/2 ')
-        && !r.modifier_name.toLowerCase().startsWith('1/2 and 1/2 ');
-      if (isHalfBase) return;
-
-      if (!byBowlType.has(r.parent_item)) byBowlType.set(r.parent_item, new Map());
-      const byType = byBowlType.get(r.parent_item)!;
-      if (!byType.has(r.mod_type)) byType.set(r.mod_type, { sumCostQty: 0, sumQty: 0 });
-      const t = byType.get(r.mod_type)!;
-      t.sumCostQty += r.qty * r.avg_cost;
-      t.sumQty     += r.qty;
-    });
-    const result = new Map<string, number>();
-    byBowlType.forEach((byType, bowl) => {
-      let total = 0;
-      byType.forEach(t => { if (t.sumQty > 0) total += t.sumCostQty / t.sumQty; });
-      result.set(bowl, total);
-    });
-    return result;
-  }, [modifiers]);
 
   // Filtered modifiers for the selected bowl
   const filtered = useMemo(() =>
@@ -153,11 +167,30 @@ export default function BYOBreakdown({
     <div>
       {/* ── Summary Table ─────────────────────────────────────────── */}
       <div className="card" style={{ marginBottom: 16, overflowX: 'auto' }}>
-        <h3 style={{ marginBottom: 10, fontSize: 13 }}>BYO Items — Overview</h3>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
+          <h3 style={{ fontSize: 13, margin: 0 }}>BYO Items — Overview</h3>
+          {/* Channel cost toggle */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 600 }}>Cost view:</span>
+            {(['all', 'ih', 'online'] as CostView[]).map(cv => (
+              <button key={cv} onClick={() => setCostView(cv)}
+                style={{
+                  padding: '3px 10px', borderRadius: 6, border: '1px solid var(--border)',
+                  fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                  background: costView === cv ? 'var(--accent)' : 'var(--card)',
+                  color: costView === cv ? '#fff' : 'var(--muted)',
+                }}>
+                {COST_VIEW_LABELS[cv]}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ borderBottom: '2px solid #e5e7eb' }}>
-              {['Bowl / Item','Qty','Revenue','Avg Price','Est. Modifier Cost','Modifier Cost/Order'].map(h => (
+              {['Bowl / Item','Qty','Revenue','Avg Price',`Avg Cost (w/ Mods) — ${COST_VIEW_LABELS[costView]}`,'COGS%'].map(h => (
                 <th key={h} style={{
                   padding: '4px 10px', textAlign: h === 'Bowl / Item' ? 'left' : 'right',
                   fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
@@ -168,8 +201,34 @@ export default function BYOBreakdown({
           </thead>
           <tbody>
             {bowls.map((bowl, i) => {
-              const it      = itemMap.get(bowl);
-              const modCost = bowlModCost.get(bowl);
+              const it = itemMap.get(bowl);
+              const ps = psMap.get(bowl);
+
+              // Pink-sheet cost for the chosen channel view
+              let psCost: number | null = null;
+              if (ps) {
+                if (costView === 'ih') {
+                  psCost = ps.avg_cost_ih;
+                } else if (costView === 'online') {
+                  psCost = ps.avg_cost_online;
+                } else {
+                  const tq = ps.ih_qty + ps.online_qty;
+                  psCost = tq > 0
+                    ? (ps.avg_cost_ih * ps.ih_qty + ps.avg_cost_online * ps.online_qty) / tq
+                    : ps.avg_cost_online;
+                }
+              }
+
+              // Fallback: meItems cost (base only, no modifier adder) when pink sheet absent
+              const meCosts     = ps ? null : meCostMap.get(bowl);
+              const fallbackCost = meCosts
+                ? (costView === 'ih' ? meCosts.ih : costView === 'online' ? meCosts.online : meCosts.all)
+                : null;
+
+              const displayCost = psCost ?? fallbackCost;
+              const isEstimate  = displayCost != null && ps == null;
+              const cogsPct     = displayCost != null && it ? displayCost / it.avgPrice : null;
+
               return (
                 <tr
                   key={bowl}
@@ -197,13 +256,26 @@ export default function BYOBreakdown({
                   <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text)' }}>
                     {it ? fmtCost(it.avgPrice) : '—'}
                   </td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right', color: modCost != null ? 'var(--text)' : 'var(--muted)' }}>
-                    {modCost != null ? fmtCost(modCost) : '—'}
+                  <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: displayCost != null ? 600 : 400 }}>
+                    {displayCost != null ? (
+                      <span style={{ color: isEstimate ? '#92400e' : 'var(--text)' }}>
+                        {fmtCost(displayCost)}
+                        {isEstimate && (
+                          <span style={{ fontSize: 9, fontWeight: 400, color: '#92400e', marginLeft: 3 }}>
+                            (base)
+                          </span>
+                        )}
+                      </span>
+                    ) : '—'}
                   </td>
                   <td style={{ padding: '6px 10px', textAlign: 'right' }}>
-                    {it && modCost != null ? (
-                      <span style={{ fontSize: 10, color: 'var(--muted)' }}>
-                        {fmtPct(modCost / it.avgPrice)} of avg price
+                    {cogsPct != null ? (
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                        background: cogsPct > 0.35 ? '#fee2e2' : cogsPct > 0.28 ? '#fef9c3' : '#dcfce7',
+                        color: cogsPct > 0.35 ? '#991b1b' : cogsPct > 0.28 ? '#92400e' : '#14532d',
+                      }}>
+                        {fmtPct(cogsPct)}
                       </span>
                     ) : '—'}
                   </td>
@@ -214,7 +286,7 @@ export default function BYOBreakdown({
         </table>
         <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6, fontStyle: 'italic' }}>
           Click a row to filter modifier cards below to that bowl. Click again to clear.
-          Est. Modifier Cost = weighted avg cost across all modifier types for that bowl.
+          <strong style={{ color: '#92400e' }}> (base)</strong> = no pink sheet entry — showing base cost only, modifier adder not included.
         </div>
       </div>
 
@@ -265,7 +337,6 @@ export default function BYOBreakdown({
         <div className="gr3">
           {types.map(t => {
             const rows = byType[t].slice(0, 10);
-            const max  = view === 'pct' ? (rows[0]?.pct ?? 1) : (rows[0]?.qty ?? 1);
 
             return (
               <div key={t} className="byo-col">
@@ -287,10 +358,7 @@ export default function BYOBreakdown({
                 {rows.map(r => (
                   <div key={r.modifier_name + r.parent_item} className="byo-item" style={{ alignItems: 'center' }}>
                     <span className="byo-name">{r.modifier_name}</span>
-                    <div className="byo-bar-bg" style={{ flex: 1 }}>
-                      <div className="byo-bar-fill" style={{ width: `${(view === 'pct' ? r.pct : r.qty) / max * 100}%` }} />
-                    </div>
-                    <span className="byo-pct" style={{ width: 44, textAlign: 'right', flexShrink: 0 }}>
+                    <span className="byo-pct" style={{ width: 44, textAlign: 'right', flexShrink: 0, marginLeft: 'auto' }}>
                       {view === 'pct' ? `${r.pct}%` : r.qty.toLocaleString()}
                     </span>
                   </div>
