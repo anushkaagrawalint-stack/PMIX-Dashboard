@@ -1,4 +1,5 @@
 import { Pool } from '@neondatabase/serverless';
+import { cacheLife } from 'next/cache';
 import {
   CHANNEL_SQL,
   GRP_TO_CAT_SQL, ITEM_SUBCAT_SQL, GRP_TO_SUBCAT_SQL,
@@ -2055,6 +2056,8 @@ function computePrevDateRange(
 export async function loadDashboardData(
   override?: { start: string; end: string; label?: string }
 ) {
+  'use cache';
+  cacheLife('minutes');
   // Get date range + periods first so we can compute prev range for comparison
   const [dr, periods] = await Promise.all([
     getDateRange(override),
