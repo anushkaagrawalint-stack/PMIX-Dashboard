@@ -421,6 +421,15 @@ export default function Dashboard({ data }: { data: DashboardData }) {
             <i className="ti ti-refresh" aria-hidden="true" /> Refresh
           </button>
           <span className="klogo">Kutlerri</span>
+          <button
+            className="logout-btn"
+            onClick={async () => {
+              await fetch('/api/auth/logout', { method: 'POST' });
+              window.location.href = '/login';
+            }}
+          >
+            Sign out
+          </button>
         </div>
       </div>
 

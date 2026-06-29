@@ -1,5 +1,5 @@
 'use client';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import type { DateRange, FiscalPeriodRow } from '@/lib/types';
 import CalendarPicker from './CalendarPicker';
@@ -29,6 +29,7 @@ const QUARTERS = [
 
 export default function DatePicker({ dr, periods }: Props) {
   const router = useRouter();
+  const [isPending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -66,17 +67,39 @@ export default function DatePicker({ dr, periods }: Props) {
     });
 
   function go(start: string, end: string, label: string) {
-    router.push(`/?start=${start}&end=${end}&label=${encodeURIComponent(label)}`);
     setOpen(false);
+    startTransition(() => {
+      router.push(`/?start=${start}&end=${end}&label=${encodeURIComponent(label)}`);
+    });
   }
 
   const btnLabel = activePeriod ? activePeriod.label : dr.label;
 
   return (
+    <>
+    {isPending && (
+      <div style={{
+        position: 'fixed', inset: 0, zIndex: 9999,
+        background: 'rgba(244,241,248,0.82)',
+        backdropFilter: 'blur(2px)',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', gap: 14,
+      }}>
+        <div style={{
+          width: 44, height: 44, borderRadius: '50%',
+          border: '4px solid rgba(124,58,237,0.15)',
+          borderTopColor: 'var(--accent)',
+          animation: 'spin 0.7s linear infinite',
+        }} />
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent)' }}>
+          Loading data…
+        </div>
+      </div>
+    )}
     <div ref={ref} className="drw">
-      <button className="drb" onClick={() => setOpen(v => !v)}>
+      <button className="drb" onClick={() => setOpen(v => !v)} style={{ opacity: isPending ? 0.6 : 1 }}>
         <i className="ti ti-calendar" style={{ fontSize: 11 }} />
-        {btnLabel}
+        {isPending ? 'Loading…' : btnLabel}
         <i className={`ti ti-chevron-${open ? 'up' : 'down'}`} style={{ fontSize: 10 }} />
       </button>
 
@@ -156,11 +179,12 @@ export default function DatePicker({ dr, periods }: Props) {
           onApply={(start, end) => go(start, end, `${start} → ${end}`)}
         />
 
-        <div className="dr-reset" onClick={() => { router.push('/'); setOpen(false); }}>
+        <div className="dr-reset" onClick={() => { setOpen(false); startTransition(() => { router.push('/'); }); }}>
           Reset to default
         </div>
 
       </div>
     </div>
+    </>
   );
 }
