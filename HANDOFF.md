@@ -256,9 +256,9 @@ END
 | OPEN_ITEMS | Open Items | #94a3b8 (gray) |
 
 **Note on CATERING_3PD vs CATERING vs OFFSITE:**
-- `CATERING - 3PD` menu + `menu_group ILIKE 'EzCater%'` → CATERING
-- `CATERING - 3PD` menu + any other group → OFFSITE
-- This secondary logic is handled in the Needs Review query, not in the main channel SQL
+- `CATERING - 3PD` menu + `menu_group ILIKE 'EzCater%'` → CATERING (for Needs Review logic)
+- `CATERING - 3PD` menu + any other group → OFFSITE (for Needs Review logic)
+- The main channel SQL uses only `menu_name` — `CATERING - 3PD` always maps to `CATERING_3PD`
 
 ---
 

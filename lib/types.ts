@@ -83,6 +83,7 @@ export interface ChannelItemRow {
 export interface LocationItemRow {
   canonical_name: string;
   location_code:  string;
+  channel:        string;
   qty:            number;
   revenue:        number;
   mix_pct:        number;

@@ -57,14 +57,25 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
       : `${selectedLocs.length} Locations`;
 
   const locStats = useMemo(() => {
-    const stats: Record<string, { revenue: number; qty: number; topItem: string; topRev: number }> = {};
+    // Aggregate per (location, item) first so topItem reflects item totals, not channel-specific revenue
+    const itemTotals: Record<string, Record<string, { revenue: number; qty: number }>> = {};
     locationItems.forEach(r => {
-      if (!stats[r.location_code]) stats[r.location_code] = { revenue: 0, qty: 0, topItem: '', topRev: 0 };
-      const s = stats[r.location_code];
-      s.revenue += r.revenue;
-      s.qty     += r.qty;
-      if (r.revenue > s.topRev) { s.topRev = r.revenue; s.topItem = r.canonical_name; }
+      if (!itemTotals[r.location_code]) itemTotals[r.location_code] = {};
+      const it = itemTotals[r.location_code];
+      if (!it[r.canonical_name]) it[r.canonical_name] = { revenue: 0, qty: 0 };
+      it[r.canonical_name].revenue += r.revenue;
+      it[r.canonical_name].qty     += r.qty;
     });
+    const stats: Record<string, { revenue: number; qty: number; topItem: string; topRev: number }> = {};
+    for (const [loc, items] of Object.entries(itemTotals)) {
+      let revenue = 0, qty = 0, topItem = '', topRev = 0;
+      for (const [name, v] of Object.entries(items)) {
+        revenue += v.revenue;
+        qty     += v.qty;
+        if (v.revenue > topRev) { topRev = v.revenue; topItem = name; }
+      }
+      stats[loc] = { revenue, qty, topItem, topRev };
+    }
     return stats;
   }, [locationItems]);
 
@@ -83,10 +94,18 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
   }, [locationItems, items]);
 
   const dataMap = useMemo(() => {
+    // Sum across channels for each (canonical_name, location_code) pair
     const m: Record<string, Record<string, { qty: number; revenue: number; mix_pct: number }>> = {};
     locationItems.forEach(r => {
       if (!m[r.canonical_name]) m[r.canonical_name] = {};
-      m[r.canonical_name][r.location_code] = { qty: r.qty, revenue: r.revenue, mix_pct: r.mix_pct };
+      const existing = m[r.canonical_name][r.location_code];
+      if (existing) {
+        existing.qty     += r.qty;
+        existing.revenue += r.revenue;
+        existing.mix_pct += r.mix_pct;
+      } else {
+        m[r.canonical_name][r.location_code] = { qty: r.qty, revenue: r.revenue, mix_pct: r.mix_pct };
+      }
     });
     return m;
   }, [locationItems]);

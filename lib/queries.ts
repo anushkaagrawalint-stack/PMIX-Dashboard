@@ -420,6 +420,7 @@ export async function getLocationItems(dr: DateRange): Promise<LocationItemRow[]
     SELECT
       fol.canonical_name,
       fol.location_code,
+      (${CH})                                                            AS channel,
       SUM(fol.quantity)::BIGINT                                          AS qty,
       ROUND(SUM(fol.line_total)::NUMERIC, 2)                            AS revenue,
       ROUND(SUM(fol.quantity)*100.0/NULLIF(lt.loc_qty,0)::NUMERIC, 2)  AS mix_pct
@@ -427,13 +428,14 @@ export async function getLocationItems(dr: DateRange): Promise<LocationItemRow[]
     JOIN loc_totals lt ON lt.location_code = fol.location_code
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-    GROUP BY fol.canonical_name, fol.location_code, lt.loc_qty
+    GROUP BY fol.canonical_name, fol.location_code, (${CH}), lt.loc_qty
     ORDER BY fol.canonical_name, fol.location_code
   `, [dr.start, dr.end]);
   await db.end();
   return rows.map(r => ({
     canonical_name: r.canonical_name as string,
     location_code:  r.location_code  as string,
+    channel:        r.channel        as string,
     qty:            Number(r.qty),
     revenue:        Number(r.revenue),
     mix_pct:        Number(r.mix_pct),

@@ -117,39 +117,42 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     return m;
   }, [data.items]);
 
-  // Location base items: per-channel rows from data.items, revenue/qty scaled to selected location(s)
+  // Location base items: per-channel rows from data.items, scaled to selected location(s).
+  // Uses exact (canonical_name, channel) location totals from locationItems.
+  // Proportional split is only needed within same (canonical_name, channel) across different
+  // menu_groups — which is uncommon and much more accurate than channel-level approximation.
   const locationBaseItems = useMemo((): ItemRow[] => {
     if (selectedLocations.length === 0) return data.items;
 
-    // Sum location qty/revenue per canonical_name
-    const locAgg = new Map<string, { qty: number; revenue: number }>();
+    // Exact location totals per (canonical_name, channel) — denominator for scaling
+    const locChannelAgg = new Map<string, { qty: number; revenue: number }>();
     data.locationItems
       .filter(li => selectedLocations.includes(li.location_code))
       .forEach(li => {
-        const e = locAgg.get(li.canonical_name) ?? { qty: 0, revenue: 0 };
+        const key = `${li.canonical_name}||${li.channel}`;
+        const e = locChannelAgg.get(key) ?? { qty: 0, revenue: 0 };
         e.qty     += li.qty;
         e.revenue += li.revenue;
-        locAgg.set(li.canonical_name, e);
+        locChannelAgg.set(key, e);
       });
 
-    // Sum total qty/revenue per canonical_name across all data.items rows
-    const totalAgg = new Map<string, { qty: number; revenue: number }>();
-    data.items.forEach(i => {
-      const e = totalAgg.get(i.canonical_name) ?? { qty: 0, revenue: 0 };
-      e.qty     += i.qty;
-      e.revenue += i.revenue;
-      totalAgg.set(i.canonical_name, e);
+    // Global totals per (canonical_name, channel) from channelItems (already aggregated by channel)
+    const totChannelAgg = new Map<string, { qty: number; revenue: number }>();
+    data.channelItems.forEach(ci => {
+      const key = `${ci.canonical_name}||${ci.channel}`;
+      totChannelAgg.set(key, { qty: ci.qty, revenue: ci.revenue });
     });
 
-    const totalLocRev = [...locAgg.values()].reduce((s, v) => s + v.revenue, 0);
-    const totalLocQty = [...locAgg.values()].reduce((s, v) => s + v.qty,     0);
+    const totalLocRev = [...locChannelAgg.values()].reduce((s, v) => s + v.revenue, 0);
+    const totalLocQty = [...locChannelAgg.values()].reduce((s, v) => s + v.qty,     0);
 
     return data.items.flatMap(i => {
-      const loc = locAgg.get(i.canonical_name);
+      const key = `${i.canonical_name}||${i.channel}`;
+      const loc = locChannelAgg.get(key);
       if (!loc) return [];
-      const tot      = totalAgg.get(i.canonical_name)!;
-      const revScale = tot.revenue > 0 ? loc.revenue / tot.revenue : 0;
-      const qtyScale = tot.qty     > 0 ? loc.qty     / tot.qty     : 0;
+      const tot      = totChannelAgg.get(key);
+      const revScale = tot && tot.revenue > 0 ? loc.revenue / tot.revenue : 0;
+      const qtyScale = tot && tot.qty     > 0 ? loc.qty     / tot.qty     : 0;
       const qty      = Math.round(i.qty * qtyScale);
       const revenue  = Math.round(i.revenue * revScale * 100) / 100;
       if (qty === 0 && revenue === 0) return [];
@@ -160,43 +163,54 @@ export default function Dashboard({ data }: { data: DashboardData }) {
         qty_pct:     totalLocQty > 0 ? (qty     / totalLocQty) * 100 : 0,
       }];
     }).sort((a, b) => b.revenue - a.revenue);
-  }, [selectedLocations, data.locationItems, data.items]);
+  }, [selectedLocations, data.locationItems, data.channelItems, data.items]);
 
   // Summary KPIs adjusted for selected location(s)
   const locationAdjustedSummary = useMemo(() => {
     if (selectedLocations.length === 0) return data.summary;
-    const locItems   = data.locationItems.filter(li => selectedLocations.includes(li.location_code));
-    const totalRev   = locItems.reduce((s, li) => s + li.revenue, 0);
-    const totalQty   = locItems.reduce((s, li) => s + li.qty,     0);
+    const locItems = data.locationItems.filter(li => selectedLocations.includes(li.location_code));
+    const totalRev = locItems.reduce((s, li) => s + li.revenue, 0);
+    const totalQty = locItems.reduce((s, li) => s + li.qty,     0);
     const uniqueItems = new Set(locItems.map(li => li.canonical_name)).size;
-    const topItem    = [...locItems].sort((a, b) => b.revenue - a.revenue)[0];
+    // Aggregate by canonical_name to get true per-item totals (locItems now has one row per item×channel)
+    const itemAgg = new Map<string, { qty: number; revenue: number }>();
+    locItems.forEach(li => {
+      const e = itemAgg.get(li.canonical_name) ?? { qty: 0, revenue: 0 };
+      e.qty     += li.qty;
+      e.revenue += li.revenue;
+      itemAgg.set(li.canonical_name, e);
+    });
+    const topEntry = [...itemAgg.entries()].sort((a, b) => b[1].revenue - a[1].revenue)[0];
     return {
       ...data.summary,
       total_revenue:    totalRev,
       total_qty:        totalQty,
       unique_items:     uniqueItems,
-      top_item:         topItem?.canonical_name ?? data.summary.top_item,
-      top_item_revenue: topItem?.revenue        ?? data.summary.top_item_revenue,
-      top_item_mix:     totalQty > 0 ? ((topItem?.qty ?? 0) / totalQty) * 100 : data.summary.top_item_mix,
+      top_item:         topEntry?.[0]           ?? data.summary.top_item,
+      top_item_revenue: topEntry?.[1].revenue   ?? data.summary.top_item_revenue,
+      top_item_mix:     totalQty > 0 ? ((topEntry?.[1].qty ?? 0) / totalQty) * 100 : data.summary.top_item_mix,
     };
   }, [selectedLocations, data.locationItems, data.summary]);
 
-  // Location-adjusted channel revenue (aggregated from locationBaseItems, which already has per-channel location-scaled rows)
+  // Location-adjusted channel revenue — computed directly from locationItems (which now has channel),
+  // giving exact per-channel totals for the selected location instead of proportional approximation.
   const locationAdjustedChannels = useMemo((): ChannelRow[] => {
     if (selectedLocations.length === 0) return data.channels;
     const agg = new Map<string, { qty: number; revenue: number }>();
-    locationBaseItems.forEach(i => {
-      const e = agg.get(i.channel) ?? { qty: 0, revenue: 0 };
-      e.qty += i.qty;
-      e.revenue += i.revenue;
-      agg.set(i.channel, e);
-    });
+    data.locationItems
+      .filter(li => selectedLocations.includes(li.location_code))
+      .forEach(li => {
+        const e = agg.get(li.channel) ?? { qty: 0, revenue: 0 };
+        e.qty     += li.qty;
+        e.revenue += li.revenue;
+        agg.set(li.channel, e);
+      });
     const totalRev = [...agg.values()].reduce((s, v) => s + v.revenue, 0);
     return [...agg.entries()].map(([channel, { qty, revenue }]) => ({
       channel, qty, revenue,
       pct: totalRev > 0 ? Math.round(revenue / totalRev * 1000) / 10 : 0,
     })).sort((a, b) => b.revenue - a.revenue);
-  }, [selectedLocations, locationBaseItems, data.channels]);
+  }, [selectedLocations, data.locationItems, data.channels]);
 
   // Location-adjusted per-channel item rows (locationBaseItems already has location-scaled per-channel revenue)
   const locationAdjustedChannelItems = useMemo((): ChannelItemRow[] => {

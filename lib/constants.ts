@@ -26,7 +26,7 @@ export const CHANNELS = [
   { code: 'TPD',         label: '3PD',           color: '#ef7ccf' },
   { code: 'TPD_MARKUP',  label: '3PD Markup',    color: '#f97316' },
   { code: 'CATERING',    label: 'Catering',      color: '#f5a623' },
-  { code: 'CATERING_3PD',label: 'Catering 3PD',  color: '#e08f00' },
+  { code: 'CATERING_3PD',label: 'Catering 3PD', color: '#e08f00' },
   { code: 'OFFSITE',     label: 'Offsite',       color: '#2ec4b6' },
   { code: 'OPEN_ITEMS',  label: 'Open Items',    color: '#94a3b8' },
 ] as const;
