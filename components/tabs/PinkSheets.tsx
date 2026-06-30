@@ -28,7 +28,6 @@ function sectionRank(s: string): number {
 }
 
 // Canonical display names — normalize plural/variant forms so sections merge correctly
-// e.g. "Chutney and Dressings" and "Chutney + Dressing" → same section
 const CANONICAL: Record<string, string> = {
   'bases':                  'Base',
   'base':                   'Base',
@@ -62,15 +61,13 @@ const CANONICAL: Record<string, string> = {
 };
 
 function effectiveDisplayName(s: string): string {
-  // Strip item-type prefix: "Bowls - Chutney and Dressings" → "Chutney and Dressings"
   const m = s.match(/^[^-]+-\s*(.+)$/);
   const stripped = m ? m[1].trim() : s;
-  // Normalize to canonical form
   return CANONICAL[stripped.toLowerCase()] ?? stripped;
 }
 
 interface SectionData {
-  rawKeys:     string[];   // original modifier_type values merged into this section
+  rawKeys:     string[];
   displayName: string;
   rank:        number;
   mods:        PinkSheetDetailRow[];
@@ -78,7 +75,6 @@ interface SectionData {
 }
 
 function buildSections(dets: PinkSheetDetailRow[]): SectionData[] {
-  // Group by effectiveDisplayName first (merges Make It Meal variants)
   const byDisplay: Record<string, { rawKeys: Set<string>; rank: number; mods: PinkSheetDetailRow[] }> = {};
 
   for (const d of dets) {
@@ -100,11 +96,9 @@ function buildSections(dets: PinkSheetDetailRow[]): SectionData[] {
     }));
 }
 
-// The AppScript assigns the weighted-avg cost of the "1/2 [X]" section to the
-// "1/2 and 1/2 [X]" proxy modifier that has no direct r365 cost entry.
 function applyHalfHalfCosts(sections: SectionData[]): SectionData[] {
-  const halfBase = sections.find(s => s.rank === 2);  // 1/2 Base
-  const halfMain = sections.find(s => s.rank === 4);  // 1/2 Main
+  const halfBase = sections.find(s => s.rank === 2);
+  const halfMain = sections.find(s => s.rank === 4);
   const halfBaseAvgUnit = halfBase
     ? halfBase.sectionTotal / Math.max(halfBase.mods.reduce((s, m) => s + m.qty, 0), 1)
     : 0;
@@ -116,7 +110,7 @@ function applyHalfHalfCosts(sections: SectionData[]): SectionData[] {
     const fixed = sec.mods.map(m => {
       if (m.unit_cost > 0) return m;
       const l = m.modifier_name.toLowerCase();
-      if (l === '1/2 and 1/2 base' && halfBaseAvgUnit > 0) {
+      if (l.startsWith('1/2 and 1/2') && !l.includes('main') && halfBaseAvgUnit > 0) {
         const tc = halfBaseAvgUnit * m.qty;
         return { ...m, unit_cost: halfBaseAvgUnit, total_cost: tc };
       }
@@ -137,6 +131,112 @@ interface Props {
   details:    PinkSheetDetailRow[];
 }
 
+// Renders one section table — half sections (1/2 Base, 1/2 Main) get weighted-avg columns
+function SectionTable({
+  sec,
+  hdrBg, hdrColor,
+  totalBg, totalColor,
+}: {
+  sec: SectionData;
+  hdrBg: string; hdrColor: string;
+  totalBg: string; totalColor: string;
+}) {
+  const isHalf   = sec.rank === 2 || sec.rank === 4;
+  const totalQty = sec.mods.reduce((s, m) => s + m.qty, 0);
+  const weightedAvg = isHalf && totalQty > 0 ? sec.sectionTotal / totalQty : 0;
+
+  return (
+    <div className="tw" style={{ marginBottom: 8 }}>
+      <table style={{ width: '100%' }}>
+        <thead>
+          <tr style={{ background: hdrBg }}>
+            <td
+              colSpan={isHalf ? 6 : 4}
+              style={{
+                fontWeight: 700, fontSize: 11, color: hdrColor,
+                padding: '6px 8px', textTransform: 'uppercase', letterSpacing: '0.05em',
+              }}
+            >
+              {sec.displayName}
+            </td>
+          </tr>
+          <tr>
+            <th style={{ minWidth: 220, textAlign: 'left' }}>Modifier</th>
+            {isHalf ? (
+              <>
+                <th style={{ textAlign: 'right' }}>SUM of Qty</th>
+                <th style={{ width: 20 }} />
+                <th style={{ textAlign: 'right' }}>Cost</th>
+                <th style={{ textAlign: 'right' }}>%</th>
+                <th style={{ textAlign: 'right' }} />
+              </>
+            ) : (
+              <>
+                <th style={{ textAlign: 'right' }}>Qty</th>
+                <th style={{ textAlign: 'right' }}>Unit Cost</th>
+                <th style={{ textAlign: 'right' }}>Total Cost</th>
+              </>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {isHalf ? (
+            <>
+              {sec.mods.map(m => {
+                const share    = totalQty > 0 ? m.qty / totalQty : 0;
+                const weighted = m.unit_cost * share;
+                return (
+                  <tr key={m.modifier_name}>
+                    <td style={{ paddingLeft: 20 }}>{m.modifier_name}</td>
+                    <td style={{ textAlign: 'right' }}>{m.qty.toLocaleString()}</td>
+                    <td />
+                    <td style={{ textAlign: 'right', color: m.unit_cost === 0 ? 'var(--muted)' : 'inherit' }}>
+                      {fmt$(m.unit_cost)}
+                    </td>
+                    <td style={{ textAlign: 'right' }}>{fmt$(share)}</td>
+                    <td style={{ textAlign: 'right' }}>{fmt$(weighted)}</td>
+                  </tr>
+                );
+              })}
+              <tr style={{ background: totalBg }}>
+                <td style={{ fontWeight: 700, paddingLeft: 20, color: totalColor }}>Grand Total</td>
+                <td style={{ textAlign: 'right', fontWeight: 700, color: totalColor }}>{totalQty.toLocaleString()}</td>
+                <td /><td /><td />
+                <td style={{ textAlign: 'right', fontWeight: 700, color: totalColor }}>{fmt$(weightedAvg)}</td>
+              </tr>
+            </>
+          ) : (
+            <>
+              {sec.mods.map(m => (
+                <tr key={m.modifier_name}>
+                  <td style={{ paddingLeft: 20 }}>{m.modifier_name}</td>
+                  <td style={{ textAlign: 'right' }}>{m.qty.toLocaleString()}</td>
+                  <td style={{ textAlign: 'right', color: m.unit_cost === 0 ? 'var(--muted)' : 'inherit' }}>
+                    {fmt$(m.unit_cost)}
+                  </td>
+                  <td style={{ textAlign: 'right', color: m.total_cost === 0 ? 'var(--muted)' : 'inherit' }}>
+                    {fmt$(m.total_cost)}
+                  </td>
+                </tr>
+              ))}
+              <tr style={{ background: totalBg }}>
+                <td style={{ fontWeight: 700, paddingLeft: 20, color: totalColor }}>Grand Total</td>
+                <td style={{ textAlign: 'right', fontWeight: 700, color: totalColor }}>
+                  {totalQty.toLocaleString()}
+                </td>
+                <td />
+                <td style={{ textAlign: 'right', fontWeight: 700, color: totalColor }}>
+                  {fmt$(sec.sectionTotal)}
+                </td>
+              </tr>
+            </>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function PinkSheets({ pinkSheets, details }: Props) {
   const rows    = pinkSheets ?? [];
   const dets    = details    ?? [];
@@ -147,7 +247,6 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
   const filteredItems = useMemo(() => {
     const q = search.toLowerCase();
     const filtered = q ? rows.filter(r => r.canonical_name.toLowerCase().includes(q)) : rows;
-    // For IH tab show items with IH qty; for online show items with online qty
     return channel === 'ih'
       ? filtered.filter(r => r.ih_qty > 0).sort((a, b) => b.ih_qty - a.ih_qty)
       : filtered.filter(r => r.online_qty > 0);
@@ -160,7 +259,6 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
     [selected, filteredItems, rows],
   );
 
-  // Build and fix sections filtered by active channel
   const rawSections = useMemo(() => {
     if (!activeItem) return [];
     const itemDets = dets.filter(
@@ -174,11 +272,18 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
   const onlineQty    = activeItem?.online_qty ?? 0;
   const ihQty        = activeItem?.ih_qty     ?? 0;
 
-  // Footer varies by channel
-  // Exclude 1/2 Base (rank 2) and 1/2 Main (rank 4) — their cost is already captured
-  // by the proxy rows ("1/2 and 1/2 Base", "1/2 and 1/2 Mains") inside the Base/Main sections
+  // Pattern 1 (BYO Greens+Grains): no real Base section → 1/2 Base IS the primary → include in cost
+  // Pattern 2/3 (BYO Grain/Salad): real Base section exists → 1/2 Base is sub-table → exclude
+  const baseSection = sections.find(s => s.rank === 1);
+  const hasRealBase = !!baseSection?.mods.some(m => !m.modifier_name.toLowerCase().startsWith('skip'));
+  const isPattern1 = !hasRealBase && sections.some(s => s.rank === 2 && s.mods.length > 0);
   const totalModCost = sections
-    .filter(s => s.rank !== 2 && s.rank !== 4)
+    .filter(s => {
+      if (s.rank === 4) return false;                              // always exclude 1/2 Main
+      if (s.rawKeys.some(k => k === 'Plate - Main')) return false; // protein shown but not added to cost
+      if (s.rank === 2) return isPattern1;                         // 1/2 Base: include only in Pattern 1
+      return true;
+    })
     .reduce((s, sec) => s + sec.sectionTotal, 0);
   const baseCost     = channel === 'ih' ? (activeItem?.base_cost_ih ?? 0) : (activeItem?.base_cost_online ?? 0);
   const activeQty    = channel === 'ih' ? ihQty : onlineQty;
@@ -204,7 +309,6 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
         <div style={{ padding: '10px 10px 6px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 6 }}>Pink Sheets</div>
 
-          {/* Channel tabs */}
           <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
             {(['online', 'ih'] as ChannelMode[]).map(ch => (
               <button key={ch} onClick={() => { setChannel(ch); setSelected(null); }}
@@ -257,7 +361,7 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
             Select an item from the left to view its pink sheet.
           </div>
         ) : channel === 'ih' ? (
-          /* ── IH Pink Sheet: same layout as online ── */
+          /* ── IH Pink Sheet ── */
           <>
             <div style={{
               background: '#dcfce7', borderRadius: 8, padding: '10px 16px',
@@ -273,56 +377,18 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
               </div>
             </div>
 
+            {sections.map(sec => (
+              <SectionTable
+                key={sec.displayName}
+                sec={sec}
+                hdrBg="#f0fdf4"   hdrColor="#15803d"
+                totalBg="#dcfce7" totalColor="#15803d"
+              />
+            ))}
+
             <div className="tw">
               <table style={{ width: '100%' }}>
-                {sections.length > 0 && (
-                  <thead>
-                    <tr>
-                      <th style={{ minWidth: 220, textAlign: 'left' }}>Modifier</th>
-                      <th style={{ textAlign: 'right' }}>Qty</th>
-                      <th style={{ textAlign: 'right' }}>Unit Cost</th>
-                      <th style={{ textAlign: 'right' }}>Total Cost</th>
-                    </tr>
-                  </thead>
-                )}
                 <tbody>
-                  {sections.map(sec => (
-                    <>
-                      <tr key={`hdr-ih-${sec.displayName}`} style={{ background: '#f0fdf4' }}>
-                        <td colSpan={4} style={{
-                          fontWeight: 700, fontSize: 11, color: '#15803d',
-                          padding: '6px 8px', textTransform: 'uppercase', letterSpacing: '0.05em',
-                        }}>
-                          {sec.displayName}
-                        </td>
-                      </tr>
-                      {sec.mods.map(m => (
-                        <tr key={`ih-${sec.displayName}-${m.modifier_name}`}>
-                          <td style={{ paddingLeft: 20 }}>{m.modifier_name}</td>
-                          <td style={{ textAlign: 'right' }}>{m.qty.toLocaleString()}</td>
-                          <td style={{ textAlign: 'right', color: m.unit_cost === 0 ? 'var(--muted)' : 'inherit' }}>
-                            {fmt$(m.unit_cost)}
-                          </td>
-                          <td style={{ textAlign: 'right', color: m.total_cost === 0 ? 'var(--muted)' : 'inherit' }}>
-                            {fmt$(m.total_cost)}
-                          </td>
-                        </tr>
-                      ))}
-                      <tr key={`tot-ih-${sec.displayName}`} style={{ background: '#dcfce7' }}>
-                        <td style={{ fontWeight: 700, paddingLeft: 20, color: '#15803d' }}>Grand Total</td>
-                        <td style={{ textAlign: 'right', fontWeight: 700, color: '#15803d' }}>
-                          {sec.mods.reduce((s, m) => s + m.qty, 0).toLocaleString()}
-                        </td>
-                        <td />
-                        <td style={{ textAlign: 'right', fontWeight: 700, color: '#15803d' }}>
-                          {fmt$(sec.sectionTotal)}
-                        </td>
-                      </tr>
-                    </>
-                  ))}
-
-                  <tr style={{ height: 12 }}><td colSpan={4} /></tr>
-
                   <tr style={{ background: '#dcfce7', borderTop: '2px solid #86efac' }}>
                     <td colSpan={2} style={{ fontWeight: 700, color: '#14532d', padding: '6px 8px' }}>
                       AVG COST OF {activeItem.canonical_name.toUpperCase()} (IN HOUSE)
@@ -401,125 +467,83 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                 No modifier detail found for this item in the selected period.
               </div>
             ) : (
-              <div className="tw">
-                <table style={{ width: '100%' }}>
-                  <thead>
-                    <tr>
-                      <th style={{ minWidth: 220, textAlign: 'left' }}>Modifier</th>
-                      <th style={{ textAlign: 'right' }}>Qty</th>
-                      <th style={{ textAlign: 'right' }}>Unit Cost</th>
-                      <th style={{ textAlign: 'right' }}>Total Cost</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sections.map(sec => (
-                      <>
-                        <tr key={`hdr-${sec.displayName}`} style={{ background: '#fdf4ff' }}>
-                          <td colSpan={4} style={{
-                            fontWeight: 700, fontSize: 11, color: '#7e22ce',
-                            padding: '6px 8px', textTransform: 'uppercase', letterSpacing: '0.05em',
-                          }}>
-                            {sec.displayName}
-                          </td>
-                        </tr>
+              <>
+                {sections.map(sec => (
+                  <SectionTable
+                    key={sec.displayName}
+                    sec={sec}
+                    hdrBg="#fdf4ff"   hdrColor="#7e22ce"
+                    totalBg="#f5f3ff" totalColor="#5b21b6"
+                  />
+                ))}
 
-                        {sec.mods.map(m => (
-                          <tr key={`${sec.displayName}-${m.modifier_name}`}>
-                            <td style={{ paddingLeft: 20 }}>{m.modifier_name}</td>
-                            <td style={{ textAlign: 'right' }}>{m.qty.toLocaleString()}</td>
-                            <td style={{ textAlign: 'right', color: m.unit_cost === 0 ? 'var(--muted)' : 'inherit' }}>
-                              {fmt$(m.unit_cost)}
-                            </td>
-                            <td style={{ textAlign: 'right', color: m.total_cost === 0 ? 'var(--muted)' : 'inherit' }}>
-                              {fmt$(m.total_cost)}
-                            </td>
-                          </tr>
-                        ))}
-
-                        <tr key={`tot-${sec.displayName}`} style={{ background: '#f5f3ff' }}>
-                          <td style={{ fontWeight: 700, paddingLeft: 20, color: '#5b21b6' }}>Grand Total</td>
-                          <td style={{ textAlign: 'right', fontWeight: 700, color: '#5b21b6' }}>
-                            {sec.mods.reduce((s, m) => s + m.qty, 0).toLocaleString()}
-                          </td>
-                          <td />
-                          <td style={{ textAlign: 'right', fontWeight: 700, color: '#5b21b6' }}>
-                            {fmt$(sec.sectionTotal)}
-                          </td>
-                        </tr>
-                      </>
-                    ))}
-
-                    {/* ── Footer ──────────────────────────────────────── */}
-                    <tr style={{ height: 12 }}><td colSpan={4} /></tr>
-
-                    <tr style={{ background: '#fce7f3', borderTop: '2px solid #f9a8d4' }}>
-                      <td colSpan={2} style={{ fontWeight: 700, color: '#9d174d', padding: '6px 8px' }}>
-                        AVG COST OF {activeItem.canonical_name.toUpperCase()}
-                      </td>
-                      <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>r365 base (delivery)</td>
-                      <td style={{ textAlign: 'right', fontWeight: 800, color: '#9d174d' }}>
-                        {fmt$(activeItem.base_cost_online)}
-                      </td>
-                    </tr>
-
-                    <tr style={{ background: '#fff7ed' }}>
-                      <td colSpan={2} style={{ fontWeight: 700, color: '#c2410c', padding: '6px 8px' }}>
-                        TOTAL MODIFIER COST
-                      </td>
-                      <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>Σ all section totals</td>
-                      <td style={{ textAlign: 'right', fontWeight: 800, color: '#c2410c' }}>
-                        {fmt$(totalModCost)}
-                      </td>
-                    </tr>
-
-                    <tr style={{ background: '#eff6ff' }}>
-                      <td colSpan={2} style={{ fontWeight: 700, color: '#1d4ed8', padding: '6px 8px' }}>
-                        TOTAL AVG COST
-                      </td>
-                      <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
-                        base × online qty ({activeQty.toLocaleString()})
-                      </td>
-                      <td style={{ textAlign: 'right', fontWeight: 800, color: '#1d4ed8' }}>
-                        {fmt$(totalAvgCost)}
-                      </td>
-                    </tr>
-
-                    <tr style={{ background: '#f0fdf4' }}>
-                      <td colSpan={2} style={{ fontWeight: 700, color: '#15803d', padding: '6px 8px' }}>
-                        MODIFIER + AVG COST
-                      </td>
-                      <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
-                        total mod cost + total avg cost
-                      </td>
-                      <td style={{ textAlign: 'right', fontWeight: 800, color: '#15803d' }}>
-                        {fmt$(modPlusAvg)}
-                      </td>
-                    </tr>
-
-                    <tr style={{ background: '#ecfdf5', borderTop: '2px solid #6ee7b7' }}>
-                      <td colSpan={2} style={{ fontWeight: 800, fontSize: 13, color: '#065f46', padding: '8px 8px' }}>
-                        FINAL AVG COST WITH MODIFIER
-                      </td>
-                      <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
-                        (mod + avg) ÷ online qty
-                      </td>
-                      <td style={{ textAlign: 'right', fontWeight: 900, fontSize: 14, color: '#065f46' }}>
-                        {fmt2(finalAvgCost)}
-                      </td>
-                    </tr>
-
-                    <tr style={{ background: '#f5f3ff' }}>
-                      <td colSpan={2} style={{ fontWeight: 700, color: '#6d28d9', padding: '6px 8px' }}>
-                        FINAL AVG COST — 3PD (×1.18)
-                      </td>
-                      <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>packaging uplift</td>
-                      <td style={{ textAlign: 'right', fontWeight: 800, color: '#6d28d9' }}>
-                        {fmt2(finalAvgCost * 1.18)}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+                <div className="tw">
+                  <table style={{ width: '100%' }}>
+                    <tbody>
+                      <tr style={{ background: '#fce7f3', borderTop: '2px solid #f9a8d4' }}>
+                        <td colSpan={2} style={{ fontWeight: 700, color: '#9d174d', padding: '6px 8px' }}>
+                          AVG COST OF {activeItem.canonical_name.toUpperCase()}
+                        </td>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>r365 base (delivery)</td>
+                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#9d174d' }}>
+                          {fmt$(activeItem.base_cost_online)}
+                        </td>
+                      </tr>
+                      <tr style={{ background: '#fff7ed' }}>
+                        <td colSpan={2} style={{ fontWeight: 700, color: '#c2410c', padding: '6px 8px' }}>
+                          TOTAL MODIFIER COST
+                        </td>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>Σ all section totals</td>
+                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#c2410c' }}>
+                          {fmt$(totalModCost)}
+                        </td>
+                      </tr>
+                      <tr style={{ background: '#eff6ff' }}>
+                        <td colSpan={2} style={{ fontWeight: 700, color: '#1d4ed8', padding: '6px 8px' }}>
+                          TOTAL AVG COST
+                        </td>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
+                          base × online qty ({activeQty.toLocaleString()})
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#1d4ed8' }}>
+                          {fmt$(totalAvgCost)}
+                        </td>
+                      </tr>
+                      <tr style={{ background: '#f0fdf4' }}>
+                        <td colSpan={2} style={{ fontWeight: 700, color: '#15803d', padding: '6px 8px' }}>
+                          MODIFIER + AVG COST
+                        </td>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
+                          total mod cost + total avg cost
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#15803d' }}>
+                          {fmt$(modPlusAvg)}
+                        </td>
+                      </tr>
+                      <tr style={{ background: '#ecfdf5', borderTop: '2px solid #6ee7b7' }}>
+                        <td colSpan={2} style={{ fontWeight: 800, fontSize: 13, color: '#065f46', padding: '8px 8px' }}>
+                          FINAL AVG COST WITH MODIFIER
+                        </td>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
+                          (mod + avg) ÷ online qty
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 900, fontSize: 14, color: '#065f46' }}>
+                          {fmt2(finalAvgCost)}
+                        </td>
+                      </tr>
+                      <tr style={{ background: '#f5f3ff' }}>
+                        <td colSpan={2} style={{ fontWeight: 700, color: '#6d28d9', padding: '6px 8px' }}>
+                          FINAL AVG COST — 3PD (×1.18)
+                        </td>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>packaging uplift</td>
+                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#6d28d9' }}>
+                          {fmt2(finalAvgCost * 1.18)}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </>
         )}

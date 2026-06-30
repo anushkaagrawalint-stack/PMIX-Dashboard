@@ -1419,6 +1419,11 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
     side_costs AS (
       SELECT clean_name || ' - Side' AS side_name, cost_per_portion
       FROM rmc_latest
+    ),
+    bowl_protein(bowl_name, protein_name) AS (VALUES
+      ('Spicy Chili Chicken Bowl', 'Spicy Chili Chicken'),
+      ('Paneer Tikka Bowl',        'Organic Tandoori Paneer'),
+      ('Lamb Kebab Bowl',          'Lamb Kebab')
     )
     SELECT
       COALESCE(bf.clean, fol.canonical_name)   AS parent_item,
@@ -1483,9 +1488,41 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       )
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
       AND mt.modifier_type IS NOT NULL
+      AND mt.modifier_type NOT IN ('Online', 'NA', 'ZeroCater')
     GROUP BY
       COALESCE(bf.clean, fol.canonical_name), mt.modifier_type, fm.canonical_name,
       CASE WHEN fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
+           THEN 'online' ELSE 'ih' END
+    UNION ALL
+    -- Synthetic "Plate - Main" rows for truly curated bowls/plates listed in bowl_protein CTE
+    -- Uses bowl order qty directly (protein is predetermined, not a modifier choice)
+    SELECT
+      bp2.bowl_name                                                          AS parent_item,
+      'Plate - Main'                                                         AS section,
+      bp2.protein_name                                                       AS modifier_name,
+      CASE WHEN fol2.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
+           THEN 'online' ELSE 'ih' END                                      AS channel,
+      SUM(fol2.quantity)::BIGINT                                            AS qty,
+      ROUND(SUM(fol2.quantity * COALESCE(
+        (SELECT r.cost_per_portion FROM rmc r
+         WHERE r.clean_name = bp2.protein_name
+           AND r.period = 'P'||LPAD(fp2.period::TEXT,2,'0')||'-'||fp2.fiscal_year::TEXT
+         LIMIT 1),
+        (SELECT r.cost_per_portion FROM rmc_latest r WHERE r.clean_name = bp2.protein_name),
+        0
+      ))::NUMERIC, 4)                                                       AS total_cost
+    FROM public.fact_order_lines fol2
+    JOIN bowl_protein bp2 ON bp2.bowl_name = fol2.canonical_name
+    LEFT JOIN public.dim_fiscal_period fp2
+           ON fol2.business_date > fp2.start_date::DATE
+          AND fol2.business_date <= fp2.end_date::DATE
+    WHERE NOT fol2.is_voided AND NOT fol2.is_deferred
+      AND fol2.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP',
+                             'FOOD - IN HOUSE','DRINKS - IN HOUSE')
+      AND fol2.business_date BETWEEN $1::DATE AND $2::DATE
+    GROUP BY
+      bp2.bowl_name, bp2.protein_name,
+      CASE WHEN fol2.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
            THEN 'online' ELSE 'ih' END
     ORDER BY parent_item, channel, section, modifier_name
   `, [dr.start, dr.end]);
