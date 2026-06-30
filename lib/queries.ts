@@ -1133,13 +1133,37 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
   const { rows } = await db.query(`
     WITH
     byo_fix(raw, clean) AS (VALUES
-      ('Grain Bowl',                'BYO Grain Bowl'),
-      ('Salad Bowl',                'BYO Salad Bowl'),
-      ('Greens + Grains Bowl',      'BYO Greens + Grains Bowl'),
-      ('Cauliflower + Quinoa',      'Spiced Cauli + Quinoa Bowl'),
-      ('Cauliflower + Quinoa Bowl', 'Spiced Cauli + Quinoa Bowl'),
-      ('Kids BYO',                  'Kids Meal'),
-      ('Burrito',                   'BYO Indian Burrito')
+      -- Online short names → canonical PMIX name
+      ('Grain Bowl',                                  'BYO Grain Bowl'),
+      ('Salad Bowl',                                  'BYO Salad Bowl'),
+      ('Greens + Grains Bowl',                        'BYO Greens + Grains Bowl'),
+      ('Cauliflower + Quinoa',                        'Spiced Cauli + Quinoa Bowl'),
+      ('Cauliflower + Quinoa Bowl',                   'Spiced Cauli + Quinoa Bowl'),
+      ('Kids BYO',                                    'Kids Meal'),
+      ('Burrito',                                     'BYO Indian Burrito'),
+      -- IH variants (AppScript rawIH) → same canonical name as online
+      ('Grain Bowl - In House',                       'BYO Grain Bowl'),
+      ('Salad Bowl - In House',                       'BYO Salad Bowl'),
+      ('Greens + Grains Bowl - In House',             'BYO Greens + Grains Bowl'),
+      ('Harvest Chicken Bowl - In House',             'BYO Greens + Grains Bowl'),
+      ('Cauliflower + Quinoa - In House',             'Spiced Cauli + Quinoa Bowl'),
+      ('Burrito - In House',                          'BYO Indian Burrito'),
+      ('Kids BYO - In House',                         'Kids Meal'),
+      ('Homemade Juice - In House',                   'Homemade Juice'),
+      ('Chicken Tikka Bowl - In House',               'Chicken Tikka Bowl'),
+      ('Spicy Chili Chicken Bowl - In House',         'Spicy Chili Chicken Bowl'),
+      ('Paneer Tikka Bowl - In House',                'Paneer Tikka Bowl'),
+      ('Lamb Kebab Bowl - In House',                  'Lamb Kebab Bowl'),
+      ('Chicken Tikka + Avocado Salad - In House',    'Chicken Tikka + Avocado Salad'),
+      ('Butter Chicken - In House',                   'Butter Chicken'),
+      ('Chicken Tikka Masala - In House',             'Chicken Tikka Masala'),
+      ('Aloo Gobhi - In House',                       'Aloo Gobhi'),
+      ('Saag Paneer - In House',                      'Saag Paneer'),
+      ('Paneer Butter Masala - In House',             'Paneer Butter Masala'),
+      ('Saag Chole - In House',                       'Saag Chole'),
+      ('Pick 2 Combo Plate - In House',               'Pick 2 Combo Plate'),
+      ('Tandoori Paneer Burrito - In House',          'Tandoori Paneer Burrito'),
+      ('Butter Chicken Burrito - In House',           'Butter Chicken Burrito')
     ),
     rmc AS (
       SELECT DISTINCT ON (clean_name, period) clean_name, period, cost_per_portion
@@ -1388,13 +1412,37 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
   const { rows } = await db.query(`
     WITH
     byo_fix(raw, clean) AS (VALUES
-      ('Grain Bowl',                'BYO Grain Bowl'),
-      ('Salad Bowl',                'BYO Salad Bowl'),
-      ('Greens + Grains Bowl',      'BYO Greens + Grains Bowl'),
-      ('Cauliflower + Quinoa',      'Spiced Cauli + Quinoa Bowl'),
-      ('Cauliflower + Quinoa Bowl', 'Spiced Cauli + Quinoa Bowl'),
-      ('Kids BYO',                  'Kids Meal'),
-      ('Burrito',                   'BYO Indian Burrito')
+      -- Online short names → canonical PMIX name
+      ('Grain Bowl',                                  'BYO Grain Bowl'),
+      ('Salad Bowl',                                  'BYO Salad Bowl'),
+      ('Greens + Grains Bowl',                        'BYO Greens + Grains Bowl'),
+      ('Cauliflower + Quinoa',                        'Spiced Cauli + Quinoa Bowl'),
+      ('Cauliflower + Quinoa Bowl',                   'Spiced Cauli + Quinoa Bowl'),
+      ('Kids BYO',                                    'Kids Meal'),
+      ('Burrito',                                     'BYO Indian Burrito'),
+      -- IH variants (AppScript rawIH) → same canonical name as online
+      ('Grain Bowl - In House',                       'BYO Grain Bowl'),
+      ('Salad Bowl - In House',                       'BYO Salad Bowl'),
+      ('Greens + Grains Bowl - In House',             'BYO Greens + Grains Bowl'),
+      ('Harvest Chicken Bowl - In House',             'BYO Greens + Grains Bowl'),
+      ('Cauliflower + Quinoa - In House',             'Spiced Cauli + Quinoa Bowl'),
+      ('Burrito - In House',                          'BYO Indian Burrito'),
+      ('Kids BYO - In House',                         'Kids Meal'),
+      ('Homemade Juice - In House',                   'Homemade Juice'),
+      ('Chicken Tikka Bowl - In House',               'Chicken Tikka Bowl'),
+      ('Spicy Chili Chicken Bowl - In House',         'Spicy Chili Chicken Bowl'),
+      ('Paneer Tikka Bowl - In House',                'Paneer Tikka Bowl'),
+      ('Lamb Kebab Bowl - In House',                  'Lamb Kebab Bowl'),
+      ('Chicken Tikka + Avocado Salad - In House',    'Chicken Tikka + Avocado Salad'),
+      ('Butter Chicken - In House',                   'Butter Chicken'),
+      ('Chicken Tikka Masala - In House',             'Chicken Tikka Masala'),
+      ('Aloo Gobhi - In House',                       'Aloo Gobhi'),
+      ('Saag Paneer - In House',                      'Saag Paneer'),
+      ('Paneer Butter Masala - In House',             'Paneer Butter Masala'),
+      ('Saag Chole - In House',                       'Saag Chole'),
+      ('Pick 2 Combo Plate - In House',               'Pick 2 Combo Plate'),
+      ('Tandoori Paneer Burrito - In House',          'Tandoori Paneer Burrito'),
+      ('Butter Chicken Burrito - In House',           'Butter Chicken Burrito')
     ),
     rmc AS (
       SELECT DISTINCT ON (clean_name, period) clean_name, period, cost_per_portion
@@ -1416,32 +1464,37 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       SELECT 'Organic ' || clean_name AS organic_name, cost_per_portion
       FROM rmc_latest
     ),
+    extra_organic_costs AS (
+      SELECT 'Extra Organic ' || clean_name AS extra_organic_name, cost_per_portion
+      FROM rmc_latest
+    ),
     side_costs AS (
       SELECT clean_name || ' - Side' AS side_name, cost_per_portion
       FROM rmc_latest
     ),
-    bowl_protein(bowl_name, protein_name) AS (VALUES
-      ('Spicy Chili Chicken Bowl', 'Spicy Chili Chicken'),
-      ('Paneer Tikka Bowl',        'Organic Tandoori Paneer'),
-      ('Lamb Kebab Bowl',          'Lamb Kebab')
+    -- Hardcoded costs for proteins missing from r365_modifier_cost
+    hardcoded_costs(name, cost) AS (VALUES
+      ('Tandoori Paneer'::text, 1.2490::numeric)
     )
     SELECT
       COALESCE(bf.clean, fol.canonical_name)   AS parent_item,
       mt.modifier_type                          AS section,
-      fm.canonical_name                         AS modifier_name,
+      nm.base_name                              AS modifier_name,
       CASE WHEN fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
            THEN 'online' ELSE 'ih' END         AS channel,
       SUM(fm.quantity)::BIGINT                  AS qty,
-      -- total_cost: Σ(qty × period_cost); Extra Main/etc fall back to base-item cost
+      -- total_cost: use base_name (strips Toast ' -*' suffix) for all lookups
       ROUND(SUM(fm.quantity * COALESCE(
         (SELECT r.cost_per_portion FROM rmc r
-         WHERE r.clean_name = fm.canonical_name
+         WHERE r.clean_name = nm.base_name
            AND r.period = 'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT
          LIMIT 1),
-        (SELECT r.cost_per_portion FROM rmc_latest r WHERE r.clean_name = fm.canonical_name),
-        (SELECT r.cost_per_portion FROM extra_costs r WHERE r.extra_name = fm.canonical_name),
-        (SELECT r.cost_per_portion FROM organic_costs r WHERE r.organic_name = fm.canonical_name),
-        (SELECT r.cost_per_portion FROM side_costs r WHERE r.side_name = fm.canonical_name),
+        (SELECT r.cost_per_portion FROM rmc_latest r WHERE r.clean_name = nm.base_name),
+        (SELECT r.cost_per_portion FROM extra_costs r WHERE r.extra_name = nm.base_name),
+        (SELECT r.cost_per_portion FROM extra_organic_costs r WHERE r.extra_organic_name = nm.base_name),
+        (SELECT r.cost_per_portion FROM organic_costs r WHERE r.organic_name = nm.base_name),
+        (SELECT r.cost_per_portion FROM side_costs r WHERE r.side_name = nm.base_name),
+        (SELECT h.cost FROM hardcoded_costs h WHERE h.name = nm.base_name),
         0
       ))::NUMERIC, 4)                           AS total_cost
     FROM public.fact_modifiers fm
@@ -1451,20 +1504,23 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       SELECT DISTINCT ON (parent_item) parent_item, item_type
       FROM analytics.parent_item_type ORDER BY parent_item, item_type
     ) pit ON pit.parent_item = fol.canonical_name
-    -- Prefer exact item_type match; fall back to any item_type; fallback 'Make It Meal' for juice/drink
-    -- items whose modifiers are not in analytics.modifier_type; NULL = explicitly excluded type (NA/Catering)
+    -- Strip Toast auto-select suffix ' -*' so 'Spicy Chili Chicken -*' = 'Spicy Chili Chicken'
+    CROSS JOIN LATERAL (
+      SELECT CASE WHEN fm.canonical_name LIKE '% -*'
+                  THEN LEFT(fm.canonical_name, LENGTH(fm.canonical_name) - 3)
+                  ELSE fm.canonical_name END AS base_name
+    ) nm
     CROSS JOIN LATERAL (
       SELECT COALESCE(
         (SELECT amt.modifier_type FROM analytics.modifier_type amt
-         WHERE amt.modifier_name = fm.canonical_name
+         WHERE amt.modifier_name = nm.base_name
            AND amt.modifier_type NOT LIKE 'Catering%'
            AND amt.modifier_type NOT IN ('NA','ZeroCater','Plate - Main','Online')
          ORDER BY (amt.item_type = pit.item_type) DESC NULLS LAST
          LIMIT 1),
-        -- That Fire Hot Sauce is classified as 'Online' in modifier_type table but is a real sauce modifier
-        CASE WHEN LOWER(fm.canonical_name) = 'that fire hot sauce' THEN 'Sauce' END,
+        CASE WHEN LOWER(nm.base_name) = 'that fire hot sauce' THEN 'Chutney And Dressing' END,
         CASE WHEN NOT EXISTS (
-          SELECT 1 FROM analytics.modifier_type WHERE modifier_name = fm.canonical_name
+          SELECT 1 FROM analytics.modifier_type WHERE modifier_name = nm.base_name
         ) THEN pit.item_type END
       ) AS modifier_type
     ) mt
@@ -1490,39 +1546,8 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       AND mt.modifier_type IS NOT NULL
       AND mt.modifier_type NOT IN ('Online', 'NA', 'ZeroCater')
     GROUP BY
-      COALESCE(bf.clean, fol.canonical_name), mt.modifier_type, fm.canonical_name,
+      COALESCE(bf.clean, fol.canonical_name), mt.modifier_type, nm.base_name,
       CASE WHEN fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
-           THEN 'online' ELSE 'ih' END
-    UNION ALL
-    -- Synthetic "Plate - Main" rows for truly curated bowls/plates listed in bowl_protein CTE
-    -- Uses bowl order qty directly (protein is predetermined, not a modifier choice)
-    SELECT
-      bp2.bowl_name                                                          AS parent_item,
-      'Plate - Main'                                                         AS section,
-      bp2.protein_name                                                       AS modifier_name,
-      CASE WHEN fol2.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
-           THEN 'online' ELSE 'ih' END                                      AS channel,
-      SUM(fol2.quantity)::BIGINT                                            AS qty,
-      ROUND(SUM(fol2.quantity * COALESCE(
-        (SELECT r.cost_per_portion FROM rmc r
-         WHERE r.clean_name = bp2.protein_name
-           AND r.period = 'P'||LPAD(fp2.period::TEXT,2,'0')||'-'||fp2.fiscal_year::TEXT
-         LIMIT 1),
-        (SELECT r.cost_per_portion FROM rmc_latest r WHERE r.clean_name = bp2.protein_name),
-        0
-      ))::NUMERIC, 4)                                                       AS total_cost
-    FROM public.fact_order_lines fol2
-    JOIN bowl_protein bp2 ON bp2.bowl_name = fol2.canonical_name
-    LEFT JOIN public.dim_fiscal_period fp2
-           ON fol2.business_date > fp2.start_date::DATE
-          AND fol2.business_date <= fp2.end_date::DATE
-    WHERE NOT fol2.is_voided AND NOT fol2.is_deferred
-      AND fol2.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP',
-                             'FOOD - IN HOUSE','DRINKS - IN HOUSE')
-      AND fol2.business_date BETWEEN $1::DATE AND $2::DATE
-    GROUP BY
-      bp2.bowl_name, bp2.protein_name,
-      CASE WHEN fol2.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
            THEN 'online' ELSE 'ih' END
     ORDER BY parent_item, channel, section, modifier_name
   `, [dr.start, dr.end]);
