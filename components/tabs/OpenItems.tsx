@@ -109,7 +109,7 @@ export default function OpenItems({ openItems, openItemsSummary }: Props) {
           <div className="th2">
             <h3>Open items ({filtered.length})</h3>
           </div>
-          <div style={{ overflowX: 'auto' }}>
+          <div className="tscroll">
             <table>
               <thead>
                 <tr>

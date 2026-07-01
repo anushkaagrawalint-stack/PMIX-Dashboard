@@ -166,7 +166,7 @@ export default function BYOBreakdown({
   return (
     <div>
       {/* ── Summary Table ─────────────────────────────────────────── */}
-      <div className="card" style={{ marginBottom: 16, overflowX: 'auto' }}>
+      <div className="card tscroll" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
           <h3 style={{ fontSize: 13, margin: 0 }}>BYO Items — Overview</h3>

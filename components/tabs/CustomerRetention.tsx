@@ -490,7 +490,7 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
                 No data for the current filters.
               </div>
             ) : (
-              <div style={{ overflowX: 'auto' }}>
+              <div className="tscroll">
                 <table>
                   <thead>
                     <tr>

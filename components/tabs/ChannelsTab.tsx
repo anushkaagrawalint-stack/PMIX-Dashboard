@@ -141,7 +141,7 @@ export default function ChannelsTab({ channels, channelItems, channelCategories,
         <div className="th2">
           <h3>Top 50 items · channel split</h3>
         </div>
-        <div style={{ overflowX: 'auto' }}>
+        <div className="tscroll">
           <table>
             <thead>
               <tr>

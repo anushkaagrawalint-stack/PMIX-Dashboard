@@ -305,7 +305,7 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
       </div>
 
       <div className="tw">
-        <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
+        <div className="tscroll">
           <table>
             <thead>
               <tr>

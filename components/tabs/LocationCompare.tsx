@@ -285,7 +285,7 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
               {catShowAmt ? '% Mix' : '$ Amount'}
             </button>
           </div>
-          <div style={{ overflowX: 'auto' }}>
+          <div className="tscroll">
             <table>
               <thead>
                 <tr>
@@ -427,7 +427,7 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
           </div>
         </div>
 
-        <div style={{ overflowX: 'auto' }}>
+        <div className="tscroll">
           <table>
             <thead>
               <tr>

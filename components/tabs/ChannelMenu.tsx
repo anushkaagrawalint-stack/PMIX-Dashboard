@@ -242,7 +242,7 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
         <div className="th2">
           <h3>Revenue by item across all channels</h3>
         </div>
-        <div style={{ overflowX: 'auto' }}>
+        <div className="tscroll">
           <table>
             <thead>
               <tr>

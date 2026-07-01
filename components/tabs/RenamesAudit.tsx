@@ -40,7 +40,7 @@ export default function RenamesAudit({ renames }: Props) {
               placeholder="Search items…" className="srch"
             />
           </div>
-          <div style={{ overflowX: 'auto' }}>
+          <div className="tscroll">
             <table>
               <thead>
                 <tr>

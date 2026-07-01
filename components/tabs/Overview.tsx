@@ -254,7 +254,7 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
       {/* Channel breakdown table */}
       <div className="tw">
         <div className="th2"><h3>Channel breakdown</h3></div>
-        <div style={{ overflowX: 'auto' }}>
+        <div className="tscroll">
           <table>
             <thead>
               <tr>

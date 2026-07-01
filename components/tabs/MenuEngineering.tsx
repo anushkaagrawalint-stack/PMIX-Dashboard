@@ -220,7 +220,7 @@ export default function MenuEngineering({ meItems, pinkSheets }: { meItems: MERo
 
           {/* Table */}
           <div className="tw">
-            <div style={{ overflowX: 'auto' }}>
+            <div className="tscroll">
               <table>
                 <thead><tr>
                   <th style={{ minWidth: 160 }}>Item Name</th>

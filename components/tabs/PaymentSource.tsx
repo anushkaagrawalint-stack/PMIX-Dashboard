@@ -238,7 +238,7 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
             style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 11, width: 160, fontFamily: 'inherit', outline: 'none' }}
           />
         </div>
-        <div style={{ overflowX: 'auto' }}>
+        <div className="tscroll">
           <table>
             <thead>
               <tr>

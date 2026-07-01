@@ -250,7 +250,7 @@ export default function NeedsReview({ needsReview, uncategorizedItems }: Props) 
             </div>
           ) : (
             <div className="tw">
-              <div style={{ overflowX: 'auto' }}>
+              <div className="tscroll">
                 <table style={{ fontSize: 12 }}>
                   <thead>
                     <tr>

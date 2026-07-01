@@ -137,7 +137,7 @@ export default function AllItems({ meItems, items }: { meItems: MERow[]; items: 
             }}>⬇ Export CSV</button>
           </div>
         </div>
-        <div style={{ overflowX: 'auto' }}>
+        <div className="tscroll">
           <table>
             <thead><tr>
               <th onClick={() => toggleSort('canonical_name')} style={{ cursor: 'pointer' }}>Item{arrow('canonical_name')}</th>
