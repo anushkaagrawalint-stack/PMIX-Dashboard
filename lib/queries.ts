@@ -8,7 +8,7 @@ import type {
   DateRange, Summary, ChannelRow, WeekRow, DailyRow,
   WeeklyChannelRow, DailyChannelRow,
   ItemRow, ChannelItemRow, LocationItemRow, LocationRow,
-  MERow, ModifierRow, PaymentRow, BikkyRow,
+  MERow, ModifierRow, PaymentRow, PaymentByLocationRow, PaymentSourceLocationRow, BikkyRow,
   CategoryRow, ChannelCategoryRow,
   RenameRow, NeedsReviewRow,
   OpenItemRow, OpenItemsSummary,
@@ -1747,6 +1747,72 @@ export async function getPayments(dr: DateRange): Promise<PaymentRow[]> {
   }));
 }
 
+// ─── Payments by location ────────────────────────────────────────────────────
+export async function getPaymentsByLocation(dr: DateRange): Promise<PaymentByLocationRow[]> {
+  const db = pool();
+  const { rows } = await db.query(`
+    SELECT
+      fol.location_code,
+      COALESCE(dl.display_name, fol.location_code)         AS display_name,
+      COUNT(DISTINCT p.order_guid)::INT                     AS payment_count,
+      ROUND(SUM(p.amount)::NUMERIC, 2)                      AS total_amount,
+      ROUND(SUM(CASE WHEN p.payment_type = 'CREDIT' THEN p.amount ELSE 0 END)::NUMERIC, 2) AS card_amount,
+      ROUND(SUM(CASE WHEN p.payment_type != 'CREDIT' THEN p.amount ELSE 0 END)::NUMERIC, 2) AS alt_amount
+    FROM public.br_order_payment p
+    JOIN (
+      SELECT DISTINCT order_guid, location_code
+      FROM public.fact_order_lines
+      WHERE business_date BETWEEN $1::DATE AND $2::DATE
+    ) fol ON fol.order_guid = p.order_guid
+    LEFT JOIN public.dim_location dl ON dl.location_code = fol.location_code
+    WHERE p.business_date BETWEEN $1::DATE AND $2::DATE
+    GROUP BY fol.location_code, dl.display_name
+    ORDER BY total_amount DESC
+  `, [dr.start, dr.end]);
+  await db.end();
+  return rows.map(r => ({
+    location_code: r.location_code as string,
+    display_name:  r.display_name  as string,
+    payment_count: Number(r.payment_count),
+    total_amount:  Number(r.total_amount),
+    card_amount:   Number(r.card_amount),
+    alt_amount:    Number(r.alt_amount),
+  }));
+}
+
+// ─── Payments by location × source ──────────────────────────────────────────
+export async function getPaymentSourcesByLocation(dr: DateRange): Promise<PaymentSourceLocationRow[]> {
+  const db = pool();
+  const { rows } = await db.query(`
+    SELECT
+      fol.location_code,
+      COALESCE(dl.display_name, fol.location_code)                              AS display_name,
+      COALESCE(NULLIF(TRIM(p.alt_payment_name),''), p.payment_type, 'Unknown') AS payment_source,
+      p.payment_type,
+      COUNT(*)::INT                                                             AS payment_count,
+      ROUND(SUM(p.amount)::NUMERIC, 2)                                         AS total_amount
+    FROM public.br_order_payment p
+    JOIN (
+      SELECT DISTINCT order_guid, location_code
+      FROM public.fact_order_lines
+      WHERE business_date BETWEEN $1::DATE AND $2::DATE
+    ) fol ON fol.order_guid = p.order_guid
+    LEFT JOIN public.dim_location dl ON dl.location_code = fol.location_code
+    WHERE p.business_date BETWEEN $1::DATE AND $2::DATE
+    GROUP BY fol.location_code, dl.display_name, 3, p.payment_type
+    ORDER BY fol.location_code, total_amount DESC
+  `, [dr.start, dr.end]);
+  await db.end();
+  return rows.map(r => ({
+    location_code:  r.location_code  as string,
+    display_name:   r.display_name   as string,
+    payment_source: r.payment_source as string,
+    payment_count:  Number(r.payment_count),
+    total_amount:   Number(r.total_amount),
+    category:       (r.payment_type as string) === 'CREDIT' ? 'Card' : 'Alt Payment',
+  }));
+}
+
 // ─── Bikky retention ─────────────────────────────────────────────────────────
 export async function getBikky(): Promise<BikkyRow[]> {
   const db = pool();
@@ -1770,7 +1836,7 @@ export async function getBikky(): Promise<BikkyRow[]> {
       return_rate_prev:  Number(r.return_rate_prev  ?? 0),
       reorder_rate_prev: Number(r.reorder_rate_prev ?? 0),
       guests:            Number(r.guests            ?? 0),
-      period:            `P${String(r.period).padStart(2,'0')} ${r.fiscal_year}`,
+      period:            `P${r.period} ${r.fiscal_year}`,
       source:            r.source as 'instore' | '3pd_loyalty',
       category:          '',
       revenue:           0,
@@ -1784,41 +1850,63 @@ export async function getBikky(): Promise<BikkyRow[]> {
 }
 
 // ─── Renames ──────────────────────────────────────────────────────────────────
+// Groups by item_key (stable Toast item ID) to find items whose canonical_name
+// changed over time — i.e., genuine Toast POS renames. The latest name (by
+// business_date DESC) is the current canonical; older names are historical.
 export async function getRenames(): Promise<RenameRow[]> {
   const db = pool();
   try {
     const { rows } = await db.query(`
+      WITH renamed AS (
+        SELECT
+          item_key,
+          STRING_AGG(DISTINCT canonical_name, '|||' ORDER BY canonical_name) AS all_names_str,
+          COUNT(DISTINCT canonical_name)::INT                                AS name_count,
+          SUM(quantity)::BIGINT                                              AS lifetime_qty,
+          ROUND(SUM(line_total)::NUMERIC, 2)                                AS lifetime_revenue,
+          COUNT(DISTINCT location_code)::INT                                AS location_count,
+          MIN(business_date)::TEXT                                          AS first_seen
+        FROM public.fact_order_lines
+        WHERE NOT is_voided
+          AND item_key      IS NOT NULL
+          AND canonical_name IS NOT NULL
+          AND menu_name      IS NOT NULL
+        GROUP BY item_key
+        HAVING COUNT(DISTINCT canonical_name) > 1
+      ),
+      latest AS (
+        SELECT DISTINCT ON (fol.item_key)
+          fol.item_key,
+          fol.canonical_name,
+          fol.menu_group
+        FROM public.fact_order_lines fol
+        WHERE NOT fol.is_voided
+          AND fol.item_key  IS NOT NULL
+          AND fol.menu_name IS NOT NULL
+        ORDER BY fol.item_key, fol.business_date DESC
+      )
       SELECT
-        fol.canonical_name,
-        MIN(fol.menu_group)                                              AS menu_group,
-        STRING_AGG(DISTINCT fol.menu_name, '|||' ORDER BY fol.menu_name) AS all_names_str,
-        COUNT(DISTINCT fol.menu_name)::INT                               AS name_count,
-        SUM(fol.quantity)::BIGINT                                        AS lifetime_qty,
-        ROUND(SUM(fol.line_total)::NUMERIC, 2)                          AS lifetime_revenue,
-        COUNT(DISTINCT fol.location_code)::INT                          AS location_count,
-        MIN(fol.business_date)::TEXT                                     AS first_seen
-      FROM public.fact_order_lines fol
-      WHERE NOT fol.is_voided
-        AND fol.canonical_name IS NOT NULL
-        AND fol.menu_name IS NOT NULL
-      GROUP BY fol.canonical_name
-      HAVING COUNT(DISTINCT fol.menu_name) > 1
-      ORDER BY lifetime_qty DESC
+        l.canonical_name,
+        l.menu_group,
+        r.all_names_str,
+        r.name_count,
+        r.lifetime_qty,
+        r.lifetime_revenue,
+        r.location_count,
+        r.first_seen
+      FROM renamed r
+      JOIN latest l ON l.item_key = r.item_key
+      ORDER BY r.lifetime_qty DESC
       LIMIT 50
     `);
     await db.end();
-
-    const db2 = pool();
-    const { rows: mltRows3 } = await db2.query(`SELECT DISTINCT modifier_name FROM analytics.modifier_type`);
-    await db2.end();
-    const mltSet3 = new Set(mltRows3.map(r => r.modifier_name as string));
 
     return rows.map(r => {
       const name      = r.canonical_name as string;
       const menuGroup = (r.menu_group ?? '') as string;
       const category  = name === 'That Fire Hot Sauce (Bottle)' || name === 'That Fire Hot Sauce - Side'
         ? 'Retail'
-        : mltSet3.has(name) ? 'Modifier' : (GRP_TO_CAT_MAP[menuGroup] ?? 'Other');
+        : (GRP_TO_CAT_MAP[menuGroup] ?? 'Other');
       return {
         canonical_name:   name,
         all_names:        (r.all_names_str as string).split('|||'),
@@ -2135,7 +2223,7 @@ export async function loadDashboardData(
     channels, weekly, daily,
     weeklyByChannel, dailyByChannel,
     items, channelItems, locationItems, locations,
-    meItems, pinkSheets, pinkSheetDetails, modifiers, payments, bikky,
+    meItems, pinkSheets, pinkSheetDetails, modifiers, payments, paymentsByLocation, paymentSourcesByLocation, bikky,
     categories, channelCategories,
     renames, needsReview,
     openItemsResult,
@@ -2158,6 +2246,8 @@ export async function loadDashboardData(
     getMEPinkSheetDetails(dr),
     getModifiers(dr),
     getPayments(dr),
+    getPaymentsByLocation(dr),
+    getPaymentSourcesByLocation(dr),
     getBikky(),
     getCategories(dr),
     getChannelCategories(dr),
@@ -2177,11 +2267,12 @@ export async function loadDashboardData(
     dateRange: dr,
     summary,
     prevSummary: prevSummaryResult,
+    prevLabel:   prevRange?.label ?? null,
     channels,
     weekly, daily, weeklyByChannel, dailyByChannel,
     items, channelItems, locationItems, locations,
     meItems, pinkSheets, pinkSheetDetails, avgMargin,
-    modifiers, payments, bikky,
+    modifiers, payments, paymentsByLocation, paymentSourcesByLocation, bikky,
     categories, channelCategories,
     renames, needsReview,
     uncategorizedItems,

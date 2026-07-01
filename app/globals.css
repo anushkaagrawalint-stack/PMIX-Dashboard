@@ -142,10 +142,12 @@ table { width: 100%; border-collapse: collapse; }
 thead th {
   padding: 7px 10px; background: #f9fafb; border-bottom: 1px solid var(--border);
   font-size: 9px; font-weight: 700; color: var(--muted); text-transform: uppercase;
-  letter-spacing: .04em; text-align: left; white-space: nowrap; cursor: pointer;
+  letter-spacing: .04em; text-align: center; white-space: nowrap; cursor: pointer;
 }
+thead th:first-child { text-align: left; }
 thead th:hover { color: var(--text); }
-tbody td { padding: 7px 10px; border-bottom: 1px solid #f3f4f6; font-size: 11px; vertical-align: middle; }
+tbody td { padding: 7px 10px; border-bottom: 1px solid #f3f4f6; font-size: 11px; vertical-align: middle; text-align: center; }
+tbody td:first-child { text-align: left; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: #faf9fd; }
 

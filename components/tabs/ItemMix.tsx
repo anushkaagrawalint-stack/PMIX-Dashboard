@@ -27,27 +27,51 @@ const CH_LABEL: Record<string, string> = {
 };
 
 const CH_ORDER  = ['IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP', 'CATERING', 'CATERING_3PD', 'OFFSITE', 'OPEN_ITEMS'];
-const CAT_ORDER = ['Entrees', 'Sides', 'NA Drinks', 'Sweets', 'Kids Meal', 'Alc Drinks', 'Retail', 'Other'];
+const CAT_ORDER = ['Entrees', 'Sides', 'NA Drinks', 'Sweets', 'Alc Drinks', 'Retail', 'Other'];
+const normCat = (c: string | null | undefined) => (c === 'Kids Meal' ? 'Entrees' : c || 'Other');
 const VENDOR_CH = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE']);
 
 function itemCat(i: ItemRow): string {
   if (VENDOR_CH.has(i.channel)) return i.menu_group || 'Other';
-  if (i.channel === 'OPEN_ITEMS') return i.category || 'Other';
-  return i.category || 'Other';
+  if (i.channel === 'OPEN_ITEMS') return normCat(i.category);
+  return normCat(i.category);
 }
 
 export default function ItemMix({ items, meItems, selectedChannels, categoryFilter }: Props) {
-  const [search,    setSearch]   = useState('');
-  const [sortKey,   setSortKey]  = useState<SortKey>('revenue');
-  const [sortDir,   setSortDir]  = useState<'asc' | 'desc'>('desc');
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [search,          setSearch]          = useState('');
+  const [sortKey,         setSortKey]         = useState<SortKey>('revenue');
+  const [sortDir,         setSortDir]         = useState<'asc' | 'desc'>('desc');
+  const [collapsed,       setCollapsed]       = useState<Record<string, boolean>>({});
+  const [menuGroupFilter, setMenuGroupFilter] = useState('__ALL__');
 
-  // canonical_name → blended avg_cost from ME (channel-adjusted when channel filter active)
-  const avgCostMap = useMemo(() => {
-    const m = new Map<string, number>();
-    meItems.forEach(i => { if (i.avg_cost > 0) m.set(i.canonical_name, i.avg_cost); });
+  const allMenuGroups = useMemo(() => {
+    const s = new Set<string>();
+    items.forEach(i => s.add(i.menu_group ?? ''));
+    return Array.from(s).sort();
+  }, [items]);
+
+  // canonical_name → MERow for per-channel cost lookup
+  const meMap = useMemo(() => {
+    const m = new Map<string, typeof meItems[0]>();
+    meItems.forEach(i => m.set(i.canonical_name, i));
     return m;
   }, [meItems]);
+
+  // Channel-aware cost: use modifier-adjusted cost when available.
+  // For APP / TPD / TPD_MARKUP / CATERING_3PD: use avg_cost_lo (online, non-uplifted).
+  // For IN_HOUSE: use avg_cost_ih.
+  // Fallback for everything else: avg_cost (blended).
+  function getAvgCost(item: ItemRow): number | undefined {
+    const me = meMap.get(item.canonical_name);
+    if (!me) return undefined;
+    if (item.channel === 'IN_HOUSE') {
+      return me.avg_cost_ih > 0 ? me.avg_cost_ih : undefined;
+    }
+    if (['APP', 'TPD', 'TPD_MARKUP', 'CATERING_3PD'].includes(item.channel)) {
+      return me.avg_cost_lo > 0 ? me.avg_cost_lo : undefined;
+    }
+    return me.avg_cost > 0 ? me.avg_cost : undefined;
+  }
 
   // Filtered items
   const filtered = useMemo(() => {
@@ -57,10 +81,11 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
       if (categoryFilter !== 'all') {
         if (itemCat(i) !== categoryFilter) return false;
       }
+      if (menuGroupFilter !== '__ALL__' && (i.menu_group ?? '') !== menuGroupFilter) return false;
       if (q && !i.canonical_name.toLowerCase().includes(q) && !i.menu_group.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [items, selectedChannels, categoryFilter, search]);
+  }, [items, selectedChannels, categoryFilter, menuGroupFilter, search]);
 
   const totalRevenue = useMemo(() => filtered.reduce((s, i) => s + i.revenue, 0), [filtered]);
 
@@ -100,7 +125,7 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
     const mul = sortDir === 'desc' ? -1 : 1;
     return [...rows].sort((a, b) => {
       if (sortKey === 'avg_cost') {
-        return mul * ((avgCostMap.get(b.canonical_name) ?? 0) - (avgCostMap.get(a.canonical_name) ?? 0));
+        return mul * ((getAvgCost(b) ?? 0) - (getAvgCost(a) ?? 0));
       }
       return mul * (b[sortKey as ItemSortKey] - a[sortKey as ItemSortKey]);
     });
@@ -210,29 +235,31 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
     const catR    = catTotals.rev.get(cat) ?? 0;
     const qtyMix  = catQ > 0 ? (item.qty     / catQ * 100) : 0;
     const revMix  = catR > 0 ? (item.revenue / catR * 100) : 0;
-    const avgCost = avgCostMap.get(item.canonical_name);
+    const avgCost = getAvgCost(item);
     return (
       <tr key={`${item.canonical_name}||${item.menu_name}||${item.menu_group}`}>
         <td style={{ paddingLeft: 60, fontWeight: 500 }}>{item.canonical_name}</td>
         <td style={{ fontSize: 10, color: 'var(--muted)' }}>{item.menu_group}</td>
-        <td>{item.qty.toLocaleString()}</td>
-        <td style={{ fontSize: 10 }}>{qtyMix.toFixed(1)}%</td>
-        <td style={{ fontWeight: 600 }}>{fmt$(item.revenue)}</td>
-        <td style={{ fontSize: 10 }}>{revMix.toFixed(1)}%</td>
-        <td>{fmt$2(item.avg_price)}</td>
-        <td style={{ color: avgCost != null ? 'var(--text)' : 'var(--muted)' }}>
+        <td style={{ textAlign: 'center' }}>{item.qty.toLocaleString()}</td>
+        <td style={{ fontSize: 10, textAlign: 'center' }}>{qtyMix.toFixed(1)}%</td>
+        <td style={{ fontWeight: 600, textAlign: 'center' }}>{fmt$(item.revenue)}</td>
+        <td style={{ fontSize: 10, textAlign: 'center' }}>{revMix.toFixed(1)}%</td>
+        <td style={{ textAlign: 'center' }}>{fmt$2(item.avg_price)}</td>
+        <td style={{ textAlign: 'center', color: avgCost != null ? 'var(--text)' : 'var(--muted)' }}>
           {avgCost != null ? fmt$2(avgCost) : '—'}
         </td>
       </tr>
     );
   }
 
+  const thBase: React.CSSProperties = { position: 'sticky', top: 0, zIndex: 2, background: 'var(--card)' };
+
   function thSort(key: SortKey, label: string) {
     const active = sortKey === key;
     return (
       <th
         onClick={() => { setSortKey(key); setSortDir(d => active ? (d === 'desc' ? 'asc' : 'desc') : 'desc'); }}
-        style={{ cursor: 'pointer', color: active ? 'var(--accent)' : undefined, whiteSpace: 'nowrap' }}
+        style={{ ...thBase, cursor: 'pointer', color: active ? 'var(--accent)' : undefined, whiteSpace: 'nowrap', textAlign: 'center' }}
       >
         {label}{active ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}
       </th>
@@ -248,6 +275,15 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
           placeholder="Search items…"
           className="srch" style={{ width: 180 }}
         />
+        <select
+          className="fb-sel" value={menuGroupFilter}
+          onChange={e => setMenuGroupFilter(e.target.value)}
+        >
+          <option value="__ALL__">All groups</option>
+          {allMenuGroups.map(g => (
+            <option key={g} value={g}>{g || '(blank)'}</option>
+          ))}
+        </select>
         <select
           className="fb-sel" value={sortKey}
           onChange={e => { setSortKey(e.target.value as SortKey); setSortDir('desc'); }}
@@ -269,16 +305,16 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
       </div>
 
       <div className="tw">
-        <div style={{ overflowX: 'auto' }}>
+        <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 280px)' }}>
           <table>
             <thead>
               <tr>
-                <th>Item</th>
-                <th>Menu Group</th>
+                <th style={thBase}>Item</th>
+                <th style={thBase}>Menu Group</th>
                 {thSort('qty', 'QTY')}
-                <th title="Item qty ÷ category total qty">Mix % (Qty)</th>
+                <th style={{ ...thBase, textAlign: 'center' }} title="Item qty ÷ category total qty">Mix % (Qty)</th>
                 {thSort('revenue', 'Gross Amount')}
-                <th title="Item gross amount ÷ category total gross amount">Mix % (Rev)</th>
+                <th style={{ ...thBase, textAlign: 'center' }} title="Item gross amount ÷ category total gross amount">Mix % (Rev)</th>
                 {thSort('avg_price', 'Avg Price')}
                 {thSort('avg_cost', 'Avg Cost')}
               </tr>

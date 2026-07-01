@@ -1,5 +1,5 @@
 'use client';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { CHANNEL_LABEL, CHANNEL_COLOR } from '@/lib/constants';
 import type { DashboardData } from '@/lib/types';
@@ -18,28 +18,35 @@ interface Props {
 }
 
 function DeltaBadge({
-  curr, prev, positiveGood = true,
-}: { curr: number; prev: number; positiveGood?: boolean }) {
+  curr, prev, positiveGood = true, neutral = false, showCount = false, vsLabel,
+}: { curr: number; prev: number; positiveGood?: boolean; neutral?: boolean; showCount?: boolean; vsLabel?: string | null }) {
   if (!prev) return null;
-  const pct = ((curr - prev) / Math.abs(prev)) * 100;
-  const up  = pct >= 0;
+  const diff = curr - prev;
+  const pct  = (diff / Math.abs(prev)) * 100;
+  const up   = pct >= 0;
   const good = positiveGood ? up : !up;
+  const color = neutral ? 'var(--muted)' : good ? '#16a34a' : '#dc2626';
+  const vs    = vsLabel ? `vs ${vsLabel}` : 'vs prev';
   return (
-    <div style={{
-      fontSize: 10, fontWeight: 600, marginTop: 1,
-      color: good ? '#16a34a' : '#dc2626',
-    }}>
-      {up ? '↑' : '↓'} {Math.abs(pct).toFixed(1)}% vs prev
+    <div style={{ fontSize: 10, fontWeight: 600, marginTop: 1, color }}>
+      {up ? '↑' : '↓'}{' '}
+      {showCount
+        ? `${Math.abs(Math.round(diff)).toLocaleString()} items`
+        : `${Math.abs(pct).toFixed(1)}%`
+      }{' '}{vs}
     </div>
   );
 }
 
+const mapCat = (cat: string) => cat === 'Kids Meal' ? 'Entrees' : cat;
+
 export default function Overview({ data, selectedChannels, categoryFilter }: Props) {
-  const { summary, prevSummary, channels, weekly, daily, periods, items, avgMargin,
+  const { summary, prevSummary, prevLabel, channels, weekly, daily, periods, items, avgMargin,
           channelItems, channelCategories, weeklyByChannel, dailyByChannel } = data;
 
   // Only show deltas when no channel filter active (to avoid filtered-vs-total mismatch)
   const showDelta = selectedChannels.length === 0 && prevSummary !== null;
+  const [showBottom, setShowBottom] = useState(false);
 
   // Weekly trend filtered by selected channels
   const effectiveWeekly = useMemo(() => {
@@ -78,7 +85,7 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
     const source = selectedChannels.length === 0
       ? channelCategories
       : channelCategories.filter(cc => selectedChannels.includes(cc.channel));
-    source.forEach(cc => { map[cc.category] = (map[cc.category] ?? 0) + cc.revenue; });
+    source.forEach(cc => { const cat = mapCat(cc.category); map[cat] = (map[cat] ?? 0) + cc.revenue; });
     return map;
   }, [selectedChannels, channelCategories]);
 
@@ -110,15 +117,15 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
     for (const i of effectiveItems) {
       const e = seen.get(i.canonical_name);
       if (e) e.revenue += i.revenue;
-      else seen.set(i.canonical_name, { revenue: i.revenue, category: i.category ?? 'Other' });
+      else seen.set(i.canonical_name, { revenue: i.revenue, category: mapCat(i.category ?? 'Other') });
     }
     let entries = [...seen.entries()];
     if (categoryFilter !== 'all') entries = entries.filter(([, v]) => v.category === categoryFilter);
     return entries
-      .sort((a, b) => b[1].revenue - a[1].revenue)
+      .sort((a, b) => showBottom ? a[1].revenue - b[1].revenue : b[1].revenue - a[1].revenue)
       .slice(0, 8)
       .map(([name, v]) => ({ name: name.slice(0, 24), value: v.revenue }));
-  }, [effectiveItems, categoryFilter]);
+  }, [effectiveItems, categoryFilter, showBottom]);
 
   const catData = useMemo(() => {
     let entries = Object.entries(effectiveCatRevMap).sort((a, b) => b[1] - a[1]);
@@ -130,7 +137,7 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
     if (categoryFilter === 'all') return [];
     const map: Record<string, number> = {};
     effectiveItems.forEach(i => {
-      if ((i.category ?? 'Other') === categoryFilter) {
+      if (mapCat(i.category ?? 'Other') === categoryFilter) {
         const sub = i.sub_category || categoryFilter;
         map[sub] = (map[sub] ?? 0) + i.revenue;
       }
@@ -173,14 +180,14 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
           <div className="kl">Items Sold</div>
           <div className="kv">{Number(kpiQty).toLocaleString()}</div>
           {showDelta
-            ? <DeltaBadge curr={summary.total_qty} prev={prevSummary!.total_qty} />
+            ? <DeltaBadge curr={summary.total_qty} prev={prevSummary!.total_qty} vsLabel={prevLabel} />
             : selectedChannels.length > 0 && <div className="ks">filtered</div>}
         </div>
         <div className="kc g">
           <div className="kl">Net Revenue</div>
           <div className="kv">{fmt$(kpiRevenue)}</div>
           {showDelta
-            ? <DeltaBadge curr={summary.total_revenue} prev={prevSummary!.total_revenue} />
+            ? <DeltaBadge curr={summary.total_revenue} prev={prevSummary!.total_revenue} vsLabel={prevLabel} />
             : selectedChannels.length > 0 && <div className="ks">filtered</div>}
         </div>
         <div className="kc b">
@@ -192,7 +199,7 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
           <div className="kl">Unique Items</div>
           <div className="kv">{summary.unique_items}</div>
           {showDelta
-            ? <DeltaBadge curr={summary.unique_items} prev={prevSummary!.unique_items} positiveGood={false} />
+            ? <DeltaBadge curr={summary.unique_items} prev={prevSummary!.unique_items} neutral showCount vsLabel={prevLabel} />
             : <div className="ks">real menu items</div>}
         </div>
         <div className="kc pk">
@@ -226,7 +233,12 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
       {/* Charts row 2 */}
       <div className="gr22">
         <div className="cc">
-          <h3>Top 8 items by revenue{categoryFilter !== 'all' && ` · ${categoryFilter}`}</h3>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <h3 style={{ margin: 0 }}>{showBottom ? 'Bottom' : 'Top'} 8 items by revenue{categoryFilter !== 'all' && ` · ${categoryFilter}`}</h3>
+            <button className="drb" onClick={() => setShowBottom(b => !b)} style={{ minWidth: 0, padding: '3px 10px', fontSize: 11 }}>
+              {showBottom ? 'Top' : 'Bottom'}
+            </button>
+          </div>
           <div style={{ position: 'relative', height: 280 }}>
             <HBarChart data={top8} height={280} />
           </div>
@@ -248,9 +260,8 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
               <tr>
                 <th>Channel</th>
                 <th>Revenue</th>
-                <th>% of {selectedChannels.length > 0 ? 'Selected' : 'Total'}</th>
+                <th>Revenue Mix (%)</th>
                 <th>Items Sold</th>
-                <th>Share</th>
               </tr>
             </thead>
             <tbody>
@@ -269,13 +280,6 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
                     <td>{fmt$(c.revenue)}</td>
                     <td>{pct}%</td>
                     <td>{c.qty.toLocaleString()}</td>
-                    <td style={{ width: 120 }}>
-                      <div className="bw">
-                        <div className="bb">
-                          <div className="bf" style={{ width: `${pct}%` }} />
-                        </div>
-                      </div>
-                    </td>
                   </tr>
                 );
               })}

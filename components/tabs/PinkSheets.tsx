@@ -164,17 +164,17 @@ function SectionTable({
             <th style={{ minWidth: 220, textAlign: 'left' }}>Modifier</th>
             {isHalf ? (
               <>
-                <th style={{ textAlign: 'right' }}>SUM of Qty</th>
+                <th style={{ textAlign: 'center' }}>SUM of Qty</th>
                 <th style={{ width: 20 }} />
-                <th style={{ textAlign: 'right' }}>Cost</th>
-                <th style={{ textAlign: 'right' }}>%</th>
-                <th style={{ textAlign: 'right' }} />
+                <th style={{ textAlign: 'center' }}>Cost</th>
+                <th style={{ textAlign: 'center' }}>%</th>
+                <th style={{ textAlign: 'center' }} />
               </>
             ) : (
               <>
-                <th style={{ textAlign: 'right' }}>Qty</th>
-                <th style={{ textAlign: 'right' }}>Unit Cost</th>
-                <th style={{ textAlign: 'right' }}>Total Cost</th>
+                <th style={{ textAlign: 'center' }}>Qty</th>
+                <th style={{ textAlign: 'center' }}>Unit Cost</th>
+                <th style={{ textAlign: 'center' }}>Total Cost</th>
               </>
             )}
           </tr>
@@ -188,21 +188,21 @@ function SectionTable({
                 return (
                   <tr key={m.modifier_name}>
                     <td style={{ paddingLeft: 20 }}>{m.modifier_name}</td>
-                    <td style={{ textAlign: 'right' }}>{m.qty.toLocaleString()}</td>
+                    <td style={{ textAlign: 'center' }}>{m.qty.toLocaleString()}</td>
                     <td />
-                    <td style={{ textAlign: 'right', color: m.unit_cost === 0 ? 'var(--muted)' : 'inherit' }}>
+                    <td style={{ textAlign: 'center', color: m.unit_cost === 0 ? 'var(--muted)' : 'inherit' }}>
                       {fmt$(m.unit_cost)}
                     </td>
-                    <td style={{ textAlign: 'right' }}>{fmt$(share)}</td>
-                    <td style={{ textAlign: 'right' }}>{fmt$(weighted)}</td>
+                    <td style={{ textAlign: 'center' }}>{fmt$(share)}</td>
+                    <td style={{ textAlign: 'center' }}>{fmt$(weighted)}</td>
                   </tr>
                 );
               })}
               <tr style={{ background: totalBg }}>
                 <td style={{ fontWeight: 700, paddingLeft: 20, color: totalColor }}>Grand Total</td>
-                <td style={{ textAlign: 'right', fontWeight: 700, color: totalColor }}>{totalQty.toLocaleString()}</td>
+                <td style={{ textAlign: 'center', fontWeight: 700, color: totalColor }}>{totalQty.toLocaleString()}</td>
                 <td /><td /><td />
-                <td style={{ textAlign: 'right', fontWeight: 700, color: totalColor }}>{fmt$(weightedAvg)}</td>
+                <td style={{ textAlign: 'center', fontWeight: 700, color: totalColor }}>{fmt$(weightedAvg)}</td>
               </tr>
             </>
           ) : (
@@ -210,22 +210,22 @@ function SectionTable({
               {sec.mods.map(m => (
                 <tr key={m.modifier_name}>
                   <td style={{ paddingLeft: 20 }}>{m.modifier_name}</td>
-                  <td style={{ textAlign: 'right' }}>{m.qty.toLocaleString()}</td>
-                  <td style={{ textAlign: 'right', color: m.unit_cost === 0 ? 'var(--muted)' : 'inherit' }}>
+                  <td style={{ textAlign: 'center' }}>{m.qty.toLocaleString()}</td>
+                  <td style={{ textAlign: 'center', color: m.unit_cost === 0 ? 'var(--muted)' : 'inherit' }}>
                     {fmt$(m.unit_cost)}
                   </td>
-                  <td style={{ textAlign: 'right', color: m.total_cost === 0 ? 'var(--muted)' : 'inherit' }}>
+                  <td style={{ textAlign: 'center', color: m.total_cost === 0 ? 'var(--muted)' : 'inherit' }}>
                     {fmt$(m.total_cost)}
                   </td>
                 </tr>
               ))}
               <tr style={{ background: totalBg }}>
                 <td style={{ fontWeight: 700, paddingLeft: 20, color: totalColor }}>Grand Total</td>
-                <td style={{ textAlign: 'right', fontWeight: 700, color: totalColor }}>
+                <td style={{ textAlign: 'center', fontWeight: 700, color: totalColor }}>
                   {totalQty.toLocaleString()}
                 </td>
                 <td />
-                <td style={{ textAlign: 'right', fontWeight: 700, color: totalColor }}>
+                <td style={{ textAlign: 'center', fontWeight: 700, color: totalColor }}>
                   {fmt$(sec.sectionTotal)}
                 </td>
               </tr>
@@ -393,8 +393,8 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                     <td colSpan={2} style={{ fontWeight: 700, color: '#14532d', padding: '6px 8px' }}>
                       AVG COST OF {activeItem.canonical_name.toUpperCase()} (IN HOUSE)
                     </td>
-                    <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>r365 IH base cost</td>
-                    <td style={{ textAlign: 'right', fontWeight: 800, color: '#14532d' }}>
+                    <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>r365 IH base cost</td>
+                    <td style={{ textAlign: 'center', fontWeight: 800, color: '#14532d' }}>
                       {fmt$(activeItem.base_cost_ih)}
                     </td>
                   </tr>
@@ -402,8 +402,8 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                     <td colSpan={2} style={{ fontWeight: 700, color: '#c2410c', padding: '6px 8px' }}>
                       TOTAL MODIFIER COST
                     </td>
-                    <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>Σ all section totals</td>
-                    <td style={{ textAlign: 'right', fontWeight: 800, color: '#c2410c' }}>
+                    <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>Σ all section totals</td>
+                    <td style={{ textAlign: 'center', fontWeight: 800, color: '#c2410c' }}>
                       {fmt$(totalModCost)}
                     </td>
                   </tr>
@@ -411,10 +411,10 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                     <td colSpan={2} style={{ fontWeight: 700, color: '#1d4ed8', padding: '6px 8px' }}>
                       TOTAL AVG COST
                     </td>
-                    <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
+                    <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>
                       base × IH qty ({ihQty.toLocaleString()})
                     </td>
-                    <td style={{ textAlign: 'right', fontWeight: 800, color: '#1d4ed8' }}>
+                    <td style={{ textAlign: 'center', fontWeight: 800, color: '#1d4ed8' }}>
                       {fmt$(totalAvgCost)}
                     </td>
                   </tr>
@@ -422,10 +422,10 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                     <td colSpan={2} style={{ fontWeight: 700, color: '#15803d', padding: '6px 8px' }}>
                       MODIFIER + AVG COST
                     </td>
-                    <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
+                    <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>
                       total mod cost + total avg cost
                     </td>
-                    <td style={{ textAlign: 'right', fontWeight: 800, color: '#15803d' }}>
+                    <td style={{ textAlign: 'center', fontWeight: 800, color: '#15803d' }}>
                       {fmt$(modPlusAvg)}
                     </td>
                   </tr>
@@ -433,10 +433,10 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                     <td colSpan={2} style={{ fontWeight: 800, fontSize: 13, color: '#065f46', padding: '8px 8px' }}>
                       FINAL AVG COST WITH MODIFIER (IN HOUSE)
                     </td>
-                    <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
+                    <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>
                       (mod + avg) ÷ IH qty
                     </td>
-                    <td style={{ textAlign: 'right', fontWeight: 900, fontSize: 14, color: '#065f46' }}>
+                    <td style={{ textAlign: 'center', fontWeight: 900, fontSize: 14, color: '#065f46' }}>
                       {fmt2(finalAvgCost)}
                     </td>
                   </tr>
@@ -484,8 +484,8 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                         <td colSpan={2} style={{ fontWeight: 700, color: '#9d174d', padding: '6px 8px' }}>
                           AVG COST OF {activeItem.canonical_name.toUpperCase()}
                         </td>
-                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>r365 base (delivery)</td>
-                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#9d174d' }}>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>r365 base (delivery)</td>
+                        <td style={{ textAlign: 'center', fontWeight: 800, color: '#9d174d' }}>
                           {fmt$(activeItem.base_cost_online)}
                         </td>
                       </tr>
@@ -493,8 +493,8 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                         <td colSpan={2} style={{ fontWeight: 700, color: '#c2410c', padding: '6px 8px' }}>
                           TOTAL MODIFIER COST
                         </td>
-                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>Σ all section totals</td>
-                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#c2410c' }}>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>Σ all section totals</td>
+                        <td style={{ textAlign: 'center', fontWeight: 800, color: '#c2410c' }}>
                           {fmt$(totalModCost)}
                         </td>
                       </tr>
@@ -502,10 +502,10 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                         <td colSpan={2} style={{ fontWeight: 700, color: '#1d4ed8', padding: '6px 8px' }}>
                           TOTAL AVG COST
                         </td>
-                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>
                           base × online qty ({activeQty.toLocaleString()})
                         </td>
-                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#1d4ed8' }}>
+                        <td style={{ textAlign: 'center', fontWeight: 800, color: '#1d4ed8' }}>
                           {fmt$(totalAvgCost)}
                         </td>
                       </tr>
@@ -513,10 +513,10 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                         <td colSpan={2} style={{ fontWeight: 700, color: '#15803d', padding: '6px 8px' }}>
                           MODIFIER + AVG COST
                         </td>
-                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>
                           total mod cost + total avg cost
                         </td>
-                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#15803d' }}>
+                        <td style={{ textAlign: 'center', fontWeight: 800, color: '#15803d' }}>
                           {fmt$(modPlusAvg)}
                         </td>
                       </tr>
@@ -524,10 +524,10 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                         <td colSpan={2} style={{ fontWeight: 800, fontSize: 13, color: '#065f46', padding: '8px 8px' }}>
                           FINAL AVG COST WITH MODIFIER
                         </td>
-                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>
                           (mod + avg) ÷ online qty
                         </td>
-                        <td style={{ textAlign: 'right', fontWeight: 900, fontSize: 14, color: '#065f46' }}>
+                        <td style={{ textAlign: 'center', fontWeight: 900, fontSize: 14, color: '#065f46' }}>
                           {fmt2(finalAvgCost)}
                         </td>
                       </tr>
@@ -535,8 +535,8 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                         <td colSpan={2} style={{ fontWeight: 700, color: '#6d28d9', padding: '6px 8px' }}>
                           FINAL AVG COST — 3PD (×1.18)
                         </td>
-                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right' }}>packaging uplift</td>
-                        <td style={{ textAlign: 'right', fontWeight: 800, color: '#6d28d9' }}>
+                        <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>packaging uplift</td>
+                        <td style={{ textAlign: 'center', fontWeight: 800, color: '#6d28d9' }}>
                           {fmt2(finalAvgCost * 1.18)}
                         </td>
                       </tr>

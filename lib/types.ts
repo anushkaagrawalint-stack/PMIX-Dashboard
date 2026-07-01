@@ -191,6 +191,24 @@ export interface PaymentRow {
   category:       string;  // 'Card' | 'Alt Payment'
 }
 
+export interface PaymentByLocationRow {
+  location_code: string;
+  display_name:  string;
+  payment_count: number;
+  total_amount:  number;
+  card_amount:   number;
+  alt_amount:    number;
+}
+
+export interface PaymentSourceLocationRow {
+  location_code:  string;
+  display_name:   string;
+  payment_source: string;
+  payment_count:  number;
+  total_amount:   number;
+  category:       string;  // 'Card' | 'Alt Payment'
+}
+
 // ─── Bikky retention ─────────────────────────────────────────────────────────
 export interface BikkyRow {
   item_name:    string;
@@ -297,6 +315,7 @@ export interface DashboardData {
   dateRange:          DateRange;
   summary:            Summary;
   prevSummary:        Summary | null;   // previous comparable period for KPI deltas
+  prevLabel:          string | null;    // human label of the prev period (e.g. "P4 2026")
   channels:           ChannelRow[];
   weekly:             WeekRow[];
   daily:              DailyRow[];
@@ -309,7 +328,9 @@ export interface DashboardData {
   meItems:            MERow[];
   avgMargin:          number;
   modifiers:          ModifierRow[];
-  payments:           PaymentRow[];
+  payments:                  PaymentRow[];
+  paymentsByLocation:        PaymentByLocationRow[];
+  paymentSourcesByLocation:  PaymentSourceLocationRow[];
   bikky:              BikkyRow[];
   categories:         CategoryRow[];
   channelCategories:  ChannelCategoryRow[];

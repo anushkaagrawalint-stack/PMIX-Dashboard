@@ -34,6 +34,9 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
   const [sortCol, setSortCol]           = useState<string>('avg');
   const [sortDir, setSortDir]           = useState<'desc' | 'asc'>('desc');
   const [limit, setLimit]               = useState<10 | 20 | 50 | 100 | 'all'>(20);
+  const [catShowAmt, setCatShowAmt]     = useState(false);
+  const [locShowBottom, setLocShowBottom] = useState(false);
+  const [locTopView,    setLocTopView]    = useState<'pct' | 'exact'>('pct');
 
   const activeMeta = useMemo(() =>
     selectedLocs.length === 0 ? locMeta : locMeta.filter(l => selectedLocs.includes(l.location_code)),
@@ -119,6 +122,34 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
       color: l.color,
     })),
   [activeMeta, locStats, metric]);
+
+  const topByLocation = useMemo(() => {
+    const map: Record<string, Array<{ name: string; rev: number; qty: number; revPct: number; qtyPct: number }>> = {};
+    activeMeta.forEach(l => {
+      const agg: Record<string, { rev: number; qty: number }> = {};
+      locationItems.filter(r => r.location_code === l.location_code).forEach(r => {
+        const e = agg[r.canonical_name] ?? { rev: 0, qty: 0 };
+        e.rev += r.revenue;
+        e.qty += r.qty;
+        agg[r.canonical_name] = e;
+      });
+      const totalRev = Object.values(agg).reduce((s, v) => s + v.rev, 0) || 1;
+      const totalQty = Object.values(agg).reduce((s, v) => s + v.qty, 0) || 1;
+      map[l.location_code] = Object.entries(agg)
+        .sort((a, b) => locShowBottom ? a[1].rev - b[1].rev : b[1].rev - a[1].rev)
+        .slice(0, 10)
+        .map(([name, { rev, qty }]) => ({
+          name: name.length > 26 ? name.slice(0, 24) + '…' : name,
+          rev, qty,
+          revPct: Math.round((rev / totalRev) * 1000) / 10,
+          qtyPct: Math.round((qty / totalQty) * 1000) / 10,
+        }));
+    });
+    return map;
+  }, [locationItems, activeMeta, locShowBottom]);
+
+  const topLocRows: typeof activeMeta[] = [];
+  for (let i = 0; i < activeMeta.length; i += 3) topLocRows.push(activeMeta.slice(i, i + 3));
 
   const allItems = useMemo(() => {
     const q    = search.toLowerCase();
@@ -244,31 +275,48 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
         </div>
 
         <div className="cc">
-          <h3>Category mix by location (% of {metric === 'revenue' ? 'revenue' : 'qty'})</h3>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <h3 style={{ margin: 0 }}>Category mix by location ({catShowAmt ? (metric === 'revenue' ? 'USD' : 'qty') : `% of ${metric === 'revenue' ? 'revenue' : 'qty'}`})</h3>
+            <button
+              className="drb"
+              onClick={() => setCatShowAmt(a => !a)}
+              style={{ minWidth: 0, padding: '3px 10px', fontSize: 11 }}
+            >
+              {catShowAmt ? '% Mix' : '$ Amount'}
+            </button>
+          </div>
           <div style={{ overflowX: 'auto' }}>
             <table>
               <thead>
                 <tr>
                   <th>Category</th>
-                  {activeMeta.map(l => <th key={l.location_code} style={{ color: l.color }}>{l.display_name}</th>)}
+                  {activeMeta.map(l => <th key={l.location_code} style={{ color: l.color, textAlign: 'center' }}>{l.display_name}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {CAT_ORDER.filter(cat => activeMeta.some(l => locCatData[l.location_code]?.[cat])).map(cat => {
-                  const vals = activeMeta.map(l => {
-                    const catMap  = locCatData[l.location_code] ?? {};
-                    const useQty  = metric === 'qty' || metric === 'mix_pct';
-                    const catVal  = useQty ? (catMap[cat]?.qty ?? 0) : (catMap[cat]?.revenue ?? 0);
-                    const tot     = Object.values(catMap).reduce((a, b) => a + (useQty ? b.qty : b.revenue), 0);
-                    return tot > 0 ? (catVal / tot) * 100 : 0;
+                  const useQty = metric === 'qty' || metric === 'mix_pct';
+                  const rawVals = activeMeta.map(l => {
+                    const catMap = locCatData[l.location_code] ?? {};
+                    return useQty ? (catMap[cat]?.qty ?? 0) : (catMap[cat]?.revenue ?? 0);
                   });
-                  const maxVal = Math.max(...vals);
+                  const pctVals = activeMeta.map((l, idx) => {
+                    const catMap = locCatData[l.location_code] ?? {};
+                    const tot    = Object.values(catMap).reduce((a, b) => a + (useQty ? b.qty : b.revenue), 0);
+                    return tot > 0 ? (rawVals[idx] / tot) * 100 : 0;
+                  });
+                  const displayVals = catShowAmt ? rawVals : pctVals;
+                  const maxVal = Math.max(...displayVals);
                   return (
                     <tr key={cat}>
                       <td style={{ fontWeight: 600, fontSize: 11 }}>{cat}</td>
-                      {vals.map((v, i) => (
-                        <td key={i} style={{ fontWeight: v === maxVal && v > 0 ? 700 : 400, fontSize: 11 }}>
-                          {v > 0 ? `${v.toFixed(1)}%` : '—'}
+                      {displayVals.map((v, i) => (
+                        <td key={i} style={{ fontWeight: v === maxVal && v > 0 ? 700 : 400, fontSize: 11, textAlign: 'center' }}>
+                          {v > 0
+                            ? catShowAmt
+                              ? useQty ? v.toLocaleString() : fmt$(v)
+                              : `${v.toFixed(1)}%`
+                            : '—'}
                         </td>
                       ))}
                     </tr>
@@ -279,6 +327,74 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
           </div>
         </div>
       </div>
+
+      {/* ── Top / Bottom items by location ── */}
+      {topLocRows.length > 0 && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, marginTop: 6, paddingLeft: 2 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)' }}>
+                {locShowBottom ? 'Bottom' : 'Top'} items by location
+              </div>
+              <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
+                {([false, true] as const).map(isBottom => (
+                  <button key={String(isBottom)} onClick={() => setLocShowBottom(isBottom)} style={{
+                    fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                    background: locShowBottom === isBottom ? (isBottom ? '#dc2626' : 'var(--accent)') : 'transparent',
+                    color: locShowBottom === isBottom ? '#fff' : '#6b7280',
+                    boxShadow: locShowBottom === isBottom ? `0 1px 4px ${isBottom ? 'rgba(220,38,38,.3)' : 'rgba(99,102,241,.35)'}` : 'none',
+                    transition: 'all .15s',
+                  }}>{isBottom ? 'Bottom' : 'Top'}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
+              {(['pct', 'exact'] as const).map(v => (
+                <button key={v} onClick={() => setLocTopView(v)} style={{
+                  fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                  background: locTopView === v ? 'var(--accent)' : 'transparent',
+                  color: locTopView === v ? '#fff' : '#6b7280',
+                  boxShadow: locTopView === v ? '0 1px 4px rgba(99,102,241,.35)' : 'none',
+                  transition: 'all .15s',
+                }}>{v === 'pct' ? '%' : '#'}</button>
+              ))}
+            </div>
+          </div>
+          {topLocRows.map((row, ri) => (
+            <div key={ri} className="gr3">
+              {row.map(loc => (
+                <div key={loc.location_code} className="cc">
+                  <h3 style={{ borderLeft: `3px solid ${loc.color}`, paddingLeft: 7, marginLeft: -4 }}>
+                    {loc.display_name}
+                  </h3>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 4, borderBottom: '2px solid #e5e7eb', marginBottom: 2 }}>
+                    <span style={{ fontSize: 9, color: 'var(--muted)', width: 14, flexShrink: 0 }} />
+                    <div style={{ flex: 1, fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Item</div>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right', minWidth: 55 }}>
+                      {locTopView === 'pct' ? '% Rev' : 'Revenue'}
+                    </div>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right', minWidth: 45 }}>
+                      {locTopView === 'pct' ? '% Qty' : 'Qty'}
+                    </div>
+                  </div>
+                  {(topByLocation[loc.location_code] ?? []).map((item, idx) => (
+                    <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', borderBottom: '1px solid #f3f4f6' }}>
+                      <span style={{ fontSize: 10, color: 'var(--muted)', width: 14, flexShrink: 0, textAlign: 'right' }}>{idx + 1}</span>
+                      <div style={{ flex: 1, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</div>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', flexShrink: 0, minWidth: 55, textAlign: 'right' }}>
+                        {locTopView === 'pct' ? `${item.revPct}%` : fmt$(item.rev)}
+                      </span>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', flexShrink: 0, minWidth: 45, textAlign: 'right' }}>
+                        {locTopView === 'pct' ? `${item.qtyPct}%` : item.qty.toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          ))}
+        </>
+      )}
 
       {/* ── Item comparison table ── */}
       <div className="tw">

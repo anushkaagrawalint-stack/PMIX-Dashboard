@@ -19,7 +19,7 @@ const QUAD_COLORS: Record<string, string> = {
   'Star': '#16a34a', 'Plow Horse': '#7c3aed', 'Puzzle': '#1e40af', 'Dog': '#dc2626',
 };
 
-const CAT_ORDER = ['Entrees', 'Sides', 'NA Drinks', 'Sweets', 'Kids Meal', 'Alc Drinks', 'Retail', 'Other'];
+const CAT_ORDER = ['Entrees', 'Sides', 'NA Drinks', 'Sweets', 'Alc Drinks', 'Retail', 'Other'];
 
 type ChannelView = 'Blended' | 'IH' | 'LO' | '3PD';
 const CH_LABELS: Record<ChannelView, string> = {

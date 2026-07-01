@@ -15,17 +15,16 @@ const ASSIGNABLE_CHANNELS = CHANNELS.filter(
 );
 
 const CATEGORIES = [
-  'Entrees', 'Sides', 'NA Drinks', 'Alc Drinks', 'Sweets', 'Kids Meal',
+  'Entrees', 'Sides', 'NA Drinks', 'Alc Drinks', 'Sweets',
   'Retail', 'Catering', 'Other',
 ];
 
 const MENU_GROUPS: Record<string, string[]> = {
-  'Entrees':   ['BOWLS','PLATES','BURRITOS','CHEF CURATED BOWLS','KIDS'],
+  'Entrees':   ['BOWLS','PLATES','BURRITOS','CHEF CURATED BOWLS','KIDS','KIDS MEAL'],
   'Sides':     ['SIDES'],
   'NA Drinks': ['DRINKS','Cold Drinks','Hot Drinks'],
   'Alc Drinks':['Beer','Wine','Liquor','Gameday'],
   'Sweets':    ['SWEETS'],
-  'Kids Meal': ['KIDS','KIDS MEAL'],
   'Retail':    ['RETAIL'],
   'Catering':  ['CATERING'],
   'Other':     [],
@@ -258,8 +257,8 @@ export default function NeedsReview({ needsReview, uncategorizedItems }: Props) 
                       <th style={{ textAlign: 'left' }}>#</th>
                       <th style={{ textAlign: 'left' }}>Item Name</th>
                       <th style={{ textAlign: 'left' }}>Channel</th>
-                      <th style={{ textAlign: 'right' }}>Qty</th>
-                      <th style={{ textAlign: 'right' }}>Revenue</th>
+                      <th>Qty</th>
+                      <th>Revenue</th>
                       <th style={{ textAlign: 'left' }}>Category</th>
                       <th style={{ textAlign: 'left' }}>Menu Group</th>
                       <th style={{ textAlign: 'left' }}>Action</th>
@@ -294,8 +293,8 @@ export default function NeedsReview({ needsReview, uncategorizedItems }: Props) 
                               {CHANNEL_LABEL[row.channel] ?? row.channel}
                             </span>
                           </td>
-                          <td style={{ textAlign: 'right', fontWeight: 600 }}>{row.qty.toLocaleString()}</td>
-                          <td style={{ textAlign: 'right', fontWeight: 600, color: 'var(--accent)' }}>{fmt$(row.revenue)}</td>
+                          <td style={{ fontWeight: 600 }}>{row.qty.toLocaleString()}</td>
+                          <td style={{ fontWeight: 600, color: 'var(--accent)' }}>{fmt$(row.revenue)}</td>
 
                           {/* Category cell */}
                           <td>

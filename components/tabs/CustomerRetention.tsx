@@ -11,6 +11,7 @@ interface Props {
   bikky:   BikkyRow[];
   meItems: MERow[];
   items:   ItemRow[];
+  period:  string | null;
 }
 
 const pct  = (v: number) => `${(v * 100).toFixed(1)}%`;
@@ -148,7 +149,7 @@ function Top10List({ rows, color }: {
   );
 }
 
-export default function CustomerRetention({ bikky, meItems, items }: Props) {
+export default function CustomerRetention({ bikky, meItems, items, period }: Props) {
   const [search,         setSearch]       = useState('');
   const [sort,           setSort]         = useState<SortKey>('return_rate');
   const [desc,           setDesc]         = useState(true);
@@ -156,6 +157,7 @@ export default function CustomerRetention({ bikky, meItems, items }: Props) {
   const [catFilters,     setCatFilters]   = useState<string[]>([]);
   const [subCatFilters,  setSubCatFilters]= useState<string[]>([]);
   const [quadrantFilter, setQuadrant]     = useState('all');
+  const [showBottom,     setShowBottom]   = useState(false);
 
   function toggleSort(key: SortKey) {
     if (sort === key) setDesc(d => !d);
@@ -289,24 +291,24 @@ export default function CustomerRetention({ bikky, meItems, items }: Props) {
 
   // Top-10 data with prev-period delta
   const top10Reorder = useMemo(() =>
-    [...byItem].sort((a, b) => b.reorder_rate - a.reorder_rate)
+    [...byItem].sort((a, b) => showBottom ? a.reorder_rate - b.reorder_rate : b.reorder_rate - a.reorder_rate)
       .slice(0, 10)
       .map(r => ({
         name:  r.name.slice(0, 28),
         value: Math.round(r.reorder_rate * 1000) / 10,
         prev:  r.reorder_rate_prev != null ? Math.round(r.reorder_rate_prev * 1000) / 10 : null,
       })),
-  [byItem]);
+  [byItem, showBottom]);
 
   const top10Return = useMemo(() =>
-    [...byItem].sort((a, b) => b.return_rate - a.return_rate)
+    [...byItem].sort((a, b) => showBottom ? a.return_rate - b.return_rate : b.return_rate - a.return_rate)
       .slice(0, 10)
       .map(r => ({
         name:  r.name.slice(0, 28),
         value: Math.round(r.return_rate * 1000) / 10,
         prev:  r.return_rate_prev != null ? Math.round(r.return_rate_prev * 1000) / 10 : null,
       })),
-  [byItem]);
+  [byItem, showBottom]);
 
   const scatterData = byItem.map(r => ({
     x:    Math.round(r.return_rate  * 1000) / 10,
@@ -335,7 +337,7 @@ export default function CustomerRetention({ bikky, meItems, items }: Props) {
       <div className="info-banner blue">
         <i className="ti ti-info-circle" />
         <div>
-          Bikky retention data is available by fiscal period — return rate (% of guests who returned within 90 days) and reorder rate (same item again).
+          Bikky retention data · {period ? <strong>{period}</strong> : 'all periods'} — return rate (% of guests who returned within 90 days) and reorder rate (same item again).
         </div>
       </div>
 
@@ -453,19 +455,24 @@ export default function CustomerRetention({ bikky, meItems, items }: Props) {
             </div>
           </div>
 
-          {/* Top-10 lists */}
+          {/* Top/Bottom-10 lists */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+            <button className="drb" onClick={() => setShowBottom(b => !b)} style={{ minWidth: 0, padding: '3px 10px', fontSize: 11 }}>
+              {showBottom ? 'Show Top 10' : 'Show Bottom 10'}
+            </button>
+          </div>
           <div className="gr2" style={{ marginBottom: 12 }}>
             <div className="cc">
-              <h3>Top 10 by Reorder Rate</h3>
+              <h3>{showBottom ? 'Bottom' : 'Top'} 10 by Reorder Rate</h3>
               <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 10 }}>
-                Ranked by avg % of guests who ordered the same item again · averaged across all periods in range
+                Ranked by % of guests who ordered the same item again · {period ?? 'all periods'}
               </div>
               <Top10List rows={top10Reorder} color="#10b981" />
             </div>
             <div className="cc">
-              <h3>Top 10 by Return Rate</h3>
+              <h3>{showBottom ? 'Bottom' : 'Top'} 10 by Return Rate</h3>
               <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 10 }}>
-                Ranked by avg % of guests who returned within 90 days · averaged across all periods in range
+                Ranked by % of guests who returned within 90 days · {period ?? 'all periods'}
               </div>
               <Top10List rows={top10Return} color="#7c3aed" />
             </div>

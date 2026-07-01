@@ -247,16 +247,16 @@ export default function BYOBreakdown({
                     }} />
                     {bowl}
                   </td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text)' }}>
+                  <td style={{ padding: '6px 10px', textAlign: 'center', color: 'var(--text)' }}>
                     {it ? it.qty.toLocaleString() : '—'}
                   </td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text)' }}>
+                  <td style={{ padding: '6px 10px', textAlign: 'center', color: 'var(--text)' }}>
                     {it ? fmtRev(it.revenue) : '—'}
                   </td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right', color: 'var(--text)' }}>
+                  <td style={{ padding: '6px 10px', textAlign: 'center', color: 'var(--text)' }}>
                     {it ? fmtCost(it.avgPrice) : '—'}
                   </td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: displayCost != null ? 600 : 400 }}>
+                  <td style={{ padding: '6px 10px', textAlign: 'center', fontWeight: displayCost != null ? 600 : 400 }}>
                     {displayCost != null ? (
                       <span style={{ color: isEstimate ? '#92400e' : 'var(--text)' }}>
                         {fmtCost(displayCost)}
@@ -268,7 +268,7 @@ export default function BYOBreakdown({
                       </span>
                     ) : '—'}
                   </td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>
+                  <td style={{ padding: '6px 10px', textAlign: 'center' }}>
                     {cogsPct != null ? (
                       <span style={{
                         fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 3,

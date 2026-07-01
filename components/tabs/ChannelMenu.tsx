@@ -24,13 +24,12 @@ function SectionLabel({ label }: { label: string }) {
 }
 
 export default function ChannelMenu({ data }: { data: DashboardData }) {
-  const { channels, channelItems, meItems } = data;
+  const { channels, channelItems } = data;
 
-  const [sort, setSort]   = useState<SortKey>('total');
-  const [desc, setDesc]   = useState(true);
+  const [sort, setSort]       = useState<SortKey>('total');
+  const [desc, setDesc]       = useState(true);
   const [topView, setTopView] = useState<'pct' | 'exact'>('pct');
-  const [meFilter,  setMeFilter]  = useState<Set<string>>(new Set());
-  const [meOpen,    setMeOpen]    = useState(false);
+  const [showBottom, setShowBottom] = useState(false);
 
   function toggleSort(key: SortKey) {
     if (sort === key) setDesc(d => !d);
@@ -60,8 +59,10 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
     Object.entries(grouped).forEach(([ch, items]) => {
       const totalRev = chanRev[ch] ?? 1;
       const totalQty = chanQty[ch] ?? 1;
-      map[ch] = Object.entries(items)
-        .sort((a, b) => b[1].rev - a[1].rev)
+      const sorted = Object.entries(items).sort((a, b) =>
+        showBottom ? a[1].rev - b[1].rev : b[1].rev - a[1].rev,
+      );
+      map[ch] = sorted
         .slice(0, 10)
         .map(([name, { rev, qty }]) => ({
           name: name.length > 26 ? name.slice(0, 24) + '…' : name,
@@ -71,7 +72,7 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
         }));
     });
     return map;
-  }, [channelItems]);
+  }, [channelItems, showBottom]);
 
   // Revenue by channel bar
   const menuRevBar = useMemo(() => {
@@ -89,18 +90,16 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
 
   // Item-level channel split — all channels (top 50)
   const itemData = useMemo(() => {
-    const map = new Map<string, { name: string; quadrant: string; byChannel: Record<string, number>; total: number }>();
+    const map = new Map<string, { name: string; byChannel: Record<string, number>; total: number }>();
     channelItems.forEach(ci => {
       if (!map.has(ci.canonical_name)) {
-        const me = meItems.find(m => m.canonical_name === ci.canonical_name);
-        map.set(ci.canonical_name, { name: ci.canonical_name, quadrant: me?.quadrant ?? 'Dog', byChannel: {}, total: 0 });
+        map.set(ci.canonical_name, { name: ci.canonical_name, byChannel: {}, total: 0 });
       }
       const item = map.get(ci.canonical_name)!;
       item.byChannel[ci.channel] = (item.byChannel[ci.channel] ?? 0) + ci.revenue;
       item.total += ci.revenue;
     });
     return [...map.values()]
-      .filter(item => meFilter.size === 0 || meFilter.has(item.quadrant))
       .sort((a, b) => {
         const mul = desc ? -1 : 1;
         const av = sort === 'total' ? a.total : (a.byChannel[sort] ?? 0);
@@ -108,7 +107,7 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
         return mul * (av - bv);
       })
       .slice(0, 50);
-  }, [channelItems, meItems, sort, desc, meFilter]);
+  }, [channelItems, sort, desc]);
 
   // Split activeChannels into rows of 3
   const topItemRows: typeof activeChannels[] = [];
@@ -171,7 +170,24 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
       {topItemRows.length > 0 && (
         <>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, marginTop: 6, paddingLeft: 2 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)' }}>Top items by channel</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)' }}>
+                {showBottom ? 'Bottom' : 'Top'} items by channel
+              </div>
+              {/* Top / Bottom pill toggle */}
+              <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
+                {([false, true] as const).map(isBottom => (
+                  <button key={String(isBottom)} onClick={() => setShowBottom(isBottom)} style={{
+                    fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                    background: showBottom === isBottom ? (isBottom ? '#dc2626' : 'var(--accent)') : 'transparent',
+                    color: showBottom === isBottom ? '#fff' : '#6b7280',
+                    boxShadow: showBottom === isBottom ? `0 1px 4px ${isBottom ? 'rgba(220,38,38,.3)' : 'rgba(99,102,241,.35)'}` : 'none',
+                    transition: 'all .15s',
+                  }}>{isBottom ? 'Bottom' : 'Top'}</button>
+                ))}
+              </div>
+            </div>
+            {/* % / # pill toggle */}
             <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
               {(['pct', 'exact'] as const).map(v => (
                 <button key={v} onClick={() => setTopView(v)} style={{
@@ -220,102 +236,17 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
         </>
       )}
 
-      {/* ── ME quadrant legend ── */}
-      <div className="cc" style={{ marginBottom: 10 }}>
-        <h3>Menu Engineering quadrant criteria</h3>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ background: '#f9fafb' }}>
-              <th style={{ textAlign: 'left', padding: '6px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Quadrant</th>
-              <th style={{ textAlign: 'center', padding: '6px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Margin</th>
-              <th style={{ textAlign: 'center', padding: '6px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Popularity</th>
-              <th style={{ textAlign: 'left', padding: '6px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>What it means</th>
-            </tr>
-          </thead>
-          <tbody>
-            {[
-              { q: 'Star',       color: '#f59e0b', margin: 'High', pop: 'High', desc: 'High profit, high sales' },
-              { q: 'Puzzle',     color: '#6366f1', margin: 'High', pop: 'Low',  desc: 'High profit but not selling well' },
-              { q: 'Plow Horse', color: '#10b981', margin: 'Low',  pop: 'High', desc: 'Popular but thin margins' },
-              { q: 'Dog',        color: '#94a3b8', margin: 'Low',  pop: 'Low',  desc: 'Low profit and low sales' },
-            ].map(({ q, color, margin, pop, desc }, i) => (
-              <tr key={q} style={{ borderTop: '1px solid #f3f4f6', background: i % 2 === 1 ? '#fafafa' : 'transparent' }}>
-                <td style={{ padding: '8px 10px' }}>
-                  <span className={`mb mb-${q.split(' ')[0]}`} style={{ background: color }}>{q}</span>
-                </td>
-                <td style={{ padding: '8px 10px', textAlign: 'center' }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: margin === 'High' ? '#10b981' : '#ef4444', background: margin === 'High' ? '#d1fae5' : '#fee2e2', padding: '2px 7px', borderRadius: 10 }}>
-                    {margin}
-                  </span>
-                </td>
-                <td style={{ padding: '8px 10px', textAlign: 'center' }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: pop === 'High' ? '#10b981' : '#ef4444', background: pop === 'High' ? '#d1fae5' : '#fee2e2', padding: '2px 7px', borderRadius: 10 }}>
-                    {pop}
-                  </span>
-                </td>
-                <td style={{ padding: '8px 10px', fontSize: 11, color: 'var(--text)' }}>{desc}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div style={{ marginTop: 8, fontSize: 10, color: 'var(--muted)', paddingLeft: 2 }}>
-          Thresholds are computed dynamically as the median margin % and median mix % across all items in the current filter.
-        </div>
-      </div>
-
       {/* ── Item-level channel split table — all channels ── */}
       <SectionLabel label="Item channel split (top 50)" />
       <div className="tw">
         <div className="th2">
           <h3>Revenue by item across all channels</h3>
-          <div className="drw" style={{ position: 'relative' }}>
-            <button className="drb" onClick={() => setMeOpen(o => !o)} style={{ minWidth: 130 }}>
-              {meFilter.size === 0 ? 'All Quadrants' : `${meFilter.size} selected`}
-              <i className="ti ti-chevron-down" style={{ fontSize: 11 }} />
-            </button>
-            {meOpen && (
-              <>
-                <div style={{ position: 'fixed', inset: 0, zIndex: 199 }} onClick={() => setMeOpen(false)} />
-                <div className="drm open" style={{ minWidth: 170, zIndex: 200 }}>
-                  <label className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
-                    <input type="checkbox" checked={meFilter.size === 0}
-                      onChange={() => setMeFilter(new Set())}
-                      style={{ accentColor: 'var(--accent)' }} />
-                    All Quadrants
-                  </label>
-                  <div className="dr-div" />
-                  {[
-                    { q: 'Star',       color: '#f59e0b' },
-                    { q: 'Puzzle',     color: '#6366f1' },
-                    { q: 'Plow Horse', color: '#10b981' },
-                    { q: 'Dog',        color: '#94a3b8' },
-                  ].map(({ q, color }) => (
-                    <label key={q} className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
-                      <input
-                        type="checkbox"
-                        checked={meFilter.has(q)}
-                        onChange={() => setMeFilter(prev => {
-                          const next = new Set(prev);
-                          next.has(q) ? next.delete(q) : next.add(q);
-                          return next;
-                        })}
-                        style={{ accentColor: color }}
-                      />
-                      <span style={{ width: 8, height: 8, borderRadius: 2, background: color, display: 'inline-block', flexShrink: 0 }} />
-                      {q}
-                    </label>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
         </div>
         <div style={{ overflowX: 'auto' }}>
           <table>
             <thead>
               <tr>
                 <th>Item</th>
-                <th>ME</th>
                 <th style={{ cursor: 'pointer', color: sort === 'total' ? 'var(--accent)' : undefined }} onClick={() => toggleSort('total')}>
                   Total{arrow('total')}
                 </th>
@@ -335,9 +266,6 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
                 <tr key={item.name}>
                   <td style={{ fontWeight: 600, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {item.name}
-                  </td>
-                  <td>
-                    <span className={`mb mb-${item.quadrant.split(' ')[0]}`}>{item.quadrant}</span>
                   </td>
                   <td style={{ fontWeight: 600 }}>{fmt$(item.total)}</td>
                   {activeChannels.map(ch => {

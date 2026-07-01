@@ -63,7 +63,17 @@ export default function WeeklyChart({
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <div style={{ display: 'flex', gap: 12, fontSize: 9, color: 'var(--muted)' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: '#c4b5fd', display: 'inline-block' }} />
+            Revenue
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ width: 16, height: 2, background: '#f5a623', display: 'inline-block' }} />
+            Qty
+          </span>
+        </div>
         <select
           className="fb-sel"
           value={mode}
@@ -76,17 +86,14 @@ export default function WeeklyChart({
         </select>
       </div>
       <ResponsiveContainer width="100%" height={155}>
-        <ComposedChart data={chartData} margin={{ top: 4, right: 36, left: 12, bottom: 18 }}>
+        <ComposedChart data={chartData} margin={{ top: 4, right: 40, left: 4, bottom: 24 }}>
           <CartesianGrid stroke="#f3f4f6" vertical={false} />
-          <XAxis dataKey="label" tick={{ fontSize: 9 }} tickLine={false} axisLine={false}>
-            <Label value={xLabel} position="insideBottom" offset={-10} style={{ fontSize: 9, fill: '#94a3b8' }} />
+          <XAxis dataKey="label" tick={{ fontSize: 9 }} tickLine={false} axisLine={false}
+            interval="preserveStartEnd" minTickGap={28}>
+            <Label value={xLabel} position="insideBottom" offset={-12} style={{ fontSize: 9, fill: '#94a3b8' }} />
           </XAxis>
-          <YAxis yAxisId="left" tickFormatter={fmtK} tick={{ fontSize: 9 }} tickLine={false} axisLine={false} width={42}>
-            <Label value="Revenue" angle={-90} position="insideLeft" offset={12} style={{ fontSize: 9, fill: '#94a3b8' }} />
-          </YAxis>
-          <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} width={32}>
-            <Label value="Qty" angle={90} position="insideRight" offset={10} style={{ fontSize: 9, fill: '#94a3b8' }} />
-          </YAxis>
+          <YAxis yAxisId="left" tickFormatter={fmtK} tick={{ fontSize: 9 }} tickLine={false} axisLine={false} width={58} />
+          <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} width={36} />
           <Tooltip
             formatter={(v, name) => {
               const n = typeof v === 'number' ? v : 0;

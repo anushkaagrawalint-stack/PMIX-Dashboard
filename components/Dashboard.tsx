@@ -38,10 +38,10 @@ type TabId = typeof TABS[number]['id'];
 const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location: boolean }> = {
   overview:   { channel: true,  category: true,  location: true  },
   itemmix:    { channel: true,  category: true,  location: true  },
-  loccompare: { channel: true,  category: true,  location: true  },
+  loccompare: { channel: true,  category: true,  location: false },
   chanmenu:   { channel: true,  category: true,  location: true  },
   byo:        { channel: false, category: false, location: true  },
-  payment:    { channel: false, category: false, location: false },
+  payment:    { channel: false, category: false, location: true  },
   meoverall:  { channel: true,  category: true,  location: true  },
   pinksheets: { channel: false, category: false, location: false },
   bikky:      { channel: false, category: false, location: false },
@@ -94,6 +94,9 @@ export default function Dashboard({ data }: { data: DashboardData }) {
       ? (data.locations.find(l => l.location_code === selectedLocations[0])?.display_name ?? selectedLocations[0])
       : `${selectedLocations.length} Locations`;
 
+  // Kids Meal is treated as Entrees everywhere in the UI
+  const normCat = (c: string | null | undefined) => (c === 'Kids Meal' ? 'Entrees' : c || 'Other');
+
   // Category options: vendor channels (catering/offsite/markup) collapse to 'Other'
   // to keep the dropdown short. Only IH/Loyalty/3PD show real categories.
   const VENDOR_CHANNELS = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE', 'TPD_MARKUP']);
@@ -104,8 +107,8 @@ export default function Dashboard({ data }: { data: DashboardData }) {
       if (chFilter.size > 0 && !chFilter.has(i.channel)) return;
       const cat = VENDOR_CHANNELS.has(i.channel)
         ? 'Other'
-        : (i.category || 'Other');
-      if (cat) cats.add(cat);
+        : normCat(i.category);
+      cats.add(cat);
     });
     return [...cats].sort();
   }, [data.items, selectedChannels]);
@@ -277,14 +280,14 @@ export default function Dashboard({ data }: { data: DashboardData }) {
   const filteredItems = useMemo(() =>
     categoryFilter === 'all'
       ? channelFilteredItems
-      : channelFilteredItems.filter(i => i.category === categoryFilter),
+      : channelFilteredItems.filter(i => normCat(i.category) === categoryFilter),
   [channelFilteredItems, categoryFilter]);
 
   // Channel-filtered channelItems — location already baked into locationAdjustedChannelItems
   const filteredChannelItems = useMemo(() => {
     let r = locationAdjustedChannelItems;
     if (selectedChannels.length > 0) r = r.filter(ci => selectedChannels.includes(ci.channel));
-    if (categoryFilter !== 'all')    r = r.filter(ci => (itemMetaMap.get(ci.canonical_name)?.category ?? 'Other') === categoryFilter);
+    if (categoryFilter !== 'all')    r = r.filter(ci => normCat(itemMetaMap.get(ci.canonical_name)?.category) === categoryFilter);
     return r;
   }, [selectedChannels, categoryFilter, locationAdjustedChannelItems, itemMetaMap]);
 
@@ -309,7 +312,7 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     return data.locationItems.filter(li => {
       if (!allowedNames.has(li.canonical_name)) return false;
       if (categoryFilter !== 'all') {
-        return (itemMetaMap.get(li.canonical_name)?.category ?? 'Other') === categoryFilter;
+        return normCat(itemMetaMap.get(li.canonical_name)?.category) === categoryFilter;
       }
       return true;
     });
@@ -321,7 +324,7 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     if (selectedChannels.length === 0) {
       return categoryFilter === 'all'
         ? data.meItems
-        : data.meItems.filter(i => i.category === categoryFilter);
+        : data.meItems.filter(i => normCat(i.category) === categoryFilter);
     }
 
     // Per-channel recompute
@@ -366,7 +369,7 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     allItems.forEach(i => catRev.set(i.category, (catRev.get(i.category) ?? 0) + i.net_sales));
 
     const display = categoryFilter === 'all'
-      ? allItems : allItems.filter(i => i.category === categoryFilter);
+      ? allItems : allItems.filter(i => normCat(i.category) === categoryFilter);
 
     return display.map(i => {
       const mix_pct     = grand_qty > 0 ? i.qty / grand_qty : 0;
@@ -393,9 +396,20 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     return filteredMEItems.filter(i => locNames.has(i.canonical_name));
   }, [filteredMEItems, selectedLocations, locationBaseItems]);
 
-  const filteredBikky = useMemo(() =>
-    categoryFilter === 'all' ? data.bikky : data.bikky.filter(b => b.category === categoryFilter),
-  [data.bikky, categoryFilter]);
+  // Find the most recent fiscal period that overlaps the selected date range
+  const activeBikkyPeriod = useMemo(() => {
+    const overlapping = data.periods.filter(
+      p => dr.start <= p.end_date && dr.end >= p.start_date,
+    );
+    return overlapping.length > 0 ? overlapping[overlapping.length - 1].label : null;
+  }, [data.periods, dr]);
+
+  const filteredBikky = useMemo(() => {
+    let rows = data.bikky;
+    if (activeBikkyPeriod) rows = rows.filter(b => b.period === activeBikkyPeriod);
+    if (categoryFilter !== 'all') rows = rows.filter(b => normCat(b.category) === categoryFilter);
+    return rows;
+  }, [data.bikky, activeBikkyPeriod, categoryFilter]);
 
   const filteredData = useMemo(() => ({
     ...data,
@@ -578,10 +592,10 @@ export default function Dashboard({ data }: { data: DashboardData }) {
       {tab === 'loccompare' && <LocationCompare  data={filteredData} />}
       {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} />}
       {tab === 'byo'        && <BYOBreakdown     modifiers={data.modifiers} items={locationBaseItems} pinkSheets={data.pinkSheets} meItems={finalMEItems} />}
-      {tab === 'payment'    && <PaymentSource    payments={data.payments} />}
+      {tab === 'payment'    && <PaymentSource    payments={data.payments} paymentsByLocation={data.paymentsByLocation} paymentSourcesByLocation={data.paymentSourcesByLocation} selectedLocations={selectedLocations} />}
       {tab === 'meoverall'  && <MEOverall meItems={finalMEItems} pinkSheets={data.pinkSheets} />}
       {tab === 'pinksheets' && <PinkSheets pinkSheets={data.pinkSheets} details={data.pinkSheetDetails} />}
-      {tab === 'bikky'      && <CustomerRetention bikky={data.bikky} meItems={finalMEItems} items={locationBaseItems} />}
+      {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} />}
       {tab === 'renames'    && <RenamesAudit     renames={data.renames} />}
       {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}

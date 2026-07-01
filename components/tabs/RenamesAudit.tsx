@@ -21,8 +21,8 @@ export default function RenamesAudit({ renames }: Props) {
       <div className="info-banner purple">
         <i className="ti ti-refresh" />
         <div>
-          <strong>{renames.length}</strong> canonical item groups with multiple historical display names.
-          These items consolidate cleanly under one canonical name in all dashboard rollups — historical names appear strikethrough.
+          <strong>{renames.length}</strong> items renamed in Toast POS — same item (by internal ID) appeared under different display names over time.
+          Current name shown normally; former names appear strikethrough. Sorted by lifetime qty.
         </div>
       </div>
 
