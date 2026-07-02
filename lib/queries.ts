@@ -662,26 +662,12 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0
       ORDER BY item_name_updated, period
     ),
-    ih_base_latest AS (
-      SELECT DISTINCT ON (item_name_updated)
-        item_name_updated, avg_cost
-      FROM analytics.r365_item_cost
-      WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0
-      ORDER BY item_name_updated, period DESC
-    ),
     online_base AS (
       SELECT DISTINCT ON (item_name_updated, period)
         item_name_updated, period, avg_cost
       FROM analytics.r365_item_cost
       WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0
       ORDER BY item_name_updated, period
-    ),
-    online_base_latest AS (
-      SELECT DISTINCT ON (item_name_updated)
-        item_name_updated, avg_cost
-      FROM analytics.r365_item_cost
-      WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0
-      ORDER BY item_name_updated, period DESC
     ),
     any_base AS (
       SELECT DISTINCT ON (item_name_updated, period)
@@ -690,14 +676,6 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       WHERE avg_cost > 0
       ORDER BY item_name_updated, period
     ),
-    any_base_latest AS (
-      SELECT DISTINCT ON (item_name_updated)
-        item_name_updated, avg_cost
-      FROM analytics.r365_item_cost
-      WHERE avg_cost > 0
-      ORDER BY item_name_updated, period DESC
-    ),
-
     -- Step 3: Modifier unit costs from r365_modifier_cost (MI rows = menu item recipes)
     rmc AS (
       SELECT DISTINCT ON (clean_name, period)
@@ -706,37 +684,73 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       WHERE recipe_name LIKE 'MI %' AND cost_per_portion > 0
       ORDER BY clean_name, period
     ),
-    rmc_latest AS (
-      SELECT DISTINCT ON (clean_name)
-        clean_name, cost_per_portion
-      FROM analytics.r365_modifier_cost
-      WHERE recipe_name LIKE 'MI %' AND cost_per_portion > 0
-      ORDER BY clean_name, period DESC
-    ),
-    extra_costs AS (
-      SELECT 'Extra ' || clean_name AS extra_name, cost_per_portion FROM rmc_latest
-    ),
-    organic_costs AS (
-      SELECT 'Organic ' || clean_name AS organic_name, cost_per_portion FROM rmc_latest
-    ),
-    side_costs AS (
-      SELECT clean_name || ' - Side' AS side_name, cost_per_portion FROM rmc_latest
-    ),
-
     -- Online modifier cost per item × period (LO+3PD orders only)
     cmc AS (
       SELECT
         COALESCE(bf.clean, fol.canonical_name)                                AS parent_item,
         'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT            AS cost_period,
         SUM(fm.quantity * COALESCE(
+          -- 1. Direct: exact period (case-insensitive)
           (SELECT r.cost_per_portion FROM rmc r
-           WHERE r.clean_name = fm.canonical_name
+           WHERE LOWER(r.clean_name) = LOWER(fm.canonical_name)
              AND r.period = 'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT
            LIMIT 1),
-          (SELECT r.cost_per_portion FROM rmc_latest r WHERE r.clean_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM extra_costs r WHERE r.extra_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM organic_costs r WHERE r.organic_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM side_costs r WHERE r.side_name = fm.canonical_name),
+          -- 2. Direct: most-recent period ≤ current (case-insensitive)
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND LOWER(r.clean_name) = LOWER(fm.canonical_name)
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 3. SAUCE_ALIASES: Toast display name → R365 recipe clean_name
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND LOWER(fm.canonical_name) IN ('tomato garlic (butter masala)','tikka masala','tamarind chili (spicy)','peanut sesame','coconut ginger')
+             AND LOWER(r.clean_name) = CASE LOWER(fm.canonical_name)
+               WHEN 'tomato garlic (butter masala)' THEN 'tomato garlic sauce'
+               WHEN 'tikka masala'                  THEN 'tikka masala sauce'
+               WHEN 'tamarind chili (spicy)'        THEN 'tamarind chili sauce'
+               WHEN 'peanut sesame'                 THEN 'peanut sesame sauce'
+               WHEN 'coconut ginger'                THEN 'coconut ginger sauce'
+               ELSE '' END
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 4. "Extra X" → cost of "X"
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND fm.canonical_name ILIKE 'Extra %'
+             AND LOWER(r.clean_name) = LOWER(SUBSTRING(fm.canonical_name FROM 7))
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 5. "1/2 X" → half cost of "X"
+          (SELECT r.cost_per_portion / 2.0 FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND fm.canonical_name ILIKE '1/2 %'
+             AND LOWER(r.clean_name) = LOWER(REGEXP_REPLACE(SUBSTRING(fm.canonical_name FROM 5), '^and ', '', 'i'))
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 6. "X - Side" → cost of "X"
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND fm.canonical_name ILIKE '% - Side'
+             AND LOWER(r.clean_name) = LOWER(LEFT(fm.canonical_name, LENGTH(fm.canonical_name) - 7))
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 7. 'Tandoori Paneer' → 'Organic Tandoori Paneer'
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND LOWER(fm.canonical_name) = 'tandoori paneer'
+             AND LOWER(r.clean_name) = 'organic tandoori paneer'
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 8. 'Romaine' → 'Shredded Romaine'
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND LOWER(fm.canonical_name) = 'romaine'
+             AND LOWER(r.clean_name) = 'shredded romaine'
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 9. 'Spicy Mango Chutney' hardcoded
+          CASE WHEN LOWER(fm.canonical_name) IN ('spicy mango chutney','spicy mango chutney - side') THEN 0.1777 END,
           0
         ))                                                                     AS total_mod_cost
       FROM public.fact_modifiers fm
@@ -765,7 +779,6 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
           )
         )
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-        AND fm.canonical_name NOT ILIKE '1/2 %'
         -- Include modifier if it has a valid (non-excluded) type, OR if it has no entry at all
         AND (
           EXISTS (
@@ -788,14 +801,67 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
         COALESCE(bf.clean, fol.canonical_name)                                AS parent_item,
         'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT            AS cost_period,
         SUM(fm.quantity * COALESCE(
+          -- 1. Direct: exact period (case-insensitive)
           (SELECT r.cost_per_portion FROM rmc r
-           WHERE r.clean_name = fm.canonical_name
+           WHERE LOWER(r.clean_name) = LOWER(fm.canonical_name)
              AND r.period = 'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT
            LIMIT 1),
-          (SELECT r.cost_per_portion FROM rmc_latest r WHERE r.clean_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM extra_costs r WHERE r.extra_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM organic_costs r WHERE r.organic_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM side_costs r WHERE r.side_name = fm.canonical_name),
+          -- 2. Direct: most-recent period ≤ current (case-insensitive)
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND LOWER(r.clean_name) = LOWER(fm.canonical_name)
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 3. SAUCE_ALIASES: Toast display name → R365 recipe clean_name
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND LOWER(fm.canonical_name) IN ('tomato garlic (butter masala)','tikka masala','tamarind chili (spicy)','peanut sesame','coconut ginger')
+             AND LOWER(r.clean_name) = CASE LOWER(fm.canonical_name)
+               WHEN 'tomato garlic (butter masala)' THEN 'tomato garlic sauce'
+               WHEN 'tikka masala'                  THEN 'tikka masala sauce'
+               WHEN 'tamarind chili (spicy)'        THEN 'tamarind chili sauce'
+               WHEN 'peanut sesame'                 THEN 'peanut sesame sauce'
+               WHEN 'coconut ginger'                THEN 'coconut ginger sauce'
+               ELSE '' END
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 4. "Extra X" → cost of "X"
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND fm.canonical_name ILIKE 'Extra %'
+             AND LOWER(r.clean_name) = LOWER(SUBSTRING(fm.canonical_name FROM 7))
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 5. "1/2 X" → half cost of "X"
+          (SELECT r.cost_per_portion / 2.0 FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND fm.canonical_name ILIKE '1/2 %'
+             AND LOWER(r.clean_name) = LOWER(REGEXP_REPLACE(SUBSTRING(fm.canonical_name FROM 5), '^and ', '', 'i'))
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 6. "X - Side" → cost of "X"
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND fm.canonical_name ILIKE '% - Side'
+             AND LOWER(r.clean_name) = LOWER(LEFT(fm.canonical_name, LENGTH(fm.canonical_name) - 7))
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 7. 'Tandoori Paneer' → 'Organic Tandoori Paneer'
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND LOWER(fm.canonical_name) = 'tandoori paneer'
+             AND LOWER(r.clean_name) = 'organic tandoori paneer'
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 8. 'Romaine' → 'Shredded Romaine'
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+           WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+             AND LOWER(fm.canonical_name) = 'romaine'
+             AND LOWER(r.clean_name) = 'shredded romaine'
+             AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+           ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 9. 'Spicy Mango Chutney' hardcoded
+          CASE WHEN LOWER(fm.canonical_name) IN ('spicy mango chutney','spicy mango chutney - side') THEN 0.1777 END,
           0
         ))                                                                     AS total_ih_mod_cost
       FROM public.fact_modifiers fm
@@ -821,7 +887,6 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
           )
         )
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-        AND fm.canonical_name NOT ILIKE '1/2 %'
         AND (
           EXISTS (
             SELECT 1 FROM analytics.modifier_type
@@ -903,11 +968,32 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
         )                                                                      AS total_cost
       FROM cs
       LEFT JOIN ih_base           ib  ON ib.item_name_updated  = cs.canonical_name AND ib.period  = cs.cost_period
-      LEFT JOIN ih_base_latest    ibl ON ibl.item_name_updated = cs.canonical_name
+      LEFT JOIN LATERAL (
+        SELECT avg_cost FROM analytics.r365_item_cost
+        WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0
+          AND item_name_updated = cs.canonical_name
+          AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT
+              <= RIGHT(cs.cost_period,4)::INT * 100 + SUBSTRING(cs.cost_period,2,2)::INT
+        ORDER BY RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC LIMIT 1
+      ) ibl ON true
       LEFT JOIN online_base       ob  ON ob.item_name_updated  = cs.canonical_name AND ob.period  = cs.cost_period
-      LEFT JOIN online_base_latest obl ON obl.item_name_updated = cs.canonical_name
+      LEFT JOIN LATERAL (
+        SELECT avg_cost FROM analytics.r365_item_cost
+        WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0
+          AND item_name_updated = cs.canonical_name
+          AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT
+              <= RIGHT(cs.cost_period,4)::INT * 100 + SUBSTRING(cs.cost_period,2,2)::INT
+        ORDER BY RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC LIMIT 1
+      ) obl ON true
       LEFT JOIN any_base          ab  ON ab.item_name_updated  = cs.canonical_name AND ab.period  = cs.cost_period
-      LEFT JOIN any_base_latest   abl ON abl.item_name_updated = cs.canonical_name
+      LEFT JOIN LATERAL (
+        SELECT avg_cost FROM analytics.r365_item_cost
+        WHERE avg_cost > 0
+          AND item_name_updated = cs.canonical_name
+          AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT
+              <= RIGHT(cs.cost_period,4)::INT * 100 + SUBSTRING(cs.cost_period,2,2)::INT
+        ORDER BY RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC LIMIT 1
+      ) abl ON true
       LEFT JOIN cmc                ON cmc.parent_item        = cs.canonical_name
                                   AND cmc.cost_period        = cs.cost_period
                                   AND cs.channel            <> 'IH'
@@ -1173,27 +1259,6 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       WHERE recipe_name LIKE 'MI %' AND cost_per_portion > 0
       ORDER BY clean_name, period
     ),
-    rmc_latest AS (
-      SELECT DISTINCT ON (clean_name) clean_name, cost_per_portion
-      FROM analytics.r365_modifier_cost
-      WHERE recipe_name LIKE 'MI %' AND cost_per_portion > 0
-      ORDER BY clean_name, period DESC
-    ),
-    -- "Extra X" → cost of "X": avoids REGEXP_REPLACE which is unreliable for this pattern
-    extra_costs AS (
-      SELECT 'Extra ' || clean_name AS extra_name, cost_per_portion
-      FROM rmc_latest
-    ),
-    -- "Organic X" → cost of "X" (mirrors AppScript bOrganic fallback)
-    organic_costs AS (
-      SELECT 'Organic ' || clean_name AS organic_name, cost_per_portion
-      FROM rmc_latest
-    ),
-    -- "X - Side" → cost of "X" (mirrors AppScript bSide fallback)
-    side_costs AS (
-      SELECT clean_name || ' - Side' AS side_name, cost_per_portion
-      FROM rmc_latest
-    ),
     -- True online order qty per parent item — NOT from the modifier join (that overcounts)
     online_orders AS (
       SELECT
@@ -1240,20 +1305,29 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
       GROUP BY COALESCE(bf.clean, fol.canonical_name)
     ),
-    -- Shared modifier cost subquery (used by both cmc and cmc_ih)
     -- Online modifier cost
     cmc AS (
       SELECT
         COALESCE(bf.clean, fol.canonical_name) AS parent_item,
         SUM(fm.quantity * COALESCE(
-          (SELECT r.cost_per_portion FROM rmc r
-           WHERE r.clean_name = fm.canonical_name
-             AND r.period = 'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT
-           LIMIT 1),
-          (SELECT r.cost_per_portion FROM rmc_latest r WHERE r.clean_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM extra_costs r WHERE r.extra_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM organic_costs r WHERE r.organic_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM side_costs r WHERE r.side_name = fm.canonical_name),
+          -- 1. Direct: exact period (case-insensitive)
+          (SELECT r.cost_per_portion FROM rmc r WHERE LOWER(r.clean_name) = LOWER(fm.canonical_name) AND r.period = 'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT LIMIT 1),
+          -- 2. Direct: most-recent period ≤ current (case-insensitive)
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND LOWER(r.clean_name) = LOWER(fm.canonical_name) AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 3. SAUCE_ALIASES: Toast display name → R365 recipe clean_name
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND LOWER(fm.canonical_name) IN ('tomato garlic (butter masala)','tikka masala','tamarind chili (spicy)','peanut sesame','coconut ginger') AND LOWER(r.clean_name) = CASE LOWER(fm.canonical_name) WHEN 'tomato garlic (butter masala)' THEN 'tomato garlic sauce' WHEN 'tikka masala' THEN 'tikka masala sauce' WHEN 'tamarind chili (spicy)' THEN 'tamarind chili sauce' WHEN 'peanut sesame' THEN 'peanut sesame sauce' WHEN 'coconut ginger' THEN 'coconut ginger sauce' ELSE '' END AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 4. "Extra X" → cost of "X"
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND fm.canonical_name ILIKE 'Extra %' AND LOWER(r.clean_name) = LOWER(SUBSTRING(fm.canonical_name FROM 7)) AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 5. "1/2 X" → half cost of "X"
+          (SELECT r.cost_per_portion / 2.0 FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND fm.canonical_name ILIKE '1/2 %' AND LOWER(r.clean_name) = LOWER(REGEXP_REPLACE(SUBSTRING(fm.canonical_name FROM 5), '^and ', '', 'i')) AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 6. "X - Side" → cost of "X"
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND fm.canonical_name ILIKE '% - Side' AND LOWER(r.clean_name) = LOWER(LEFT(fm.canonical_name, LENGTH(fm.canonical_name) - 7)) AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 7. 'Tandoori Paneer' → 'Organic Tandoori Paneer'
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND LOWER(fm.canonical_name) = 'tandoori paneer' AND LOWER(r.clean_name) = 'organic tandoori paneer' AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 8. 'Romaine' → 'Shredded Romaine'
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND LOWER(fm.canonical_name) = 'romaine' AND LOWER(r.clean_name) = 'shredded romaine' AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 9. 'Spicy Mango Chutney' hardcoded
+          CASE WHEN LOWER(fm.canonical_name) IN ('spicy mango chutney','spicy mango chutney - side') THEN 0.1777 END,
           0
         ))                                     AS total_mod_cost
       FROM public.fact_modifiers fm
@@ -1275,7 +1349,6 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
           )
         )
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-        AND fm.canonical_name NOT ILIKE '1/2 %'
         AND (
           EXISTS (
             SELECT 1 FROM analytics.modifier_type
@@ -1295,14 +1368,24 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       SELECT
         COALESCE(bf.clean, fol.canonical_name) AS parent_item,
         SUM(fm.quantity * COALESCE(
-          (SELECT r.cost_per_portion FROM rmc r
-           WHERE r.clean_name = fm.canonical_name
-             AND r.period = 'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT
-           LIMIT 1),
-          (SELECT r.cost_per_portion FROM rmc_latest r WHERE r.clean_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM extra_costs r WHERE r.extra_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM organic_costs r WHERE r.organic_name = fm.canonical_name),
-          (SELECT r.cost_per_portion FROM side_costs r WHERE r.side_name = fm.canonical_name),
+          -- 1. Direct: exact period (case-insensitive)
+          (SELECT r.cost_per_portion FROM rmc r WHERE LOWER(r.clean_name) = LOWER(fm.canonical_name) AND r.period = 'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT LIMIT 1),
+          -- 2. Direct: most-recent period ≤ current (case-insensitive)
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND LOWER(r.clean_name) = LOWER(fm.canonical_name) AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 3. SAUCE_ALIASES: Toast display name → R365 recipe clean_name
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND LOWER(fm.canonical_name) IN ('tomato garlic (butter masala)','tikka masala','tamarind chili (spicy)','peanut sesame','coconut ginger') AND LOWER(r.clean_name) = CASE LOWER(fm.canonical_name) WHEN 'tomato garlic (butter masala)' THEN 'tomato garlic sauce' WHEN 'tikka masala' THEN 'tikka masala sauce' WHEN 'tamarind chili (spicy)' THEN 'tamarind chili sauce' WHEN 'peanut sesame' THEN 'peanut sesame sauce' WHEN 'coconut ginger' THEN 'coconut ginger sauce' ELSE '' END AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 4. "Extra X" → cost of "X"
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND fm.canonical_name ILIKE 'Extra %' AND LOWER(r.clean_name) = LOWER(SUBSTRING(fm.canonical_name FROM 7)) AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 5. "1/2 X" → half cost of "X"
+          (SELECT r.cost_per_portion / 2.0 FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND fm.canonical_name ILIKE '1/2 %' AND LOWER(r.clean_name) = LOWER(REGEXP_REPLACE(SUBSTRING(fm.canonical_name FROM 5), '^and ', '', 'i')) AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 6. "X - Side" → cost of "X"
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND fm.canonical_name ILIKE '% - Side' AND LOWER(r.clean_name) = LOWER(LEFT(fm.canonical_name, LENGTH(fm.canonical_name) - 7)) AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 7. 'Tandoori Paneer' → 'Organic Tandoori Paneer'
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND LOWER(fm.canonical_name) = 'tandoori paneer' AND LOWER(r.clean_name) = 'organic tandoori paneer' AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 8. 'Romaine' → 'Shredded Romaine'
+          (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0 AND LOWER(fm.canonical_name) = 'romaine' AND LOWER(r.clean_name) = 'shredded romaine' AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+          -- 9. 'Spicy Mango Chutney' hardcoded
+          CASE WHEN LOWER(fm.canonical_name) IN ('spicy mango chutney','spicy mango chutney - side') THEN 0.1777 END,
           0
         ))                                     AS total_ih_mod_cost
       FROM public.fact_modifiers fm
@@ -1324,7 +1407,6 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
           )
         )
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-        AND fm.canonical_name NOT ILIKE '1/2 %'
         AND (
           EXISTS (
             SELECT 1 FROM analytics.modifier_type
@@ -1343,18 +1425,18 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       SELECT DISTINCT ON (item_name_updated) item_name_updated, avg_cost
       FROM analytics.r365_item_cost
       WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0
-      ORDER BY item_name_updated, period DESC
+      ORDER BY item_name_updated, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
     ),
     online_base AS (
       SELECT DISTINCT ON (item_name_updated) item_name_updated, avg_cost
       FROM analytics.r365_item_cost
       WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0
-      ORDER BY item_name_updated, period DESC
+      ORDER BY item_name_updated, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
     ),
     any_base AS (
       SELECT DISTINCT ON (item_name_updated) item_name_updated, avg_cost
       FROM analytics.r365_item_cost WHERE avg_cost > 0
-      ORDER BY item_name_updated, period DESC
+      ORDER BY item_name_updated, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
     ),
     -- All items: FULL OUTER JOIN so IH-only items (no online orders) still appear
     all_items AS (
@@ -1452,28 +1534,6 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       WHERE recipe_name LIKE 'MI %' AND cost_per_portion > 0
       ORDER BY clean_name, period
     ),
-    rmc_latest AS (
-      SELECT DISTINCT ON (clean_name) clean_name, cost_per_portion
-      FROM analytics.r365_modifier_cost
-      WHERE recipe_name LIKE 'MI %' AND cost_per_portion > 0
-      ORDER BY clean_name, period DESC
-    ),
-    extra_costs AS (
-      SELECT 'Extra ' || clean_name AS extra_name, cost_per_portion
-      FROM rmc_latest
-    ),
-    organic_costs AS (
-      SELECT 'Organic ' || clean_name AS organic_name, cost_per_portion
-      FROM rmc_latest
-    ),
-    extra_organic_costs AS (
-      SELECT 'Extra Organic ' || clean_name AS extra_organic_name, cost_per_portion
-      FROM rmc_latest
-    ),
-    side_costs AS (
-      SELECT clean_name || ' - Side' AS side_name, cost_per_portion
-      FROM rmc_latest
-    ),
     -- Hardcoded costs for proteins missing from r365_modifier_cost
     hardcoded_costs(name, cost) AS (VALUES
       ('Tandoori Paneer'::text, 1.2490::numeric)
@@ -1487,15 +1547,45 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       SUM(fm.quantity)::BIGINT                  AS qty,
       -- total_cost: use base_name (strips Toast ' -*' suffix) for all lookups
       ROUND(SUM(fm.quantity * COALESCE(
+        -- 1. Exact period match
         (SELECT r.cost_per_portion FROM rmc r
          WHERE r.clean_name = nm.base_name
            AND r.period = 'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT
          LIMIT 1),
-        (SELECT r.cost_per_portion FROM rmc_latest r WHERE r.clean_name = nm.base_name),
-        (SELECT r.cost_per_portion FROM extra_costs r WHERE r.extra_name = nm.base_name),
-        (SELECT r.cost_per_portion FROM extra_organic_costs r WHERE r.extra_organic_name = nm.base_name),
-        (SELECT r.cost_per_portion FROM organic_costs r WHERE r.organic_name = nm.base_name),
-        (SELECT r.cost_per_portion FROM side_costs r WHERE r.side_name = nm.base_name),
+        -- 2. Most-recent period ≤ current period
+        (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+         WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+           AND r.clean_name = nm.base_name
+           AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+         ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+        -- 3. "Extra X" → "X" (period-aware)
+        (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+         WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+           AND nm.base_name LIKE 'Extra %'
+           AND r.clean_name = SUBSTRING(nm.base_name FROM 7)
+           AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+         ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+        -- 4. "Extra Organic X" → "X" (period-aware)
+        (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+         WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+           AND nm.base_name LIKE 'Extra Organic %'
+           AND r.clean_name = SUBSTRING(nm.base_name FROM 15)
+           AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+         ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+        -- 5. "Organic X" → "X" (period-aware)
+        (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+         WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+           AND nm.base_name LIKE 'Organic %'
+           AND r.clean_name = SUBSTRING(nm.base_name FROM 9)
+           AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+         ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
+        -- 6. "X - Side" → "X" (period-aware)
+        (SELECT r.cost_per_portion FROM analytics.r365_modifier_cost r
+         WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
+           AND nm.base_name LIKE '% - Side'
+           AND r.clean_name = LEFT(nm.base_name, LENGTH(nm.base_name) - 7)
+           AND RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT <= fp.fiscal_year * 100 + fp.period
+         ORDER BY RIGHT(r.period,4)::INT DESC, SUBSTRING(r.period,2,2)::INT DESC LIMIT 1),
         (SELECT h.cost FROM hardcoded_costs h WHERE h.name = nm.base_name),
         0
       ))::NUMERIC, 4)                           AS total_cost
@@ -1619,7 +1709,7 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
         SELECT DISTINCT ON (item_name_updated)
           item_name_updated, avg_cost
         FROM analytics.r365_item_cost
-        ORDER BY item_name_updated, period DESC
+        ORDER BY item_name_updated, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
       ),
       -- Full AppScript _getModCost_ pipeline: Skip→0, direct, sauce aliases, 1/2 X→half, Extra X→X
       mod_costs_resolved AS (

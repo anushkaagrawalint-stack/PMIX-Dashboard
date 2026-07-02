@@ -42,7 +42,7 @@ const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location
   chanmenu:   { channel: true,  category: true,  location: true  },
   byo:        { channel: false, category: false, location: true  },
   payment:    { channel: false, category: false, location: true  },
-  meoverall:  { channel: true,  category: true,  location: true  },
+  meoverall:  { channel: true,  category: true,  location: false },
   pinksheets: { channel: false, category: false, location: false },
   bikky:      { channel: false, category: false, location: false },
   renames:    { channel: false, category: false, location: false },
@@ -373,8 +373,8 @@ export default function Dashboard({ data }: { data: DashboardData }) {
 
     return display.map(i => {
       const mix_pct     = grand_qty > 0 ? i.qty / grand_qty : 0;
-      const margin_flag = (i.margin_pct >= margin_threshold ? 'High' : 'Low') as 'High' | 'Low';
-      const mix_flag    = (mix_pct      >= mix_threshold    ? 'High' : 'Low') as 'High' | 'Low';
+      const margin_flag = (i.margin_pct > margin_threshold ? 'High' : 'Low') as 'High' | 'Low';
+      const mix_flag    = (mix_pct      > mix_threshold    ? 'High' : 'Low') as 'High' | 'Low';
       const quadrant    = i.is_open_item ? 'Dog' : (
         margin_flag === 'High' && mix_flag === 'High' ? 'Star'       :
         margin_flag === 'High' && mix_flag === 'Low'  ? 'Puzzle'     :

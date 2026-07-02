@@ -116,8 +116,8 @@ function addQuadrant(
     const margin_pct = r.avg_price > 0 ? (r.avg_price - r.avg_cost) / r.avg_price : 0;
     const mix_pct    = gQty > 0 ? r.qty / gQty : 0;
     const cogs_pct   = r.net_sales > 0 ? r.total_cost / r.net_sales : 0;
-    const mf:  'High' | 'Low' = margin_pct >= mThresh  ? 'High' : 'Low';
-    const mxf: 'High' | 'Low' = mix_pct   >= mmThresh  ? 'High' : 'Low';
+    const mf:  'High' | 'Low' = margin_pct > mThresh  ? 'High' : 'Low';
+    const mxf: 'High' | 'Low' = mix_pct   > mmThresh  ? 'High' : 'Low';
     const quadrant: QuadrantKey =
       mxf === 'High' && mf === 'High' ? 'Star' :
       mxf === 'High' && mf === 'Low'  ? 'Plow Horse' :
@@ -210,7 +210,6 @@ export default function MEOverall({
     if (ch !== 'ALL') return [];
     const q = search.toLowerCase();
     const t = perChThresh;
-    const grandQtyAll = t.IH.totalQty + t.LO.totalQty + t['3PD'].totalQty;
     const grandNSAll  = t.IH.totalNS  + t.LO.totalNS  + t['3PD'].totalNS;
     // category NS across all channels (for Sls% Category)
     const catNS: Record<string, number> = {};
@@ -232,10 +231,11 @@ export default function MEOverall({
           const totMgn     = ns - tc;
           const cogs_pct   = ns > 0 ? tc / ns : 0;
           const margin_pct = price > 0 ? margin / price : 0;
-          const mix_pct    = grandQtyAll > 0 ? qty / grandQtyAll : 0;
           const thresh     = t[c];
-          const mf:  'High' | 'Low' = margin_pct >= thresh.mThresh  ? 'High' : 'Low';
-          const mxf: 'High' | 'Low' = mix_pct    >= thresh.mmThresh ? 'High' : 'Low';
+          // Mix % is within each channel's own pool so it's comparable to mmThresh=(1/n_ch)*0.7
+          const mix_pct    = thresh.totalQty > 0 ? qty / thresh.totalQty : 0;
+          const mf:  'High' | 'Low' = margin_pct > thresh.mThresh  ? 'High' : 'Low';
+          const mxf: 'High' | 'Low' = mix_pct    > thresh.mmThresh ? 'High' : 'Low';
           const quadrant: QuadrantKey =
             mxf === 'High' && mf === 'High' ? 'Star' :
             mxf === 'High' && mf === 'Low'  ? 'Plow Horse' :
@@ -260,17 +260,14 @@ export default function MEOverall({
   }, [safeItems, ch, psMap, perChThresh, search, quadFilter]);
 
   // ── Blended (BL) table rows: IH+LO+3PD aggregated (AppScript stepBuildBlendedMaster) ──
+  // Quadrant comes from full-portfolio thresholds already in `rows` — don't recompute on filtered subset.
   const blendedTableRows = useMemo<ChannelRow[]>(() => {
     if (ch !== 'BL') return [];
-    // `rows` already uses ALL data (ch === 'BL' → rawRows uses 'ALL' build)
     const q = search.toLowerCase();
-    const filtered = rows.filter(r => !q || r.name.toLowerCase().includes(q));
-    // Recompute thresholds on filtered set only (for displayed items)
-    const gS = filtered.reduce((s, r) => s + r.net_sales, 0);
-    const gQ = filtered.reduce((s, r) => s + r.qty, 0);
-    const gC = filtered.reduce((s, r) => s + r.total_cost, 0);
-    const withQuad = addQuadrant(filtered, gS, gQ, gC);
-    return quadFilter.size === 0 ? withQuad : withQuad.filter(r => quadFilter.has(r.quadrant));
+    return rows.filter(r =>
+      (!q || r.name.toLowerCase().includes(q)) &&
+      (quadFilter.size === 0 || quadFilter.has(r.quadrant))
+    );
   }, [ch, rows, search, quadFilter]);
 
   // filtered set for single-channel table / scatter / bar
