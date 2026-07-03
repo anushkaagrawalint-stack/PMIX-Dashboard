@@ -92,14 +92,25 @@ export default function ItemMix({ items, pinkSheets, meItems, itemCosts = [], se
       const ic = icMap.get(key);
       return ic && ic.online_cost > 0 ? ic.online_cost : undefined;
     }
-    if (item.channel === 'CATERING' || item.channel === 'CATERING_3PD') {
+    // CATERING / CATERING_3PD / OFFSITE / OPEN_ITEMS: r365_item_cost for that exact
+    // menu, or nothing (shown as "—"). No fallback to IH/other channels — a Catering
+    // row's cost must come from the Catering menu in r365, never guessed from another
+    // channel's cost.
+    if (item.channel === 'CATERING') {
       const ic = icMap.get(key);
-      if (ic && ic.catering_cost > 0) return ic.catering_cost;
-      // Fallback: use IH cost if catering-specific cost isn't available
-      if (ic && ic.ih_cost > 0) return ic.ih_cost;
-      const ps = psMap.get(item.canonical_name);
-      if (ps && ps.avg_cost_ih > 0) return ps.avg_cost_ih;
-      return undefined;
+      return ic && ic.catering_cost > 0 ? ic.catering_cost : undefined;
+    }
+    if (item.channel === 'CATERING_3PD') {
+      const ic = icMap.get(key);
+      return ic && ic.catering_3pd_cost > 0 ? ic.catering_3pd_cost : undefined;
+    }
+    if (item.channel === 'OFFSITE') {
+      const ic = icMap.get(key);
+      return ic && ic.offsite_cost > 0 ? ic.offsite_cost : undefined;
+    }
+    if (item.channel === 'OPEN_ITEMS') {
+      const ic = icMap.get(key);
+      return ic && ic.open_items_cost > 0 ? ic.open_items_cost : undefined;
     }
     return undefined;
   }

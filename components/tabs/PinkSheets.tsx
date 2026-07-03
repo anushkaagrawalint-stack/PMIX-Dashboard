@@ -136,12 +136,14 @@ function SectionTable({
   sec,
   hdrBg, hdrColor,
   totalBg, totalColor,
+  forcePlain = false,
 }: {
   sec: SectionData;
   hdrBg: string; hdrColor: string;
   totalBg: string; totalColor: string;
+  forcePlain?: boolean;
 }) {
-  const isHalf   = sec.rank === 2 || sec.rank === 4;
+  const isHalf   = (sec.rank === 2 || sec.rank === 4) && !forcePlain;
   const totalQty = sec.mods.reduce((s, m) => s + m.qty, 0);
   const weightedAvg = isHalf && totalQty > 0 ? sec.sectionTotal / totalQty : 0;
 
@@ -383,6 +385,7 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                 sec={sec}
                 hdrBg="#f0fdf4"   hdrColor="#15803d"
                 totalBg="#dcfce7" totalColor="#15803d"
+                forcePlain={sec.rank === 2 && isPattern1}
               />
             ))}
 
@@ -474,6 +477,7 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                     sec={sec}
                     hdrBg="#fdf4ff"   hdrColor="#7e22ce"
                     totalBg="#f5f3ff" totalColor="#5b21b6"
+                    forcePlain={sec.rank === 2 && isPattern1}
                   />
                 ))}
 

@@ -1,6 +1,6 @@
 'use client';
 import { useState, useMemo } from 'react';
-import type { MERow, PinkSheetRow } from '@/lib/types';
+import type { MERow, PinkSheetRow, ItemCostRow } from '@/lib/types';
 import {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
   ResponsiveContainer, ReferenceLine, Legend,
@@ -64,12 +64,27 @@ function getChData(i: MERow, c: 'IH' | 'LO' | '3PD') {
   if (c === 'LO')  return { qty: i.qty_lo,  ns: i.net_sales_lo,  price: i.avg_price_lo };
   return                   { qty: i.qty_3pd, ns: i.net_sales_3pd, price: i.avg_price_3pd };
 }
-function getChCost(i: MERow, c: 'IH' | 'LO' | '3PD', ps: PinkSheetRow | undefined) {
-  if (ps) return c === 'IH' ? ps.avg_cost_ih : c === 'LO' ? ps.avg_cost_online : ps.avg_cost_3pd;
-  return c === 'IH' ? i.avg_cost_ih : c === 'LO' ? i.avg_cost_lo : i.avg_cost_3pd;
+// Cost cascade: pink sheet → meItems' own embedded cost → itemCosts (r365), matching
+// the same 3-tier fallback Item Mix uses. itemCosts has no separate 3PD-uplifted
+// field, so the ×1.18 packaging uplift is applied here when falling to that tier.
+function getChCost(i: MERow, c: 'IH' | 'LO' | '3PD', ps: PinkSheetRow | undefined, ic: ItemCostRow | undefined) {
+  if (ps) {
+    const v = c === 'IH' ? ps.avg_cost_ih : c === 'LO' ? ps.avg_cost_online : ps.avg_cost_3pd;
+    if (v > 0) return v;
+  }
+  const meCost = c === 'IH' ? i.avg_cost_ih : c === 'LO' ? i.avg_cost_lo : i.avg_cost_3pd;
+  if (meCost > 0) return meCost;
+  if (ic) {
+    if (c === 'IH')  return ic.ih_cost;
+    if (c === 'LO')  return ic.online_cost;
+    if (c === '3PD') return ic.online_cost * 1.18;
+  }
+  return 0;
 }
 
-function buildBaseRows(meItems: MERow[], ch: ChannelTab, psMap: Map<string, PinkSheetRow>): BaseRow[] {
+function buildBaseRows(
+  meItems: MERow[], ch: ChannelTab, psMap: Map<string, PinkSheetRow>, icMap: Map<string, ItemCostRow>,
+): BaseRow[] {
   return meItems.map(i => {
     let price: number, qty: number, ns: number;
     switch (ch) {
@@ -80,26 +95,17 @@ function buildBaseRows(meItems: MERow[], ch: ChannelTab, psMap: Map<string, Pink
     }
     if (!qty) return null;
     const ps = psMap.get(i.canonical_name);
+    const ic = icMap.get(i.canonical_name.toLowerCase());
     let cost: number;
-    if (ps) {
-      switch (ch) {
-        case 'IH':  cost = ps.avg_cost_ih;     break;
-        case 'LO':  cost = ps.avg_cost_online;  break;
-        case '3PD': cost = ps.avg_cost_3pd;     break;
-        default: {
-          const tq = i.qty_ih + i.qty_lo + i.qty_3pd;
-          cost = tq > 0
-            ? (ps.avg_cost_ih * i.qty_ih + ps.avg_cost_online * i.qty_lo + ps.avg_cost_3pd * i.qty_3pd) / tq
-            : ps.avg_cost_online;
-        }
-      }
+    if (ch === 'IH' || ch === 'LO' || ch === '3PD') {
+      cost = getChCost(i, ch, ps, ic);
+    } else if (ps) {
+      const tq = i.qty_ih + i.qty_lo + i.qty_3pd;
+      cost = tq > 0
+        ? (ps.avg_cost_ih * i.qty_ih + ps.avg_cost_online * i.qty_lo + ps.avg_cost_3pd * i.qty_3pd) / tq
+        : ps.avg_cost_online;
     } else {
-      switch (ch) {
-        case 'IH':  cost = i.avg_cost_ih;  break;
-        case 'LO':  cost = i.avg_cost_lo;  break;
-        case '3PD': cost = i.avg_cost_3pd; break;
-        default:    cost = i.avg_cost;
-      }
+      cost = i.avg_cost;
     }
     return { name: i.canonical_name, category: i.category, sub_category: i.sub_category,
              avg_price: price, avg_cost: cost, qty, net_sales: ns, total_cost: cost * qty };
@@ -127,10 +133,11 @@ function addQuadrant(
 }
 
 export default function MEOverall({
-  meItems, pinkSheets,
+  meItems, pinkSheets, itemCosts,
 }: {
   meItems: MERow[];
   pinkSheets: PinkSheetRow[];
+  itemCosts: ItemCostRow[];
 }) {
   const [ch,         setCh]         = useState<ChannelTab>('ALL');
   const [search,     setSearch]     = useState('');
@@ -144,12 +151,18 @@ export default function MEOverall({
     return m;
   }, [pinkSheets]);
 
+  const icMap = useMemo(() => {
+    const m = new Map<string, ItemCostRow>();
+    (itemCosts ?? []).forEach(c => m.set(c.canonical_name.toLowerCase(), c));
+    return m;
+  }, [itemCosts]);
+
   // ── For scatter / bar / quadrant cards: single-channel or blended base rows ──
   const rawRows = useMemo(() => {
     // BL scatter/bar uses 'ALL' (IH+LO+3PD) to match AppScript blended
     const tab = ch === 'BL' ? 'ALL' : ch;
-    return buildBaseRows(safeItems, tab as ChannelTab, psMap);
-  }, [safeItems, ch, psMap]);
+    return buildBaseRows(safeItems, tab as ChannelTab, psMap, icMap);
+  }, [safeItems, ch, psMap, icMap]);
 
   const grandSales = useMemo(() => rawRows.reduce((s, r) => s + r.net_sales,  0), [rawRows]);
   const grandQty   = useMemo(() => rawRows.reduce((s, r) => s + r.qty,        0), [rawRows]);
@@ -191,8 +204,9 @@ export default function MEOverall({
         const { qty, ns } = getChData(i, c);
         if (qty <= 0) return;
         const ps = psMap.get(i.canonical_name);
+        const ic = icMap.get(i.canonical_name.toLowerCase());
         tNS   += ns;
-        tCost += getChCost(i, c, ps) * qty;
+        tCost += getChCost(i, c, ps, ic) * qty;
         tQty  += qty;
         n++;
       });
@@ -203,7 +217,7 @@ export default function MEOverall({
       };
     });
     return res;
-  }, [safeItems, psMap]);
+  }, [safeItems, psMap, icMap]);
 
   // ── Overall (ALL) flat list: one row per item × channel ──
   const overallFlatRows = useMemo((): FlatRow[] => {
@@ -222,10 +236,11 @@ export default function MEOverall({
       .filter(i => i.qty > 0 && (!q || i.canonical_name.toLowerCase().includes(q)))
       .forEach(i => {
         const ps = psMap.get(i.canonical_name);
+        const ic = icMap.get(i.canonical_name.toLowerCase());
         (['IH', 'LO', '3PD'] as const).forEach(c => {
           const { qty, ns, price } = getChData(i, c);
           if (qty <= 0) return;
-          const cost       = getChCost(i, c, ps);
+          const cost       = getChCost(i, c, ps, ic);
           const margin     = price - cost;
           const tc         = cost * qty;
           const totMgn     = ns - tc;
@@ -257,7 +272,7 @@ export default function MEOverall({
     return result
       .filter(r => quadFilter.size === 0 || quadFilter.has(r.quadrant))
       .sort((a, b) => a.name.localeCompare(b.name) || ORDER[a.ch] - ORDER[b.ch]);
-  }, [safeItems, ch, psMap, perChThresh, search, quadFilter]);
+  }, [safeItems, ch, psMap, icMap, perChThresh, search, quadFilter]);
 
   // ── Blended (BL) table rows: IH+LO+3PD aggregated (AppScript stepBuildBlendedMaster) ──
   // Quadrant comes from full-portfolio thresholds already in `rows` — don't recompute on filtered subset.

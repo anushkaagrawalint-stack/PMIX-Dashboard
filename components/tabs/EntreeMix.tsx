@@ -94,6 +94,7 @@ function groupTheme(grp: string) {
 }
 
 type ChannelView = 'online' | 'ih';
+type QtyMode = '%' | '#';
 
 const RECOGNIZED_SECTIONS = new Set([
   'Base','1/2 Base','Main','1/2 Main','Extra Main','Extra Veggie',
@@ -118,8 +119,9 @@ function mergeSections(sections: SectionData[]): SectionData[] {
 }
 
 // ─── Reusable channel column ──────────────────────────────────────────────────
-function ChCol({ label, qty, accent, bg, color, sections }: {
+function ChCol({ label, qty, accent, bg, color, sections, qtyMode }: {
   label: string; qty: number; accent: string; bg: string; color: string; sections: SectionData[];
+  qtyMode: QtyMode;
 }) {
   return (
     <div style={{ padding: '12px 14px' }}>
@@ -132,7 +134,7 @@ function ChCol({ label, qty, accent, bg, color, sections }: {
       </div>
       {sections.length === 0
         ? <div style={{ color: 'var(--muted)', fontSize: 11, fontStyle: 'italic', padding: '16px 0', textAlign: 'center' }}>No modifier data</div>
-        : sections.map(s => <SecBlock key={s.displayName} sec={s} accent={accent} />)
+        : sections.map(s => <SecBlock key={s.displayName} sec={s} accent={accent} qtyMode={qtyMode} />)
       }
     </div>
   );
@@ -140,6 +142,24 @@ function ChCol({ label, qty, accent, bg, color, sections }: {
 
 const GROUP_ORDER   = ['BYO Bowls','Bowls','Classic Indian Plates','Plates','Burritos','Specialty Items','Kids','Drinks','Sides','Retail'];
 const ALL_MOD_TYPES = ['Base','1/2 Base','Main','1/2 Main','Extra Main','Extra Veggie','Sauce','Veggie','Topping','Chutney + Dressing','Make It Meal'];
+
+// getMEPinkSheets returns menu_group straight from Toast (raw, all-caps: 'BUILD YOUR
+// OWN BOWL', 'BOWLS', 'CLASSIC INDIAN PLATES'...) — map to the pretty names GROUP_THEME
+// / GROUP_ORDER expect, so groups actually get their intended color + sort position
+// instead of all falling back to the same default gray, alphabetically.
+const GROUP_LABEL: Record<string, string> = {
+  'BUILD YOUR OWN BOWL':   'BYO Bowls',
+  'BOWLS':                 'Bowls',
+  'CLASSIC INDIAN PLATES': 'Classic Indian Plates',
+  'PLATES':                'Plates',
+  'BURRITOS':              'Burritos',
+  'KIDS':                  'Kids',
+  'SIDES':                 'Sides',
+  'DRINKS':                'Drinks',
+};
+function normalizeGroup(raw: string): string {
+  return GROUP_LABEL[raw] ?? raw.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+}
 
 // ─── Checkbox multi-select dropdown ──────────────────────────────────────────
 function CheckDropdown({ label, options, selected, onChange, maxH = 260 }: {
@@ -227,6 +247,70 @@ function CheckDropdown({ label, options, selected, onChange, maxH = 260 }: {
   );
 }
 
+// ─── Group quick-select — "All Bowls", "All Plates"… select/deselect a whole
+// category at once instead of scrolling the sidebar tree to find its checkbox ──
+function GroupQuickSelect({ groups, onToggle }: {
+  groups: { name: string; count: number; checked: boolean; someChecked: boolean; theme: ReturnType<typeof groupTheme> }[];
+  onToggle: (grp: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
+
+  const checkedCount = groups.filter(g => g.checked).length;
+
+  return (
+    <div ref={ref} style={{ position: 'relative', flex: 1 }}>
+      <button onClick={() => setOpen(o => !o)} className="drb" style={{
+        width: '100%', boxSizing: 'border-box', fontSize: 11,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+        background: checkedCount > 0 ? '#ede9fe' : undefined,
+        color: checkedCount > 0 ? '#5b21b6' : undefined,
+        borderColor: checkedCount > 0 ? '#c4b5fd' : undefined,
+      }}>
+        Select a category
+        {checkedCount > 0 && (
+          <span style={{ background: '#6d28d9', color: '#fff', fontSize: 9, fontWeight: 800,
+            padding: '1px 5px', borderRadius: 10 }}>{checkedCount}</span>
+        )}
+        <span style={{ fontSize: 8, opacity: 0.5 }}>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 200, marginTop: 4,
+          background: '#fff', border: '1px solid var(--border)',
+          borderRadius: 10, boxShadow: '0 8px 32px rgba(0,0,0,.14)', padding: '6px 0',
+        }}>
+          {groups.map(g => (
+            <label key={g.name} style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
+              cursor: 'pointer', fontSize: 11, color: 'var(--text)',
+              background: g.checked ? `${g.theme.bg}10` : 'transparent',
+            }}>
+              <span style={{
+                width: 13, height: 13, borderRadius: 3, flexShrink: 0,
+                border: `1.5px solid ${g.checked || g.someChecked ? g.theme.bg : '#d1d5db'}`,
+                background: g.checked ? g.theme.bg : 'transparent',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              }} onClick={() => onToggle(g.name)}>
+                {g.checked && <span style={{ fontSize: 8, color: '#fff', fontWeight: 900 }}>✓</span>}
+                {!g.checked && g.someChecked && <span style={{ width: 5, height: 5, borderRadius: 1, background: g.theme.bg }} />}
+              </span>
+              <span onClick={() => onToggle(g.name)} style={{ flex: 1 }}>All {g.name}</span>
+              <span style={{ fontSize: 9, color: 'var(--muted)' }}>{g.count}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── COGS badge ───────────────────────────────────────────────────────────────
 function CogsBadge({ pct }: { pct: number | null }) {
   if (pct == null) return <span style={{ color: 'var(--muted)', fontSize: 10 }}>—</span>;
@@ -240,7 +324,7 @@ function CogsBadge({ pct }: { pct: number | null }) {
 }
 
 // ─── One modifier section ─────────────────────────────────────────────────────
-function SecBlock({ sec, accent }: { sec: SectionData; accent: string }) {
+function SecBlock({ sec, accent, qtyMode }: { sec: SectionData; accent: string; qtyMode: QtyMode }) {
   const isHalf   = sec.rank === 2 || sec.rank === 4;
   const totalQty = sec.mods.reduce((s, m) => s + m.qty, 0);
   const wAvg     = isHalf && totalQty > 0 ? sec.sectionTotal / totalQty : 0;
@@ -257,6 +341,9 @@ function SecBlock({ sec, accent }: { sec: SectionData; accent: string }) {
         <span style={{ fontSize: 9, color: 'var(--muted)' }}>
           {totalQty.toLocaleString()} sel.
         </span>
+        <span style={{ fontSize: 9, color: 'var(--muted)' }}>
+          {fmt$2(sec.sectionTotal)} total cost
+        </span>
         {isHalf && (
           <span style={{ fontSize: 9, color: accent, marginLeft: 'auto', fontWeight: 700 }}>
             wtd. avg {fmt$4(wAvg)}
@@ -264,13 +351,13 @@ function SecBlock({ sec, accent }: { sec: SectionData; accent: string }) {
         )}
       </div>
 
-      {/* Option rows — name · % · cost, no bars */}
+      {/* Option rows — name · qty% or qty# · cost, no bars */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         {sec.mods.map((m, i) => {
           const pct = totalQty > 0 ? m.qty / totalQty : 0;
           return (
             <div key={m.modifier_name} style={{
-              display: 'grid', gridTemplateColumns: '1fr 38px 68px',
+              display: 'grid', gridTemplateColumns: '1fr 46px 68px',
               alignItems: 'center', gap: 6,
               padding: '2px 4px', borderRadius: 4,
               background: i % 2 === 0 ? 'transparent' : `${accent}08`,
@@ -281,7 +368,7 @@ function SecBlock({ sec, accent }: { sec: SectionData; accent: string }) {
               </span>
               <span style={{ fontSize: 10, fontWeight: 700, textAlign: 'right',
                 color: pct >= 0.3 ? accent : 'var(--text)' }}>
-                {(pct * 100).toFixed(0)}%
+                {qtyMode === '%' ? `${(pct * 100).toFixed(0)}%` : m.qty.toLocaleString()}
               </span>
               <span style={{ fontSize: 9, textAlign: 'right',
                 color: m.unit_cost > 0 ? 'var(--muted)' : 'transparent' }}>
@@ -337,7 +424,7 @@ function aggregateSections(
 
 // ─── Overall card (shown when multiple items selected) ────────────────────────
 function OverallCard({
-  selectedNames, psMap, pinkSheetDetails, modTypeFilter, mePriceMap, channelView,
+  selectedNames, psMap, pinkSheetDetails, modTypeFilter, mePriceMap, channelView, qtyMode,
 }: {
   selectedNames: string[];
   psMap: Map<string, PinkSheetRow>;
@@ -345,6 +432,7 @@ function OverallCard({
   modTypeFilter: Set<string>;
   mePriceMap: Map<string, { ih: number; lo: number }>;
   channelView: ChannelView;
+  qtyMode: QtyMode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -404,10 +492,6 @@ function OverallCard({
             <span style={{ fontWeight: 800, fontSize: 13, color: '#fff' }}>
               Overall — {selectedNames.length} items
             </span>
-            <span style={{ fontSize: 9, background: 'rgba(255,255,255,.15)', color: '#c4b5fd',
-              padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>
-              COMBINED
-            </span>
           </div>
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
             {[
@@ -443,11 +527,11 @@ function OverallCard({
         <div>
           {channelView === 'online' && (
             <ChCol label="Online · LO + 3PD" qty={totalOnline} sections={onlineSecs}
-              accent="#be185d" bg="#fce7f3" color="#9d174d" />
+              accent="#be185d" bg="#fce7f3" color="#9d174d" qtyMode={qtyMode} />
           )}
           {channelView === 'ih' && (
             <ChCol label="In-House" qty={totalIH} sections={ihSecs}
-              accent="#15803d" bg="#dcfce7" color="#14532d" />
+              accent="#15803d" bg="#dcfce7" color="#14532d" qtyMode={qtyMode} />
           )}
         </div>
       )}
@@ -457,12 +541,13 @@ function OverallCard({
 
 // ─── Item detail card ─────────────────────────────────────────────────────────
 function ItemCard({
-  ps, pinkSheetDetails, modTypeFilter, mePriceMap, onClose, theme, channelView,
+  ps, pinkSheetDetails, modTypeFilter, mePriceMap, onClose, theme, channelView, qtyMode,
 }: {
   ps: PinkSheetRow; pinkSheetDetails: PinkSheetDetailRow[];
   modTypeFilter: Set<string>; mePriceMap: Map<string, { ih: number; lo: number }>;
   onClose: () => void; theme: { bg: string; accent: string; light: string };
   channelView: ChannelView;
+  qtyMode: QtyMode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -540,11 +625,11 @@ function ItemCard({
         <div>
           {channelView === 'online' && (
             <ChCol label="Online · LO + 3PD" qty={ps.online_qty} sections={onlineSecs}
-              accent="#be185d" bg="#fce7f3" color="#9d174d" />
+              accent="#be185d" bg="#fce7f3" color="#9d174d" qtyMode={qtyMode} />
           )}
           {channelView === 'ih' && (
             <ChCol label="In-House" qty={ps.ih_qty} sections={ihSecs}
-              accent="#15803d" bg="#dcfce7" color="#14532d" />
+              accent="#15803d" bg="#dcfce7" color="#14532d" qtyMode={qtyMode} />
           )}
         </div>
       )}
@@ -561,6 +646,7 @@ export default function EntreeMix({ pinkSheets, pinkSheetDetails, meItems }: Pro
   const [search,        setSearch]        = useState('');
   const [modTypeFilter, setModTypeFilter] = useState<Set<string>>(new Set());
   const [channelView,   setChannelView]   = useState<ChannelView>('online');
+  const [qtyMode,       setQtyMode]       = useState<QtyMode>('%');
 
   const mePriceMap = useMemo(() => {
     const m = new Map<string, { ih: number; lo: number }>();
@@ -582,7 +668,7 @@ export default function EntreeMix({ pinkSheets, pinkSheetDetails, meItems }: Pro
       if (q && !r.canonical_name.toLowerCase().includes(q)) return;
       if (channelView === 'online' && r.online_qty <= 0) return;
       if (channelView === 'ih'     && r.ih_qty     <= 0) return;
-      const grp = r.menu_group || 'Other';
+      const grp = normalizeGroup(r.menu_group || 'Other');
       if (!g[grp]) g[grp] = [];
       g[grp].push(r);
     });
@@ -596,6 +682,21 @@ export default function EntreeMix({ pinkSheets, pinkSheetDetails, meItems }: Pro
     const all = Object.keys(grouped);
     return [...GROUP_ORDER.filter(g => all.includes(g)), ...all.filter(g => !GROUP_ORDER.includes(g)).sort()];
   }, [grouped]);
+
+  // Feeds the "Select a category" quick-select dropdown
+  const quickSelectGroups = useMemo(() =>
+    groupOrder.map(grp => {
+      const items = grouped[grp] ?? [];
+      const names = items.map(r => r.canonical_name);
+      return {
+        name: grp,
+        count: items.length,
+        checked: names.length > 0 && names.every(n => selected.has(n)),
+        someChecked: names.some(n => selected.has(n)),
+        theme: groupTheme(grp),
+      };
+    }),
+  [groupOrder, grouped, selected]);
 
   function toggleItem(name: string) {
     setSelected(s => {
@@ -685,7 +786,8 @@ export default function EntreeMix({ pinkSheets, pinkSheetDetails, meItems }: Pro
           </div>
           <input value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search items…" className="srch"
-            style={{ width: '100%', boxSizing: 'border-box', fontSize: 11 }} />
+            style={{ width: '100%', boxSizing: 'border-box', fontSize: 11, marginBottom: 6 }} />
+          <GroupQuickSelect groups={quickSelectGroups} onToggle={toggleGroup} />
         </div>
 
         {/* Grouped item list */}
@@ -819,6 +921,19 @@ export default function EntreeMix({ pinkSheets, pinkSheetDetails, meItems }: Pro
           <CheckDropdown label="Modifier type" options={ALL_MOD_TYPES}
             selected={modTypeFilter} onChange={setModTypeFilter} />
 
+          {/* Qty display: share of section (%) vs raw order count (#) */}
+          <div style={{ display: 'flex', background: '#f3f4f6', borderRadius: 8, padding: 3, gap: 2 }}>
+            {(['%', '#'] as QtyMode[]).map(v => (
+              <button key={v} onClick={() => setQtyMode(v)} title={v === '%' ? 'Show as %' : 'Show as count'} style={{
+                padding: '4px 10px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                fontFamily: 'inherit', fontSize: 11, fontWeight: 700, transition: 'all .12s',
+                background: qtyMode === v ? '#ede9fe' : 'transparent',
+                color: qtyMode === v ? '#5b21b6' : 'var(--muted)',
+                boxShadow: qtyMode === v ? '0 1px 4px rgba(0,0,0,.1)' : 'none',
+              }}>{v}</button>
+            ))}
+          </div>
+
           {selected.size > 0 && (
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>
               {rightItems.length} item{rightItems.length !== 1 ? 's' : ''}
@@ -847,6 +962,7 @@ export default function EntreeMix({ pinkSheets, pinkSheetDetails, meItems }: Pro
                 modTypeFilter={modTypeFilter}
                 mePriceMap={mePriceMap}
                 channelView={channelView}
+                qtyMode={qtyMode}
               />
             )}
             {/* Individual item cards */}
@@ -860,6 +976,7 @@ export default function EntreeMix({ pinkSheets, pinkSheetDetails, meItems }: Pro
                 onClose={() => removeItem(ps.canonical_name)}
                 theme={theme}
                 channelView={channelView}
+                qtyMode={qtyMode}
               />
             ))}
           </>

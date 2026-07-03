@@ -1,4 +1,22 @@
 /**
+ * Toast display name → R365 recipe clean_name aliases (§1.3).
+ * Single source of truth — every query that needs the alias expansion must call
+ * modifierAliasCaseSQL rather than inlining its own copy.
+ */
+export function modifierAliasCaseSQL(lowerNameExpr: string): string {
+  return `CASE ${lowerNameExpr}
+      WHEN 'tomato garlic (butter masala)' THEN 'tomato garlic sauce'
+      WHEN 'tikka masala'                  THEN 'tikka masala sauce'
+      WHEN 'tamarind chili (spicy)'        THEN 'tamarind chili sauce'
+      WHEN 'peanut sesame'                 THEN 'peanut sesame sauce'
+      WHEN 'coconut ginger'                THEN 'coconut ginger sauce'
+      WHEN 'tandoori paneer'               THEN 'organic tandoori paneer'
+      WHEN 'romaine'                       THEN 'shredded romaine'
+      ELSE ${lowerNameExpr}
+    END`;
+}
+
+/**
  * Batch pre-computation of modifier unit costs.
  *
  * Returns a SQL fragment containing four helper CTEs followed by `mod_costs`:
@@ -21,7 +39,7 @@ export function modifierCostBatchSQL(): string {
     FROM analytics.r365_modifier_cost
     WHERE recipe_name LIKE 'MI %' AND cost_per_portion > 0
   ),
-  _mod_pairs AS (
+  _mod_raw AS (
     SELECT DISTINCT
       LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', '')) AS norm_name,
       fp.fiscal_year * 100 + fp.period                        AS target_pnum
@@ -34,6 +52,13 @@ export function modifierCostBatchSQL(): string {
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
       AND fp.fiscal_year IS NOT NULL
   ),
+  -- Every name × every period in range: a modifier sold only in P3 of a P3–P5 range
+  -- still gets a P5 price, so callers may join at the selected period (§2.4).
+  _mod_pairs AS (
+    SELECT n.norm_name, p.target_pnum
+    FROM (SELECT DISTINCT norm_name   FROM _mod_raw) n
+    CROSS JOIN (SELECT DISTINCT target_pnum FROM _mod_raw) p
+  ),
   _cands AS (
     SELECT mp.norm_name, mp.target_pnum, m.cost_per_portion,
            m.pnum AS src_pnum,
@@ -41,16 +66,7 @@ export function modifierCostBatchSQL(): string {
     FROM _mod_pairs mp
     JOIN _mi m ON m.clean_name IN (
       mp.norm_name,
-      CASE mp.norm_name
-        WHEN 'tomato garlic (butter masala)' THEN 'tomato garlic sauce'
-        WHEN 'tikka masala'                  THEN 'tikka masala sauce'
-        WHEN 'tamarind chili (spicy)'        THEN 'tamarind chili sauce'
-        WHEN 'peanut sesame'                 THEN 'peanut sesame sauce'
-        WHEN 'coconut ginger'                THEN 'coconut ginger sauce'
-        WHEN 'tandoori paneer'               THEN 'organic tandoori paneer'
-        WHEN 'romaine'                       THEN 'shredded romaine'
-        ELSE mp.norm_name
-      END
+      ${modifierAliasCaseSQL('mp.norm_name')}
     )
     WHERE m.pnum <= mp.target_pnum
   ),
@@ -83,6 +99,10 @@ export function modifierCostBatchSQL(): string {
           (SELECT p2.cost_per_portion FROM _primary p2
            WHERE p2.norm_name = LEFT(mp.norm_name, LENGTH(mp.norm_name) - 7)
              AND p2.target_pnum = mp.target_pnum)
+        WHEN mp.norm_name LIKE 'side of %' THEN
+          (SELECT p2.cost_per_portion FROM _primary p2
+           WHERE p2.norm_name = SUBSTRING(mp.norm_name FROM 9)
+             AND p2.target_pnum = mp.target_pnum)
         WHEN mp.norm_name IN ('spicy mango chutney', 'spicy mango chutney - side') THEN 0.1777
         ELSE 0
       END::NUMERIC AS unit_cost
@@ -108,16 +128,7 @@ export function modifierUnitCostSQL(nameExpr: string, periodExpr: string): strin
 
   // §1.3 Alias: Toast display name → R365 recipe clean_name.
   // ELSE = b itself, so IN(b, b) deduplicates to IN(b) effectively.
-  const alias = `CASE ${b}
-      WHEN 'tomato garlic (butter masala)' THEN 'tomato garlic sauce'
-      WHEN 'tikka masala'                  THEN 'tikka masala sauce'
-      WHEN 'tamarind chili (spicy)'        THEN 'tamarind chili sauce'
-      WHEN 'peanut sesame'                 THEN 'peanut sesame sauce'
-      WHEN 'coconut ginger'                THEN 'coconut ginger sauce'
-      WHEN 'tandoori paneer'               THEN 'organic tandoori paneer'
-      WHEN 'romaine'                       THEN 'shredded romaine'
-      ELSE ${b}
-    END`;
+  const alias = modifierAliasCaseSQL(b);
 
   // Helper: freshest-≤-P MI lookup for a single (already-lowercase) name expression.
   const mi = (cleanExpr: string) =>
@@ -167,6 +178,10 @@ export function modifierUnitCostSQL(nameExpr: string, periodExpr: string): strin
       -- §1.5e X - Side → cost of X
       CASE WHEN ${b} LIKE '% - side' THEN
         ${mi(`LEFT(${b}, LENGTH(${b}) - 7)`)}
+      END,
+      -- §1.5e' Side of X → cost of X  (IH Toast names for Side of Grain/Veggie children)
+      CASE WHEN ${b} LIKE 'side of %' THEN
+        ${mi(`SUBSTRING(${b} FROM 9)`)}
       END,
       -- §1.5f Hardcode: keep until R365 adds the recipe row (§5.2)
       CASE WHEN ${b} IN ('spicy mango chutney', 'spicy mango chutney - side') THEN 0.1777 END,

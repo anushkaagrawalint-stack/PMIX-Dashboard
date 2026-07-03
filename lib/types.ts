@@ -282,10 +282,13 @@ export interface UncategorizedItemRow {
 
 // ─── Item base costs from r365 (fallback for items not in pink sheets / ME) ──
 export interface ItemCostRow {
-  canonical_name:  string;
-  ih_cost:         number;
-  online_cost:     number;
-  catering_cost:   number;
+  canonical_name:      string;
+  ih_cost:             number;
+  online_cost:         number;
+  catering_cost:       number;   // r365 menu = 'CATERING'
+  catering_3pd_cost:   number;   // r365 menu = 'CATERING - 3PD'
+  offsite_cost:        number;   // r365 menu = 'OFFSITE POP-UPS'
+  open_items_cost:     number;   // r365 menu = 'Open items'
 }
 
 // ─── Channel × category revenue ───────────────────────────────────────────────
@@ -326,6 +329,9 @@ export interface DashboardData {
   summary:            Summary;
   prevSummary:        Summary | null;   // previous comparable period for KPI deltas
   prevLabel:          string | null;    // human label of the prev period (e.g. "P4 2026")
+  prevChannelItems:   ChannelItemRow[]; // prev-period, for channel/category-filtered KPI deltas
+  prevLocationItems:  LocationItemRow[]; // prev-period, for location-filtered KPI deltas
+  prevMEItems:        MERow[];          // prev-period, for channel/category-filtered margin delta
   channels:           ChannelRow[];
   weekly:             WeekRow[];
   daily:              DailyRow[];

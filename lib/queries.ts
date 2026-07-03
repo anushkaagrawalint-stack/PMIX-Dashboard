@@ -4,7 +4,7 @@ import {
   CHANNEL_SQL,
   GRP_TO_CAT_SQL, ITEM_SUBCAT_SQL, GRP_TO_SUBCAT_SQL,
 } from './constants';
-import { modifierUnitCostSQL, modifierCostBatchSQL } from './modifierCost';
+import { modifierAliasCaseSQL, modifierCostBatchSQL } from './modifierCost';
 import type {
   DateRange, Summary, ChannelRow, WeekRow, DailyRow,
   WeeklyChannelRow, DailyChannelRow,
@@ -128,7 +128,6 @@ const BYO_FIX_CTE = `byo_fix(raw, clean) AS (VALUES
   ('Grain Bowl - In House',                       'BYO Grain Bowl'),
   ('Salad Bowl - In House',                       'BYO Salad Bowl'),
   ('Greens + Grains Bowl - In House',             'BYO Greens + Grains Bowl'),
-  ('Harvest Chicken Bowl - In House',             'BYO Greens + Grains Bowl'),
   ('Cauliflower + Quinoa - In House',             'Spiced Cauli + Quinoa Bowl'),
   ('Burrito - In House',                          'BYO Indian Burrito'),
   ('Kids BYO - In House',                         'Kids Meal'),
@@ -713,22 +712,31 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       SELECT DISTINCT ON (item_name_updated, period)
         item_name_updated, period, avg_cost
       FROM analytics.r365_item_cost
-      WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0
+      WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
       ORDER BY item_name_updated, period
     ),
     online_base AS (
       SELECT DISTINCT ON (item_name_updated, period)
         item_name_updated, period, avg_cost
       FROM analytics.r365_item_cost
-      WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0
+      WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
       ORDER BY item_name_updated, period
     ),
     any_base AS (
       SELECT DISTINCT ON (item_name_updated, period)
         item_name_updated, period, avg_cost
       FROM analytics.r365_item_cost
-      WHERE avg_cost > 0
+      WHERE avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
       ORDER BY item_name_updated, period
+    ),
+    -- Harvest Chicken Bowl is its own displayed item (PMIX_AppScript.txt ITEMS list)
+    -- but r365_item_cost gives it the SAME item_name_updated as the real Greens+Grains
+    -- recipe ('BYO Greens + Grains Bowl') at the same period/menu — matching on
+    -- item_name_updated alone is ambiguous; match on item_name instead.
+    harvest_chicken_cost AS (
+      SELECT period, avg_cost
+      FROM analytics.r365_item_cost
+      WHERE item_name = 'Harvest Chicken Bowl - In House' AND avg_cost > 0
     ),
     ${modifierCostBatchSQL()},
     -- Online modifier cost per item × period (LO+3PD orders only)
@@ -864,7 +872,7 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
         cs.cost_period,
         cs.qty * (
           CASE WHEN cs.channel = 'IH'
-            THEN COALESCE(ib.avg_cost, ibl.avg_cost, ab.avg_cost, abl.avg_cost, 0)
+            THEN COALESCE(hc.avg_cost, hcl.avg_cost, ib.avg_cost, ibl.avg_cost, ab.avg_cost, abl.avg_cost, 0)
                  + CASE
                      WHEN (
                        UPPER(cs.menu_group) IN (
@@ -901,10 +909,21 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
           END
         )                                                                      AS total_cost
       FROM cs
+      LEFT JOIN LATERAL (
+        SELECT avg_cost FROM harvest_chicken_cost
+        WHERE cs.canonical_name = 'Harvest Chicken Bowl' AND period = cs.cost_period
+      ) hc ON true
+      LEFT JOIN LATERAL (
+        SELECT avg_cost FROM harvest_chicken_cost
+        WHERE cs.canonical_name = 'Harvest Chicken Bowl'
+          AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT
+              <= RIGHT(cs.cost_period,4)::INT * 100 + SUBSTRING(cs.cost_period,2,2)::INT
+        ORDER BY RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC LIMIT 1
+      ) hcl ON true
       LEFT JOIN ih_base           ib  ON ib.item_name_updated  = cs.canonical_name AND ib.period  = cs.cost_period
       LEFT JOIN LATERAL (
         SELECT avg_cost FROM analytics.r365_item_cost
-        WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0
+        WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND item_name_updated = cs.canonical_name
           AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT
               <= RIGHT(cs.cost_period,4)::INT * 100 + SUBSTRING(cs.cost_period,2,2)::INT
@@ -913,7 +932,7 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       LEFT JOIN online_base       ob  ON ob.item_name_updated  = cs.canonical_name AND ob.period  = cs.cost_period
       LEFT JOIN LATERAL (
         SELECT avg_cost FROM analytics.r365_item_cost
-        WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0
+        WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND item_name_updated = cs.canonical_name
           AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT
               <= RIGHT(cs.cost_period,4)::INT * 100 + SUBSTRING(cs.cost_period,2,2)::INT
@@ -922,7 +941,7 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       LEFT JOIN any_base          ab  ON ab.item_name_updated  = cs.canonical_name AND ab.period  = cs.cost_period
       LEFT JOIN LATERAL (
         SELECT avg_cost FROM analytics.r365_item_cost
-        WHERE avg_cost > 0
+        WHERE avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND item_name_updated = cs.canonical_name
           AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT
               <= RIGHT(cs.cost_period,4)::INT * 100 + SUBSTRING(cs.cost_period,2,2)::INT
@@ -1167,7 +1186,6 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       ('Grain Bowl - In House',                       'BYO Grain Bowl'),
       ('Salad Bowl - In House',                       'BYO Salad Bowl'),
       ('Greens + Grains Bowl - In House',             'BYO Greens + Grains Bowl'),
-      ('Harvest Chicken Bowl - In House',             'BYO Greens + Grains Bowl'),
       ('Cauliflower + Quinoa - In House',             'Spiced Cauli + Quinoa Bowl'),
       ('Burrito - In House',                          'BYO Indian Burrito'),
       ('Kids BYO - In House',                         'Kids Meal'),
@@ -1394,27 +1412,72 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       SELECT parent_item, SUM(total_ih_mod_cost) AS total_ih_mod_cost
       FROM cmc_ih GROUP BY parent_item
     ),
+    -- Zero-baseCost items (AppScript: "Sides, Homemade Juice") — their avg cost is the
+    -- weighted average of their modifier costs, not base + mods/qty.
+    zero_base(nm) AS (VALUES
+      ('Side of Main'),('Side of Grain'),('Side of Sauce'),('Side of Veggie'),
+      ('Homemade Juice'),('Handcrafted Juice for a Group - 1/2 Gallon')
+    ),
+    -- Weighted avg modifier cost per zero-base item: qty weights are range-wide,
+    -- unit costs from the selected period (§2.4 — never blend costs across periods).
+    -- One shared value for IN_HOUSE, LOYALTY(APP) and 3PD alike — computed from ALL
+    -- online orders (APP+DELIVERY+3PD) combined, per AppScript's "single online pink
+    -- sheet ... valid for all channels" rule. IH does NOT get its own separate
+    -- weighted average even when it has modifier data of its own — owner-confirmed
+    -- 2026-07-03: same modifier cost for all 3 channels, 3PD still gets its usual
+    -- ×1.18 uplift on top (applied in the final SELECT below).
+    wavg_online AS (
+      SELECT COALESCE(bf.clean, fol.canonical_name) AS parent_item,
+             SUM(fm.quantity * mc.unit_cost) / NULLIF(SUM(fm.quantity), 0) AS wavg
+      FROM public.fact_modifiers fm
+      JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
+      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      CROSS JOIN selected_period sp
+      JOIN mod_costs mc
+        ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
+       AND mc.pnum      = sp.pnum
+      WHERE NOT fol.is_voided AND NOT fol.is_deferred AND NOT fm.is_voided
+        AND fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
+        AND COALESCE(bf.clean, fol.canonical_name) IN (SELECT nm FROM zero_base)
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+        AND mc.unit_cost > 0
+      GROUP BY COALESCE(bf.clean, fol.canonical_name)
+    ),
     -- Base item costs, freshest row ≤ selected period (§2 RC1 display rule)
     ih_base AS (
       SELECT DISTINCT ON (item_name_updated) item_name_updated, avg_cost
       FROM analytics.r365_item_cost, selected_period sp
-      WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0
+      WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
         AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT <= sp.pnum
       ORDER BY item_name_updated, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
     ),
     online_base AS (
       SELECT DISTINCT ON (item_name_updated) item_name_updated, avg_cost
       FROM analytics.r365_item_cost, selected_period sp
-      WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0
+      WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
         AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT <= sp.pnum
       ORDER BY item_name_updated, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
     ),
     any_base AS (
       SELECT DISTINCT ON (item_name_updated) item_name_updated, avg_cost
       FROM analytics.r365_item_cost, selected_period sp
-      WHERE avg_cost > 0
+      WHERE avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
         AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT <= sp.pnum
       ORDER BY item_name_updated, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    ),
+    -- Harvest Chicken Bowl is its own displayed item (PMIX_AppScript.txt ITEMS list —
+    -- rawIH 'Harvest Chicken Bowl - In House', name 'Harvest Chicken Bowl', IH-only)
+    -- but r365_item_cost stores it with item_name_updated = 'BYO Greens + Grains Bowl'
+    -- — the SAME item_name_updated the real Greens+Grains recipe uses, at the SAME
+    -- period/menu, just a different item_name. Matching on item_name_updated alone is
+    -- ambiguous (picks an arbitrary one of the two rows); match on item_name instead.
+    harvest_chicken_ih AS (
+      SELECT avg_cost
+      FROM analytics.r365_item_cost, selected_period sp
+      WHERE item_name = 'Harvest Chicken Bowl - In House' AND avg_cost > 0
+        AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT <= sp.pnum
+      ORDER BY RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+      LIMIT 1
     ),
     -- All items: FULL OUTER JOIN so IH-only items (no online orders) still appear
     all_items AS (
@@ -1431,31 +1494,50 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
     SELECT
       ai.parent_item                                         AS canonical_name,
       ai.menu_group,
-      COALESCE(ib.avg_cost, 0)                               AS base_cost_ih,
+      COALESCE(hc.avg_cost, ib.avg_cost, 0)                  AS base_cost_ih,
       COALESCE(ob.avg_cost, ab.avg_cost, 0)                  AS base_cost_online,
       ROUND(COALESCE(c_sp.total_mod_cost, 0)::NUMERIC, 4)    AS total_mod_cost,
       ROUND(COALESCE(cih_sp.total_ih_mod_cost, 0)::NUMERIC, 4) AS total_ih_mod_cost,
       ai.online_qty::BIGINT                                  AS online_qty,
       ai.ih_qty::BIGINT                                      AS ih_qty,
-      -- avg_cost_ih: period-specific when available; falls back to range-wide so items like
-      -- Side of Grain / Side of Veggie show cost even when they have no selected-period IH orders.
-      ROUND((COALESCE(ib.avg_cost, ab.avg_cost, 0)
-        + CASE WHEN ihs.qty IS NOT NULL
-               THEN COALESCE(cih_sp.total_ih_mod_cost, 0) / NULLIF(ihs.qty, 0)
-               ELSE COALESCE(cir.total_ih_mod_cost, 0) / NULLIF(ai.ih_qty, 0)
-          END)::NUMERIC, 4) AS avg_cost_ih,
-      ROUND((COALESCE(ob.avg_cost, ab.avg_cost, 0)
-        + COALESCE(c_sp.total_mod_cost, 0) / NULLIF(oos.qty, 0))::NUMERIC, 4) AS avg_cost_online,
-      ROUND(((COALESCE(ob.avg_cost, ab.avg_cost, 0)
-        + COALESCE(c_sp.total_mod_cost, 0) / NULLIF(oos.qty, 0)) * 1.18)::NUMERIC, 4) AS avg_cost_3pd
+      -- Zero-base items (Sides, Homemade Juice): SAME weighted-avg modifier cost for
+      -- IN_HOUSE, LOYALTY(APP) and 3PD (owner-confirmed 2026-07-03) — IH does NOT get
+      -- its own separate figure even when it has modifier data of its own.
+      -- Other items — avg_cost_ih: period-specific when available; falls back to range-wide
+      -- so items with no selected-period IH orders still show cost.
+      CASE WHEN zb.nm IS NOT NULL
+           THEN ROUND(COALESCE(won.wavg, 0)::NUMERIC, 4)
+           ELSE ROUND((COALESCE(hc.avg_cost, ib.avg_cost, ab.avg_cost, 0)
+             + CASE WHEN ihs.qty IS NOT NULL
+                    THEN COALESCE(cih_sp.total_ih_mod_cost, 0) / NULLIF(ihs.qty, 0)
+                    ELSE COALESCE(cir.total_ih_mod_cost, 0) / NULLIF(ai.ih_qty, 0)
+               END)::NUMERIC, 4)
+      END AS avg_cost_ih,
+      CASE WHEN zb.nm IS NOT NULL
+           THEN ROUND(COALESCE(won.wavg, 0)::NUMERIC, 4)
+           ELSE ROUND((COALESCE(ob.avg_cost, ab.avg_cost, 0)
+             + COALESCE(c_sp.total_mod_cost, 0) / NULLIF(oos.qty, 0))::NUMERIC, 4)
+      END AS avg_cost_online,
+      -- 3PD still gets its usual ×1.18 packaging uplift on the shared modifier cost
+      -- (owner-confirmed 2026-07-03 — reverses the earlier "no uplift" treatment).
+      CASE WHEN zb.nm IS NOT NULL
+           THEN ROUND((COALESCE(won.wavg, 0) * 1.18)::NUMERIC, 4)
+           ELSE ROUND(((COALESCE(ob.avg_cost, ab.avg_cost, 0)
+             + COALESCE(c_sp.total_mod_cost, 0) / NULLIF(oos.qty, 0)) * 1.18)::NUMERIC, 4)
+      END AS avg_cost_3pd
     FROM all_items ai
     CROSS JOIN selected_period sp
+    LEFT JOIN zero_base    zb     ON zb.nm              = ai.parent_item
+    LEFT JOIN wavg_online  won    ON won.parent_item    = ai.parent_item
     LEFT JOIN cmc          c_sp   ON c_sp.parent_item   = ai.parent_item AND c_sp.cost_period   = sp.pkey
     LEFT JOIN cmc_ih       cih_sp ON cih_sp.parent_item = ai.parent_item AND cih_sp.cost_period = sp.pkey
     LEFT JOIN cmc_ih_range cir    ON cir.parent_item    = ai.parent_item
     LEFT JOIN ih_base  ib     ON ib.item_name_updated  = ai.parent_item
     LEFT JOIN online_base ob  ON ob.item_name_updated  = ai.parent_item
     LEFT JOIN any_base ab     ON ab.item_name_updated  = ai.parent_item
+    LEFT JOIN LATERAL (
+      SELECT avg_cost FROM harvest_chicken_ih WHERE ai.parent_item = 'Harvest Chicken Bowl'
+    ) hc ON true
     LEFT JOIN online_orders_sp oos ON oos.parent_item  = ai.parent_item
     LEFT JOIN ih_orders_sp     ihs ON ihs.parent_item  = ai.parent_item
     ORDER BY ai.online_qty DESC, ai.ih_qty DESC
@@ -1495,7 +1577,6 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       ('Grain Bowl - In House',                       'BYO Grain Bowl'),
       ('Salad Bowl - In House',                       'BYO Salad Bowl'),
       ('Greens + Grains Bowl - In House',             'BYO Greens + Grains Bowl'),
-      ('Harvest Chicken Bowl - In House',             'BYO Greens + Grains Bowl'),
       ('Cauliflower + Quinoa - In House',             'Spiced Cauli + Quinoa Bowl'),
       ('Burrito - In House',                          'BYO Indian Burrito'),
       ('Kids BYO - In House',                         'Kids Meal'),
@@ -1515,10 +1596,27 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       ('Tandoori Paneer Burrito - In House',          'Tandoori Paneer Burrito'),
       ('Butter Chicken Burrito - In House',           'Butter Chicken Burrito')
     ),
+    -- Most recent fiscal period overlapping the date range (§2.4 display rule) —
+    -- detail rows are costed at this period so they reconcile with the summary.
+    selected_period AS (
+      SELECT fiscal_year * 100 + period AS pnum
+      FROM public.dim_fiscal_period
+      WHERE start_date::DATE <= $2::DATE
+        AND end_date::DATE   >= $1::DATE
+      ORDER BY fiscal_year DESC, period DESC
+      LIMIT 1
+    ),
     ${modifierCostBatchSQL()}
     SELECT
       COALESCE(bf.clean, fol.canonical_name)   AS parent_item,
-      mt.modifier_type                          AS section,
+      -- Modifiers unknown to modifier_type but with a real cost (e.g. Crispy Chickpea
+      -- Noodles) belong under Topping — Kids Meal drinks under Drink — instead of the
+      -- parent's '... - Online' item_type pseudo-section.
+      CASE WHEN mt.from_item_type AND COALESCE(mc.unit_cost, 0) > 0
+                AND pit.item_type ILIKE '%online%'
+           THEN CASE WHEN pit.item_type ILIKE 'kids meal%' THEN 'Drink' ELSE 'Topping' END
+           ELSE mt.modifier_type
+      END                                       AS section,
       nm.base_name                              AS modifier_name,
       CASE WHEN fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
            THEN 'online' ELSE 'ih' END         AS channel,
@@ -1528,10 +1626,28 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
     FROM public.fact_modifiers fm
     JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
-    LEFT JOIN (
-      SELECT DISTINCT ON (parent_item) parent_item, item_type
-      FROM analytics.parent_item_type ORDER BY parent_item, item_type
-    ) pit ON pit.parent_item = fol.canonical_name
+    -- Toast sometimes sends the already-canonical name directly (e.g. 'BYO Grain Bowl')
+    -- instead of the short form byo_fix expects ('Grain Bowl') — parent_item_type only
+    -- has the short form, so a plain equality join misses those rows entirely (and any
+    -- unmapped modifier on them, e.g. Crispy Chickpea Noodles, gets silently dropped by
+    -- the 'mt.modifier_type IS NOT NULL' filter below). Fall back to the byo_fix alias.
+    LEFT JOIN LATERAL (
+      SELECT p.item_type
+      FROM analytics.parent_item_type p
+      WHERE p.parent_item = fol.canonical_name
+         OR (
+           -- Alias fallback must ALSO match the order's actual channel — otherwise
+           -- (e.g. Spiced Cauli + Quinoa Bowl online, whose online alias isn't in
+           -- parent_item_type at all) we'd rather leave item_type NULL than mislabel
+           -- an online order with an '... - In House' item_type.
+           p.parent_item IN (SELECT raw FROM byo_fix WHERE clean = fol.canonical_name)
+           AND p.item_type ILIKE '%' || CASE WHEN fol.menu_name IN (
+                 'APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP'
+               ) THEN 'Online' ELSE 'In House' END
+         )
+      ORDER BY (p.parent_item = fol.canonical_name) DESC
+      LIMIT 1
+    ) pit ON true
     -- Strip Toast auto-select suffix ' -*' so 'Spicy Chili Chicken -*' = 'Spicy Chili Chicken'
     CROSS JOIN LATERAL (
       SELECT CASE WHEN fm.canonical_name LIKE '% -*'
@@ -1540,24 +1656,30 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
     ) nm
     CROSS JOIN LATERAL (
       SELECT COALESCE(
-        (SELECT amt.modifier_type FROM analytics.modifier_type amt
-         WHERE amt.modifier_name = nm.base_name
-           AND amt.modifier_type NOT LIKE 'Catering%'
-           AND amt.modifier_type NOT IN ('NA','ZeroCater','Plate - Main','Online')
-         ORDER BY (amt.item_type = pit.item_type) DESC NULLS LAST
-         LIMIT 1),
+        known.t,
         CASE WHEN LOWER(nm.base_name) = 'that fire hot sauce' THEN 'Chutney And Dressing' END,
         CASE WHEN NOT EXISTS (
           SELECT 1 FROM analytics.modifier_type WHERE modifier_name = nm.base_name
         ) THEN pit.item_type END
-      ) AS modifier_type
+      ) AS modifier_type,
+      (known.t IS NULL
+       AND LOWER(nm.base_name) <> 'that fire hot sauce'
+       AND NOT EXISTS (
+         SELECT 1 FROM analytics.modifier_type WHERE modifier_name = nm.base_name
+       )) AS from_item_type
+      FROM (
+        SELECT (SELECT amt.modifier_type FROM analytics.modifier_type amt
+                WHERE amt.modifier_name = nm.base_name
+                  AND amt.modifier_type NOT LIKE 'Catering%'
+                  AND amt.modifier_type NOT IN ('NA','ZeroCater','Plate - Main','Online')
+                ORDER BY (amt.item_type = pit.item_type) DESC NULLS LAST
+                LIMIT 1) AS t
+      ) known
     ) mt
-    LEFT JOIN public.dim_fiscal_period fp
-           ON fol.business_date >= fp.start_date::DATE
-          AND fol.business_date <= fp.end_date::DATE
+    CROSS JOIN selected_period sp
     LEFT JOIN mod_costs mc
            ON mc.norm_name = LOWER(nm.base_name)
-          AND mc.pnum      = fp.fiscal_year * 100 + fp.period
+          AND mc.pnum      = sp.pnum
     WHERE NOT fol.is_voided AND NOT fol.is_deferred AND NOT fm.is_voided
       AND fol.menu_name IN (
         'APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP',
@@ -1577,7 +1699,13 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       AND mt.modifier_type IS NOT NULL
       AND mt.modifier_type NOT IN ('Online', 'NA', 'ZeroCater')
     GROUP BY
-      COALESCE(bf.clean, fol.canonical_name), mt.modifier_type, nm.base_name,
+      COALESCE(bf.clean, fol.canonical_name),
+      CASE WHEN mt.from_item_type AND COALESCE(mc.unit_cost, 0) > 0
+                AND pit.item_type ILIKE '%online%'
+           THEN CASE WHEN pit.item_type ILIKE 'kids meal%' THEN 'Drink' ELSE 'Topping' END
+           ELSE mt.modifier_type
+      END,
+      nm.base_name,
       CASE WHEN fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
            THEN 'online' ELSE 'ih' END
     ORDER BY parent_item, channel, section, modifier_name
@@ -1665,16 +1793,7 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
                WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
                  AND LOWER(r.clean_name) IN (
                    LOWER(bm.modifier_name),
-                   CASE LOWER(bm.modifier_name)
-                     WHEN 'tomato garlic (butter masala)' THEN 'tomato garlic sauce'
-                     WHEN 'tikka masala'                  THEN 'tikka masala sauce'
-                     WHEN 'tamarind chili (spicy)'        THEN 'tamarind chili sauce'
-                     WHEN 'peanut sesame'                 THEN 'peanut sesame sauce'
-                     WHEN 'coconut ginger'                THEN 'coconut ginger sauce'
-                     WHEN 'tandoori paneer'               THEN 'organic tandoori paneer'
-                     WHEN 'romaine'                       THEN 'shredded romaine'
-                     ELSE LOWER(bm.modifier_name)
-                   END
+                   ${modifierAliasCaseSQL('LOWER(bm.modifier_name)')}
                  )
                ORDER BY RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT DESC,
                         (LOWER(r.clean_name) = LOWER(bm.modifier_name)) DESC
@@ -1757,7 +1876,7 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
     }));
   } catch (err) {
     console.error('getModifiers error:', err);
-    await db.end();
+    await db.end().catch(() => {}); // connection may already be broken; don't let cleanup crash the request
     return [];
   }
 }
@@ -1890,7 +2009,7 @@ export async function getBikky(): Promise<BikkyRow[]> {
     }));
   } catch (err) {
     console.error('getBikky error:', err);
-    await db.end();
+    await db.end().catch(() => {}); // connection may already be broken; don't let cleanup crash the request
     return [];
   }
 }
@@ -1965,7 +2084,7 @@ export async function getRenames(): Promise<RenameRow[]> {
     });
   } catch (err) {
     console.error('getRenames error:', err);
-    await db.end();
+    await db.end().catch(() => {}); // connection may already be broken; don't let cleanup crash the request
     return [];
   }
 }
@@ -2044,7 +2163,7 @@ export async function getNeedsReview(dr: DateRange): Promise<NeedsReviewRow[]> {
     }));
   } catch (err) {
     console.error('getNeedsReview error:', err);
-    await db.end();
+    await db.end().catch(() => {}); // connection may already be broken; don't let cleanup crash the request
     return [];
   }
 }
@@ -2129,7 +2248,7 @@ export async function getOpenItems(dr: DateRange): Promise<{ summary: OpenItemsS
     return { summary, items };
   } catch (err) {
     console.error('getOpenItems error:', err);
-    await db.end();
+    await db.end().catch(() => {}); // connection may already be broken; don't let cleanup crash the request
     return {
       summary: { total: 0, revenue_affected: 0, missing_cost: 0, uncategorized: 0 },
       items: [],
@@ -2196,7 +2315,7 @@ export async function getUncategorizedItems(dr: DateRange): Promise<Uncategorize
     }));
   } catch (err) {
     console.error('getUncategorizedItems error:', err);
-    await db.end();
+    await db.end().catch(() => {}); // connection may already be broken; don't let cleanup crash the request
     return [];
   }
 }
@@ -2284,7 +2403,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
           END AS canonical,
           avg_cost, period
         FROM analytics.r365_item_cost, max_pk
-        WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0
+        WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
@@ -2307,7 +2426,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
           END AS canonical,
           avg_cost, period
         FROM analytics.r365_item_cost, max_pk
-        WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0
+        WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
@@ -2330,7 +2449,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
           END AS canonical,
           avg_cost, period
         FROM analytics.r365_item_cost, max_pk
-        WHERE avg_cost > 0
+        WHERE avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
@@ -2359,6 +2478,11 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
       ORDER BY canonical,
                RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
     ),
+    -- CATERING, CATERING - 3PD, OFFSITE POP-UPS, and Open items are each their OWN
+    -- r365 menu value with their own costs — they must NOT be blended together or
+    -- fall back to fallback_base/mi_base (which pick an arbitrary menu's cost with no
+    -- regard for which channel is actually being costed). Each gets its own bucket,
+    -- period-aware (freshest <= selected period), sourced strictly from its own menu.
     catering_base AS (
       SELECT DISTINCT ON (canonical)
         canonical AS name, avg_cost AS cost
@@ -2376,7 +2500,76 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
           END AS canonical,
           avg_cost, period
         FROM analytics.r365_item_cost, max_pk
-        WHERE menu IN ('CATERING','CATERING - 3PD') AND avg_cost > 0
+        WHERE menu = 'CATERING' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
+          AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
+      ) t
+      ORDER BY canonical,
+               RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    ),
+    catering_3pd_base AS (
+      SELECT DISTINCT ON (canonical)
+        canonical AS name, avg_cost AS cost
+      FROM (
+        SELECT
+          CASE item_name_updated
+            WHEN 'Salad Bowl'           THEN 'BYO Salad Bowl'
+            WHEN 'Grain Bowl'           THEN 'BYO Grain Bowl'
+            WHEN 'Greens + Grains Bowl' THEN 'BYO Greens + Grains Bowl'
+            WHEN 'Cauliflower + Quinoa' THEN 'Spiced Cauli + Quinoa Bowl'
+            WHEN 'Cauliflower + Quinoa Bowl' THEN 'Spiced Cauli + Quinoa Bowl'
+            WHEN 'Kids BYO'            THEN 'Kids Meal'
+            WHEN 'Burrito'             THEN 'BYO Indian Burrito'
+            ELSE item_name_updated
+          END AS canonical,
+          avg_cost, period
+        FROM analytics.r365_item_cost, max_pk
+        WHERE menu = 'CATERING - 3PD' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
+          AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
+      ) t
+      ORDER BY canonical,
+               RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    ),
+    offsite_base AS (
+      SELECT DISTINCT ON (canonical)
+        canonical AS name, avg_cost AS cost
+      FROM (
+        SELECT
+          CASE item_name_updated
+            WHEN 'Salad Bowl'           THEN 'BYO Salad Bowl'
+            WHEN 'Grain Bowl'           THEN 'BYO Grain Bowl'
+            WHEN 'Greens + Grains Bowl' THEN 'BYO Greens + Grains Bowl'
+            WHEN 'Cauliflower + Quinoa' THEN 'Spiced Cauli + Quinoa Bowl'
+            WHEN 'Cauliflower + Quinoa Bowl' THEN 'Spiced Cauli + Quinoa Bowl'
+            WHEN 'Kids BYO'            THEN 'Kids Meal'
+            WHEN 'Burrito'             THEN 'BYO Indian Burrito'
+            ELSE item_name_updated
+          END AS canonical,
+          avg_cost, period
+        FROM analytics.r365_item_cost, max_pk
+        WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
+          AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
+      ) t
+      ORDER BY canonical,
+               RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    ),
+    open_items_base AS (
+      SELECT DISTINCT ON (canonical)
+        canonical AS name, avg_cost AS cost
+      FROM (
+        SELECT
+          CASE item_name_updated
+            WHEN 'Salad Bowl'           THEN 'BYO Salad Bowl'
+            WHEN 'Grain Bowl'           THEN 'BYO Grain Bowl'
+            WHEN 'Greens + Grains Bowl' THEN 'BYO Greens + Grains Bowl'
+            WHEN 'Cauliflower + Quinoa' THEN 'Spiced Cauli + Quinoa Bowl'
+            WHEN 'Cauliflower + Quinoa Bowl' THEN 'Spiced Cauli + Quinoa Bowl'
+            WHEN 'Kids BYO'            THEN 'Kids Meal'
+            WHEN 'Burrito'             THEN 'BYO Indian Burrito'
+            ELSE item_name_updated
+          END AS canonical,
+          avg_cost, period
+        FROM analytics.r365_item_cost, max_pk
+        WHERE menu = 'Open items' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
@@ -2388,26 +2581,38 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
       UNION SELECT name FROM fallback_base
       UNION SELECT name FROM mi_base
       UNION SELECT name FROM catering_base
+      UNION SELECT name FROM catering_3pd_base
+      UNION SELECT name FROM offsite_base
+      UNION SELECT name FROM open_items_base
     )
     SELECT
       n.name                                                    AS canonical_name,
       COALESCE(ih.cost, fb.cost, mi.cost, 0)::NUMERIC          AS ih_cost,
       COALESCE(ol.cost, fb.cost, mi.cost, 0)::NUMERIC          AS online_cost,
-      COALESCE(ct.cost, fb.cost, mi.cost, 0)::NUMERIC          AS catering_cost
+      COALESCE(ct.cost, 0)::NUMERIC                             AS catering_cost,
+      COALESCE(c3.cost, 0)::NUMERIC                             AS catering_3pd_cost,
+      COALESCE(off.cost, 0)::NUMERIC                            AS offsite_cost,
+      COALESCE(oi.cost, 0)::NUMERIC                             AS open_items_cost
     FROM all_names n
-    LEFT JOIN ih_base       ih ON LOWER(ih.name) = LOWER(n.name)
-    LEFT JOIN online_base   ol ON LOWER(ol.name) = LOWER(n.name)
-    LEFT JOIN fallback_base fb ON LOWER(fb.name) = LOWER(n.name)
-    LEFT JOIN mi_base       mi ON LOWER(mi.name) = LOWER(n.name)
-    LEFT JOIN catering_base ct ON LOWER(ct.name) = LOWER(n.name)
-    WHERE COALESCE(ih.cost, ol.cost, ct.cost, fb.cost, mi.cost, 0) > 0
+    LEFT JOIN ih_base          ih  ON LOWER(ih.name)  = LOWER(n.name)
+    LEFT JOIN online_base      ol  ON LOWER(ol.name)  = LOWER(n.name)
+    LEFT JOIN fallback_base    fb  ON LOWER(fb.name)  = LOWER(n.name)
+    LEFT JOIN mi_base          mi  ON LOWER(mi.name)  = LOWER(n.name)
+    LEFT JOIN catering_base    ct  ON LOWER(ct.name)  = LOWER(n.name)
+    LEFT JOIN catering_3pd_base c3 ON LOWER(c3.name)  = LOWER(n.name)
+    LEFT JOIN offsite_base     off ON LOWER(off.name) = LOWER(n.name)
+    LEFT JOIN open_items_base  oi  ON LOWER(oi.name)  = LOWER(n.name)
+    WHERE COALESCE(ih.cost, ol.cost, ct.cost, c3.cost, off.cost, oi.cost, fb.cost, mi.cost, 0) > 0
   `, [dr.end]);
   await db.end();
   return rows.map(r => ({
-    canonical_name:  r.canonical_name as string,
-    ih_cost:         Number(r.ih_cost),
-    online_cost:     Number(r.online_cost),
-    catering_cost:   Number(r.catering_cost),
+    canonical_name:      r.canonical_name as string,
+    ih_cost:             Number(r.ih_cost),
+    online_cost:         Number(r.online_cost),
+    catering_cost:       Number(r.catering_cost),
+    catering_3pd_cost:   Number(r.catering_3pd_cost),
+    offsite_cost:        Number(r.offsite_cost),
+    open_items_cost:     Number(r.open_items_cost),
   }));
 }
 
@@ -2425,6 +2630,8 @@ export async function loadDashboardData(
 
   const prevRange = computePrevDateRange(dr, periods);
 
+  const prevDr = prevRange ? { ...dr, start: prevRange.start, end: prevRange.end, label: prevRange.label } : null;
+
   const [
     summary, prevSummaryResult,
     channels, weekly, daily,
@@ -2437,9 +2644,10 @@ export async function loadDashboardData(
     uncategorizedItems,
     cateringVendors, offsiteVendors,
     itemCosts,
+    prevChannelItems, prevLocationItems, prevMEItems,
   ] = await Promise.all([
     getSummary(dr),
-    prevRange ? getSummary({ ...dr, start: prevRange.start, end: prevRange.end, label: prevRange.label }) : Promise.resolve(null),
+    prevDr ? getSummary(prevDr) : Promise.resolve(null),
     getChannels(dr),
     getWeekly(dr),
     getDaily(dr),
@@ -2466,6 +2674,12 @@ export async function loadDashboardData(
     getCateringVendors(dr),
     getOffsiteVendors(dr),
     getItemCosts(dr),
+    // Prev-period granular data — lets Overview compute "vs prev X" deltas that
+    // respect the active channel/category/location filters instead of comparing
+    // a filtered current period against an unfiltered prev-period total.
+    prevDr ? getChannelItems(prevDr)  : Promise.resolve([]),
+    prevDr ? getLocationItems(prevDr) : Promise.resolve([]),
+    prevDr ? getMEItems(prevDr)       : Promise.resolve([]),
   ]);
 
   const totalMargin   = meItems.reduce((s, i) => s + i.total_margin, 0);
@@ -2477,6 +2691,7 @@ export async function loadDashboardData(
     summary,
     prevSummary: prevSummaryResult,
     prevLabel:   prevRange?.label ?? null,
+    prevChannelItems, prevLocationItems, prevMEItems,
     channels,
     weekly, daily, weeklyByChannel, dailyByChannel,
     items, channelItems, locationItems, locations,

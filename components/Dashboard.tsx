@@ -297,6 +297,78 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     return r;
   }, [selectedChannels, categoryFilter, locationAdjustedChannelItems, itemMetaMap]);
 
+  // ── Prev-period pipeline, mirroring the current-period one above, so Overview's
+  // "vs prev X" KPI deltas can respect the same channel/category/location filters
+  // instead of comparing a filtered current period against an unfiltered prev total.
+  // Location: LocationItemRow already has exact per-location numbers, so this is a
+  // direct filter+sum (no proportional scaling needed — Overview only needs
+  // channel-level granularity, not the finer menu_group split locationBaseItems scales for).
+  const prevLocationAdjustedChannelItems = useMemo((): ChannelItemRow[] => {
+    if (selectedLocations.length === 0) return data.prevChannelItems;
+    const agg = new Map<string, { qty: number; revenue: number }>();
+    data.prevLocationItems
+      .filter(li => selectedLocations.includes(li.location_code))
+      .forEach(li => {
+        const key = `${li.canonical_name}||${li.channel}`;
+        const e = agg.get(key) ?? { qty: 0, revenue: 0 };
+        e.qty     += li.qty;
+        e.revenue += li.revenue;
+        agg.set(key, e);
+      });
+    return [...agg.entries()].map(([key, v]) => {
+      const idx = key.indexOf('||');
+      return {
+        canonical_name: key.slice(0, idx),
+        channel:        key.slice(idx + 2),
+        qty:            v.qty,
+        revenue:        v.revenue,
+        gross_sales:    v.revenue, // not tracked per-location; unused downstream for prev-period deltas
+      };
+    });
+  }, [selectedLocations, data.prevChannelItems, data.prevLocationItems]);
+
+  const prevFilteredChannelItems = useMemo(() => {
+    let r = prevLocationAdjustedChannelItems;
+    if (selectedChannels.length > 0) r = r.filter(ci => selectedChannels.includes(ci.channel));
+    if (categoryFilter !== 'all')    r = r.filter(ci => normCat(itemMetaMap.get(ci.canonical_name)?.category) === categoryFilter);
+    return r;
+  }, [selectedChannels, categoryFilter, prevLocationAdjustedChannelItems, itemMetaMap]);
+
+  // Prev-period ME items — same per-channel recompute as filteredMEItems, simplified
+  // to just the fields Overview's margin delta needs (no quadrant/flag computation).
+  const prevFilteredMEItems = useMemo((): MERow[] => {
+    let base: MERow[];
+    if (selectedChannels.length === 0) {
+      base = data.prevMEItems;
+    } else {
+      const costMeta = new Map(data.prevMEItems.map(i => [i.canonical_name, i]));
+      const acc = new Map<string, { qty: number; net_sales: number; total_cost: number }>();
+      for (const ci of prevLocationAdjustedChannelItems) {
+        if (!selectedChannels.includes(ci.channel)) continue;
+        const meta = costMeta.get(ci.canonical_name);
+        if (!meta) continue;
+        const costMult = ci.channel === 'TPD' ? 1.18 : 1.0;
+        const e = acc.get(ci.canonical_name) ?? { qty: 0, net_sales: 0, total_cost: 0 };
+        e.qty        += ci.qty;
+        e.net_sales  += ci.revenue;
+        e.total_cost += ci.qty * meta.avg_cost * costMult;
+        acc.set(ci.canonical_name, e);
+      }
+      base = [...acc.entries()].flatMap(([name, v]) => {
+        const meta = costMeta.get(name);
+        if (!meta || v.qty === 0) return [];
+        return [{ ...meta, qty: v.qty, net_sales: v.net_sales, total_cost: v.total_cost,
+                  total_margin: v.net_sales - v.total_cost }];
+      });
+    }
+    const byCategory = categoryFilter === 'all' ? base : base.filter(i => normCat(i.category) === categoryFilter);
+    // Location: presence filter only, matching finalMEItems' existing precedent
+    // (restricts to items sold in the selected location; doesn't rescale $ to its share).
+    if (selectedLocations.length === 0) return byCategory;
+    const locNames = new Set(locationBaseItems.map(i => i.canonical_name));
+    return byCategory.filter(i => locNames.has(i.canonical_name));
+  }, [selectedChannels, categoryFilter, selectedLocations, data.prevMEItems, prevLocationAdjustedChannelItems, locationBaseItems]);
+
   // Channel-filtered channels list — location already baked into locationAdjustedChannels
   const filteredChannels = useMemo(() =>
     selectedChannels.length === 0
@@ -426,7 +498,9 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     channelCategories: filteredChannelCategories,
     locationItems:     filteredLocationItems,
     meItems:           finalMEItems,
-  }), [data, locationAdjustedSummary, locationBaseItems, filteredChannels, filteredChannelItems, filteredChannelCategories, filteredLocationItems, finalMEItems]);
+    prevChannelItems:  prevFilteredChannelItems,
+    prevMEItems:       prevFilteredMEItems,
+  }), [data, locationAdjustedSummary, locationBaseItems, filteredChannels, filteredChannelItems, filteredChannelCategories, filteredLocationItems, finalMEItems, prevFilteredChannelItems, prevFilteredMEItems]);
 
   return (
     <div className="container">
@@ -600,7 +674,7 @@ export default function Dashboard({ data }: { data: DashboardData }) {
       {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} />}
       {tab === 'byo'        && <BYOBreakdown     modifiers={data.modifiers} items={locationBaseItems} pinkSheets={data.pinkSheets} meItems={finalMEItems} />}
       {tab === 'payment'    && <PaymentSource    payments={data.payments} paymentsByLocation={data.paymentsByLocation} paymentSourcesByLocation={data.paymentSourcesByLocation} selectedLocations={selectedLocations} />}
-      {tab === 'meoverall'  && <MEOverall meItems={finalMEItems} pinkSheets={data.pinkSheets} />}
+      {tab === 'meoverall'  && <MEOverall meItems={finalMEItems} pinkSheets={data.pinkSheets} itemCosts={data.itemCosts} />}
       {tab === 'pinksheets' && <PinkSheets pinkSheets={data.pinkSheets} details={data.pinkSheetDetails} />}
       {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} />}
       {tab === 'renames'    && <RenamesAudit     renames={data.renames} />}

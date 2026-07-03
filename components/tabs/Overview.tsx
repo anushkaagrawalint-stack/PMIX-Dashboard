@@ -41,13 +41,24 @@ function DeltaBadge({
 const mapCat = (cat: string) => cat === 'Kids Meal' ? 'Entrees' : cat;
 
 export default function Overview({ data, selectedChannels, categoryFilter }: Props) {
-  const { summary, prevSummary, prevLabel, channels, weekly, daily, periods, items, avgMargin,
-          channelItems, channelCategories, weeklyByChannel, dailyByChannel } = data;
+  const { summary, prevSummary, prevLabel, weekly, daily, periods, items, avgMargin,
+          channelItems, channelCategories, weeklyByChannel, dailyByChannel,
+          prevChannelItems, prevMEItems } = data;
 
   const isFiltered = selectedChannels.length > 0 || categoryFilter !== 'all';
-  // Only show deltas when no filter active (to avoid filtered-vs-total mismatch)
-  const showDelta = !isFiltered && prevSummary !== null;
+  // channelItems/prevChannelItems/prevMEItems arrive from Dashboard.tsx already filtered
+  // by the active channel/category/location selections, so deltas stay comparable
+  // (filtered-vs-filtered) even while a filter is active.
+  const showDelta = prevLabel !== null;
   const [showBottom, setShowBottom] = useState(false);
+
+  // canonical_name → is_open_item, used to exclude open items from unique-item counts
+  // (ChannelItemRow itself has no is_open_item field, so this comes from `items`).
+  const isOpenItemMap = useMemo(() => {
+    const m = new Map<string, boolean>();
+    items.forEach(i => m.set(i.canonical_name, i.is_open_item));
+    return m;
+  }, [items]);
 
   // Weekly trend filtered by selected channels
   const effectiveWeekly = useMemo(() => {
@@ -147,11 +158,21 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
       .sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value }));
   }, [effectiveItems, categoryFilter]);
 
-  const effectiveChannels = useMemo(() =>
-    selectedChannels.length === 0
-      ? channels
-      : channels.filter(c => selectedChannels.includes(c.channel)),
-  [channels, selectedChannels]);
+  // Derived from channelItems (already channel+category+location filtered by
+  // Dashboard.tsx) rather than the coarser `channels` field, which has no category
+  // dimension at all — that's what made this table ignore the category filter.
+  const effectiveChannels = useMemo(() => {
+    const map = new Map<string, { qty: number; revenue: number }>();
+    channelItems.forEach(ci => {
+      const e = map.get(ci.channel) ?? { qty: 0, revenue: 0 };
+      e.qty     += ci.qty;
+      e.revenue += ci.revenue;
+      map.set(ci.channel, e);
+    });
+    return [...map.entries()]
+      .map(([channel, { qty, revenue }]) => ({ channel, qty, revenue, pct: 0 }))
+      .sort((a, b) => b.revenue - a.revenue);
+  }, [channelItems]);
 
   // Items after both channel and category filter — basis for all KPI cards
   const kpiItems = useMemo(() => {
@@ -190,6 +211,39 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
     return { name: topName || summary.top_item, revenue: topRev, mix: totalRev > 0 ? (topRev / totalRev) * 100 : 0 };
   }, [isFiltered, kpiItems, summary]);
 
+  // Prev-period equivalents of the KPI cards above, from prevChannelItems/prevMEItems
+  // (already channel+category+location filtered by Dashboard.tsx) — the same shape as
+  // kpiRevenue/kpiQty/kpiUnique/kpiAvgMargin/kpiTopItem, so deltas compare filtered vs
+  // filtered rather than filtered vs an unfiltered prev-period total.
+  const prevKpi = useMemo(() => {
+    if (!showDelta) return null;
+    // prevMEItems already reflects the category filter (or is the full blended set
+    // when unfiltered), so margin is computed the same way in both cases.
+    const totalSales = prevMEItems.reduce((s, i) => s + i.net_sales, 0);
+    const totalCost  = prevMEItems.reduce((s, i) => s + i.total_cost, 0);
+    const avgMargin  = totalSales > 0 ? (totalSales - totalCost) / totalSales : null;
+
+    if (!isFiltered) {
+      return {
+        revenue: prevSummary!.total_revenue,
+        qty:     prevSummary!.total_qty,
+        unique:  prevSummary!.unique_items,
+        topName: prevSummary!.top_item,
+        avgMargin,
+      };
+    }
+    const revenue = prevChannelItems.reduce((s, i) => s + i.revenue, 0);
+    const qty     = prevChannelItems.reduce((s, i) => s + i.qty, 0);
+    const unique  = new Set(
+      prevChannelItems.filter(i => !isOpenItemMap.get(i.canonical_name)).map(i => i.canonical_name)
+    ).size;
+    const byRev = new Map<string, number>();
+    prevChannelItems.forEach(i => byRev.set(i.canonical_name, (byRev.get(i.canonical_name) ?? 0) + i.revenue));
+    let topName = '', topRev = 0;
+    byRev.forEach((rev, name) => { if (rev > topRev) { topRev = rev; topName = name; } });
+    return { revenue, qty, unique, topName: topName || prevSummary!.top_item, avgMargin };
+  }, [showDelta, isFiltered, prevSummary, prevChannelItems, prevMEItems, isOpenItemMap]);
+
   const rightChartData  = categoryFilter === 'all' ? catData : subCatData;
   const rightChartTitle = categoryFilter === 'all'
     ? 'Revenue by category' : `${categoryFilter} · sub-category`;
@@ -205,26 +259,28 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
           <div className="kl">Items Sold</div>
           <div className="kv">{Number(kpiQty).toLocaleString()}</div>
           {showDelta
-            ? <DeltaBadge curr={summary.total_qty} prev={prevSummary!.total_qty} vsLabel={prevLabel} />
+            ? <DeltaBadge curr={kpiQty} prev={prevKpi!.qty} vsLabel={prevLabel} />
             : isFiltered && <div className="ks">filtered</div>}
         </div>
         <div className="kc g">
           <div className="kl">Net Revenue</div>
           <div className="kv">{fmt$(kpiRevenue)}</div>
           {showDelta
-            ? <DeltaBadge curr={summary.total_revenue} prev={prevSummary!.total_revenue} vsLabel={prevLabel} />
+            ? <DeltaBadge curr={kpiRevenue} prev={prevKpi!.revenue} vsLabel={prevLabel} />
             : isFiltered && <div className="ks">filtered</div>}
         </div>
         <div className="kc b">
           <div className="kl">Avg Margin</div>
           <div className="kv">{(kpiAvgMargin * 100).toFixed(1)}%</div>
-          <div className="ks">{isFiltered ? 'filtered' : 'blended · all items'}</div>
+          {showDelta && prevKpi!.avgMargin !== null
+            ? <DeltaBadge curr={kpiAvgMargin} prev={prevKpi!.avgMargin} vsLabel={prevLabel} />
+            : <div className="ks">{isFiltered ? 'filtered' : 'blended · all items'}</div>}
         </div>
         <div className="kc p">
           <div className="kl">Unique Items</div>
           <div className="kv">{kpiUnique}</div>
           {showDelta
-            ? <DeltaBadge curr={summary.unique_items} prev={prevSummary!.unique_items} neutral showCount vsLabel={prevLabel} />
+            ? <DeltaBadge curr={kpiUnique} prev={prevKpi!.unique} neutral showCount vsLabel={prevLabel} />
             : isFiltered ? <div className="ks">filtered</div> : <div className="ks">real menu items</div>}
         </div>
         <div className="kc pk">
@@ -232,9 +288,9 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
           <div className="kv-sm">{kpiTopItem.name}</div>
           <div className="ks">
             {kpiTopItem.mix.toFixed(1)}% mix · {fmt$(kpiTopItem.revenue)}
-            {showDelta && prevSummary!.top_item !== summary.top_item && (
+            {showDelta && prevKpi!.topName !== kpiTopItem.name && (
               <span style={{ marginLeft: 4, color: 'var(--muted)', fontStyle: 'italic' }}>
-                (was {prevSummary!.top_item})
+                (was {prevKpi!.topName})
               </span>
             )}
           </div>
