@@ -63,6 +63,7 @@ export default function NeedsReview({ needsReview, uncategorizedItems }: Props) 
       if (!res.ok) throw new Error(await res.text());
       setChannelStatus(s => ({ ...s, [order_guid]: 'done' }));
       setChannelEditing(prev => { const n = new Set(prev); n.delete(order_guid); return n; });
+      window.location.reload();
     } catch {
       setChannelStatus(s => ({ ...s, [order_guid]: 'error' }));
     }
@@ -106,9 +107,9 @@ export default function NeedsReview({ needsReview, uncategorizedItems }: Props) 
           <option value="channels">
             Wrong Channel Orders ({needsReview.length}{doneChannels > 0 ? ` · ${doneChannels} fixed` : ''})
           </option>
-          <option value="items">
+          {/* <option value="items">
             Uncategorized Items ({uncategorizedItems.length}{doneItems > 0 ? ` · ${doneItems} fixed` : ''})
-          </option>
+          </option> */}
         </select>
       </div>
 

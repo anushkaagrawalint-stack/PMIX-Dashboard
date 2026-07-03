@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { revalidatePath } from 'next/cache';
 import { Pool } from '@neondatabase/serverless';
 
 function pool() { return new Pool({ connectionString: process.env.DATABASE_URL! }); }
@@ -26,6 +27,7 @@ export async function POST(req: NextRequest) {
             updated_at      = NOW()
     `, [order_guid, channel]);
     await db.end();
+    revalidatePath('/');
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('update-channel error:', err);

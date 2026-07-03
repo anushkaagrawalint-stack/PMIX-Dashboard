@@ -1,16 +1,18 @@
 'use client';
 import { useState, useMemo } from 'react';
-import type { ItemRow, MERow } from '@/lib/types';
+import type { ItemRow, MERow, PinkSheetRow, ItemCostRow } from '@/lib/types';
 
 const fmt$  = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 const fmt$2 = (v: number) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-type ItemSortKey = 'qty' | 'revenue' | 'avg_price';
+type ItemSortKey = 'qty' | 'revenue' | 'gross_sales' | 'avg_price';
 type SortKey     = ItemSortKey | 'avg_cost';
 
 interface Props {
   items:            ItemRow[];
+  pinkSheets:       PinkSheetRow[];
   meItems:          MERow[];
+  itemCosts:        ItemCostRow[];
   selectedChannels: string[];
   categoryFilter:   string;
 }
@@ -37,9 +39,9 @@ function itemCat(i: ItemRow): string {
   return normCat(i.category);
 }
 
-export default function ItemMix({ items, meItems, selectedChannels, categoryFilter }: Props) {
+export default function ItemMix({ items, pinkSheets, meItems, itemCosts = [], selectedChannels, categoryFilter }: Props) {
   const [search,          setSearch]          = useState('');
-  const [sortKey,         setSortKey]         = useState<SortKey>('revenue');
+  const [sortKey,         setSortKey]         = useState<SortKey>('gross_sales');
   const [sortDir,         setSortDir]         = useState<'asc' | 'desc'>('desc');
   const [collapsed,       setCollapsed]       = useState<Record<string, boolean>>({});
   const [menuGroupFilter, setMenuGroupFilter] = useState('__ALL__');
@@ -50,27 +52,56 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
     return Array.from(s).sort();
   }, [items]);
 
-  // canonical_name → MERow for per-channel cost lookup
+  // canonical_name → PinkSheetRow (primary cost source, modifier-adjusted, latest period)
+  const psMap = useMemo(() => {
+    const m = new Map<string, PinkSheetRow>();
+    pinkSheets.forEach(p => m.set(p.canonical_name, p));
+    return m;
+  }, [pinkSheets]);
+
+  // canonical_name → MERow (2nd fallback)
   const meMap = useMemo(() => {
-    const m = new Map<string, typeof meItems[0]>();
+    const m = new Map<string, MERow>();
     meItems.forEach(i => m.set(i.canonical_name, i));
     return m;
   }, [meItems]);
 
-  // Channel-aware cost: use modifier-adjusted cost when available.
-  // For APP / TPD / TPD_MARKUP / CATERING_3PD: use avg_cost_lo (online, non-uplifted).
-  // For IN_HOUSE: use avg_cost_ih.
-  // Fallback for everything else: avg_cost (blended).
+  // lowercase canonical_name → ItemCostRow (3rd fallback: r365 latest period, incl. MI recipes)
+  const icMap = useMemo(() => {
+    const m = new Map<string, ItemCostRow>();
+    itemCosts.forEach(c => m.set(c.canonical_name.toLowerCase(), c));
+    return m;
+  }, [itemCosts]);
+
+  // Cost: pink sheet → ME row → r365 base cost.
   function getAvgCost(item: ItemRow): number | undefined {
-    const me = meMap.get(item.canonical_name);
-    if (!me) return undefined;
+    const key = item.canonical_name.toLowerCase();
     if (item.channel === 'IN_HOUSE') {
-      return me.avg_cost_ih > 0 ? me.avg_cost_ih : undefined;
+      const ps = psMap.get(item.canonical_name);
+      if (ps && ps.avg_cost_ih > 0) return ps.avg_cost_ih;
+      const me = meMap.get(item.canonical_name);
+      if (me && me.avg_cost_ih > 0) return me.avg_cost_ih;
+      const ic = icMap.get(key);
+      return ic && ic.ih_cost > 0 ? ic.ih_cost : undefined;
     }
-    if (['APP', 'TPD', 'TPD_MARKUP', 'CATERING_3PD'].includes(item.channel)) {
-      return me.avg_cost_lo > 0 ? me.avg_cost_lo : undefined;
+    if (item.channel === 'APP' || item.channel === 'TPD') {
+      const ps = psMap.get(item.canonical_name);
+      if (ps && ps.avg_cost_online > 0) return ps.avg_cost_online;
+      const me = meMap.get(item.canonical_name);
+      if (me && me.avg_cost_lo > 0) return me.avg_cost_lo;
+      const ic = icMap.get(key);
+      return ic && ic.online_cost > 0 ? ic.online_cost : undefined;
     }
-    return me.avg_cost > 0 ? me.avg_cost : undefined;
+    if (item.channel === 'CATERING' || item.channel === 'CATERING_3PD') {
+      const ic = icMap.get(key);
+      if (ic && ic.catering_cost > 0) return ic.catering_cost;
+      // Fallback: use IH cost if catering-specific cost isn't available
+      if (ic && ic.ih_cost > 0) return ic.ih_cost;
+      const ps = psMap.get(item.canonical_name);
+      if (ps && ps.avg_cost_ih > 0) return ps.avg_cost_ih;
+      return undefined;
+    }
+    return undefined;
   }
 
   // Filtered items
@@ -87,24 +118,59 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
     });
   }, [items, selectedChannels, categoryFilter, menuGroupFilter, search]);
 
-  const totalRevenue = useMemo(() => filtered.reduce((s, i) => s + i.revenue, 0), [filtered]);
+  // Merge rows that share canonical_name + channel + category + sub_category
+  // (can arise when the same real item appears under two different raw menu names)
+  const dedupedFiltered = useMemo(() => {
+    const map = new Map<string, ItemRow>();
+    filtered.forEach(item => {
+      const ch  = item.channel;
+      const cat = VENDOR_CH.has(ch) ? (item.menu_group || 'Other')
+                : ch === 'OPEN_ITEMS' ? (item.category || 'Other')
+                : (item.category || 'Other');
+      const sub = (VENDOR_CH.has(ch) || ch === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
+      const key = `${item.canonical_name}|${ch}|${cat}|${sub}`;
+      const ex  = map.get(key);
+      if (!ex) {
+        map.set(key, { ...item });
+      } else {
+        const qty        = ex.qty        + item.qty;
+        const revenue    = ex.revenue    + item.revenue;
+        const gross_sales= ex.gross_sales+ item.gross_sales;
+        map.set(key, {
+          ...ex,
+          qty,
+          revenue,
+          gross_sales,
+          avg_price:   qty > 0 ? gross_sales / qty : ex.avg_price,
+          revenue_pct: ex.revenue_pct + item.revenue_pct,
+          qty_pct:     ex.qty_pct     + item.qty_pct,
+        });
+      }
+    });
+    return Array.from(map.values());
+  }, [filtered]);
+
+  const totalRevenue    = useMemo(() => dedupedFiltered.reduce((s, i) => s + i.revenue,    0), [dedupedFiltered]);
+  const totalGrossSales = useMemo(() => dedupedFiltered.reduce((s, i) => s + i.gross_sales, 0), [dedupedFiltered]);
 
   // Category-level totals for category-wise mix %
   const catTotals = useMemo(() => {
-    const qty = new Map<string, number>();
-    const rev = new Map<string, number>();
-    filtered.forEach(i => {
+    const qty   = new Map<string, number>();
+    const rev   = new Map<string, number>();
+    const gross = new Map<string, number>();
+    dedupedFiltered.forEach(i => {
       const cat = itemCat(i);
-      qty.set(cat, (qty.get(cat) ?? 0) + i.qty);
-      rev.set(cat, (rev.get(cat) ?? 0) + i.revenue);
+      qty.set(cat,   (qty.get(cat)   ?? 0) + i.qty);
+      rev.set(cat,   (rev.get(cat)   ?? 0) + i.revenue);
+      gross.set(cat, (gross.get(cat) ?? 0) + i.gross_sales);
     });
-    return { qty, rev };
-  }, [filtered]);
+    return { qty, rev, gross };
+  }, [dedupedFiltered]);
 
   // Tree: channel → category → subCategory → items
   const tree = useMemo(() => {
     const out: Record<string, Record<string, Record<string, ItemRow[]>>> = {};
-    filtered.forEach(i => {
+    dedupedFiltered.forEach(i => {
       const ch  = i.channel;
       const cat = VENDOR_CH.has(ch) ? (i.menu_group || 'Other')
                 : ch === 'OPEN_ITEMS' ? (i.category || 'Other')
@@ -116,7 +182,7 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
       out[ch][cat][sub].push(i);
     });
     return out;
-  }, [filtered]);
+  }, [dedupedFiltered]);
 
   const toggle = (k: string) => setCollapsed(c => ({ ...c, [k]: !c[k] }));
   const isOpen = (k: string) => !collapsed[k];
@@ -131,23 +197,31 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
     });
   }
 
-  function subRev(rows: ItemRow[]) { return rows.reduce((s, i) => s + i.revenue, 0); }
-  function subQty(rows: ItemRow[]) { return rows.reduce((s, i) => s + i.qty,     0); }
+  function subRev(rows: ItemRow[])   { return rows.reduce((s, i) => s + i.revenue,    0); }
+  function subGross(rows: ItemRow[]) { return rows.reduce((s, i) => s + i.gross_sales, 0); }
+  function subQty(rows: ItemRow[])   { return rows.reduce((s, i) => s + i.qty,         0); }
   function catRev(subs: Record<string, ItemRow[]>) {
     return Object.values(subs).reduce((s, r) => s + subRev(r), 0);
+  }
+  function catGross(subs: Record<string, ItemRow[]>) {
+    return Object.values(subs).reduce((s, r) => s + subGross(r), 0);
   }
   function chRev(cats: Record<string, Record<string, ItemRow[]>>) {
     return Object.values(cats).reduce((s, subs) => s + catRev(subs), 0);
   }
+  function chGross(cats: Record<string, Record<string, ItemRow[]>>) {
+    return Object.values(cats).reduce((s, subs) => s + catGross(subs), 0);
+  }
 
   const channelsToShow = CH_ORDER.filter(c => tree[c]);
-  const COL = 8; // total columns
+  const COL = 9; // total columns
 
   const tableRows: React.ReactNode[] = [];
 
   channelsToShow.forEach(ch => {
-    const catMap       = tree[ch] ?? {};
-    const chTotal      = chRev(catMap);
+    const catMap        = tree[ch] ?? {};
+    const chTotal       = chRev(catMap);
+    const chTotalGross  = chGross(catMap);
     const chKey        = `ch:${ch}`;
     const showChHeader = channelsToShow.length > 1;
 
@@ -158,7 +232,7 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
             <span style={{ marginRight: 6, display: 'inline-block', transform: isOpen(chKey) ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>▶</span>
             {CH_LABEL[ch] ?? ch}
             <span style={{ fontWeight: 400, fontSize: 10, marginLeft: 8, opacity: 0.7 }}>
-              {fmt$(chTotal)} · {totalRevenue > 0 ? ((chTotal / totalRevenue) * 100).toFixed(1) : 0}%
+              {fmt$(chTotalGross)} gross · {fmt$(chTotal)} net · {totalGrossSales > 0 ? ((chTotalGross / totalGrossSales) * 100).toFixed(1) : 0}%
             </span>
           </td>
         </tr>
@@ -180,6 +254,7 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
     cats.forEach(cat => {
       const subMap   = catMap[cat] ?? {};
       const cRev     = catRev(subMap);
+      const cGross   = catGross(subMap);
       const cQty     = Object.values(subMap).reduce((s, r) => s + subQty(r), 0);
       const catKey   = `cat:${ch}:${cat}`;
       const catDepth = showChHeader ? 28 : 12;
@@ -190,7 +265,7 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
             <span style={{ marginRight: 6, display: 'inline-block', transform: isOpen(catKey) ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>▶</span>
             {cat}
             <span style={{ fontWeight: 400, fontSize: 10, color: 'var(--muted)', marginLeft: 8 }}>
-              {cQty.toLocaleString()} qty · {fmt$(cRev)} · {totalRevenue > 0 ? ((cRev / totalRevenue) * 100).toFixed(1) : 0}% of total
+              {cQty.toLocaleString()} qty · {fmt$(cGross)} gross · {fmt$(cRev)} net · {totalGrossSales > 0 ? ((cGross / totalGrossSales) * 100).toFixed(1) : 0}% of total
             </span>
           </td>
         </tr>
@@ -203,6 +278,7 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
       subs.forEach(sub => {
         const rows   = sortedItems(subMap[sub] ?? []);
         const sRev   = subRev(rows);
+        const sGross = subGross(rows);
         const sQty   = subQty(rows);
         const subKey = `sub:${ch}:${cat}:${sub}`;
 
@@ -218,7 +294,7 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
               <span style={{ marginRight: 5, display: 'inline-block', transform: isOpen(subKey) ? 'rotate(90deg)' : 'none', transition: 'transform .15s', fontSize: 8 }}>▶</span>
               {sub}
               <span style={{ fontWeight: 400, color: 'var(--muted)', marginLeft: 6 }}>
-                {sQty.toLocaleString()} qty · {fmt$(sRev)}
+                {sQty.toLocaleString()} qty · {fmt$(sGross)} gross · {fmt$(sRev)} net
               </span>
             </td>
           </tr>
@@ -231,19 +307,22 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
   });
 
   function renderItemRow(item: ItemRow, cat: string): React.ReactNode {
-    const catQ    = catTotals.qty.get(cat) ?? 0;
-    const catR    = catTotals.rev.get(cat) ?? 0;
-    const qtyMix  = catQ > 0 ? (item.qty     / catQ * 100) : 0;
-    const revMix  = catR > 0 ? (item.revenue / catR * 100) : 0;
-    const avgCost = getAvgCost(item);
+    const catQ     = catTotals.qty.get(cat)   ?? 0;
+    const catG     = catTotals.gross.get(cat) ?? 0;
+    const qtyMix   = catQ > 0 ? (item.qty         / catQ * 100) : 0;
+    const grossMix = catG > 0 ? (item.gross_sales  / catG * 100) : 0;
+    const avgCost  = getAvgCost(item);
     return (
       <tr key={`${item.canonical_name}||${item.menu_name}||${item.menu_group}`}>
         <td style={{ paddingLeft: 60, fontWeight: 500 }}>{item.canonical_name}</td>
         <td style={{ fontSize: 10, color: 'var(--muted)' }}>{item.menu_group}</td>
         <td style={{ textAlign: 'center' }}>{item.qty.toLocaleString()}</td>
         <td style={{ fontSize: 10, textAlign: 'center' }}>{qtyMix.toFixed(1)}%</td>
-        <td style={{ fontWeight: 600, textAlign: 'center' }}>{fmt$(item.revenue)}</td>
-        <td style={{ fontSize: 10, textAlign: 'center' }}>{revMix.toFixed(1)}%</td>
+        <td style={{ fontWeight: 600, textAlign: 'center' }}>{fmt$(item.gross_sales)}</td>
+        <td style={{ fontSize: 10, textAlign: 'center' }}>{grossMix.toFixed(1)}%</td>
+        <td style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 11 }}>
+          {fmt$(item.revenue)}
+        </td>
         <td style={{ textAlign: 'center' }}>{fmt$2(item.avg_price)}</td>
         <td style={{ textAlign: 'center', color: avgCost != null ? 'var(--text)' : 'var(--muted)' }}>
           {avgCost != null ? fmt$2(avgCost) : '—'}
@@ -289,7 +368,8 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
           onChange={e => { setSortKey(e.target.value as SortKey); setSortDir('desc'); }}
           style={{ marginLeft: 'auto' }}
         >
-          <option value="revenue">Gross Amount</option>
+          <option value="gross_sales">Gross Sales</option>
+          <option value="revenue">Net Sales</option>
           <option value="qty">Qty</option>
           <option value="avg_price">Avg Price</option>
           <option value="avg_cost">Avg Cost</option>
@@ -301,7 +381,7 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
         >
           {sortDir === 'desc' ? '↓' : '↑'}
         </button>
-        <span style={{ fontSize: 10, color: 'var(--muted)' }}>{filtered.length} items</span>
+        <span style={{ fontSize: 10, color: 'var(--muted)' }}>{dedupedFiltered.length} items</span>
       </div>
 
       <div className="tw">
@@ -313,8 +393,9 @@ export default function ItemMix({ items, meItems, selectedChannels, categoryFilt
                 <th style={thBase}>Menu Group</th>
                 {thSort('qty', 'QTY')}
                 <th style={{ ...thBase, textAlign: 'center' }} title="Item qty ÷ category total qty">Mix % (Qty)</th>
-                {thSort('revenue', 'Gross Amount')}
-                <th style={{ ...thBase, textAlign: 'center' }} title="Item gross amount ÷ category total gross amount">Mix % (Rev)</th>
+                {thSort('gross_sales', 'Gross Sales')}
+                <th style={{ ...thBase, textAlign: 'center' }} title="Item gross sales ÷ category gross sales (pre-discount, ties to Toast)">Mix % (Gross)</th>
+                <th style={{ ...thBase, textAlign: 'center', fontSize: 10, color: 'var(--muted)' }} title="Net sales after discounts (line_total)">Net Sales</th>
                 {thSort('avg_price', 'Avg Price')}
                 {thSort('avg_cost', 'Avg Cost')}
               </tr>

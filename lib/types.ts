@@ -64,8 +64,9 @@ export interface ItemRow {
   category:       string;   // normalised category_1
   sub_category:   string;   // normalised category_2
   qty:            number;
-  revenue:        number;
-  avg_price:      number;
+  revenue:        number;   // line_total (net, after discounts)
+  gross_sales:    number;   // pre_discount (true gross, ties to Toast reports)
+  avg_price:      number;   // pre_discount / qty (matches AppScript + Toast)
   revenue_pct:    number;
   qty_pct:        number;
   is_open_item:   boolean;  // menu_name IS NULL
@@ -76,7 +77,8 @@ export interface ChannelItemRow {
   canonical_name: string;
   channel:        string;
   qty:            number;
-  revenue:        number;
+  revenue:        number;   // line_total (net)
+  gross_sales:    number;   // pre_discount (true gross)
 }
 
 // ─── Location compare ─────────────────────────────────────────────────────────
@@ -278,6 +280,14 @@ export interface UncategorizedItemRow {
   last_seen:      string;
 }
 
+// ─── Item base costs from r365 (fallback for items not in pink sheets / ME) ──
+export interface ItemCostRow {
+  canonical_name:  string;
+  ih_cost:         number;
+  online_cost:     number;
+  catering_cost:   number;
+}
+
 // ─── Channel × category revenue ───────────────────────────────────────────────
 export interface ChannelCategoryRow {
   channel:   string;
@@ -344,4 +354,5 @@ export interface DashboardData {
   periods:            FiscalPeriodRow[];
   cateringVendors:    VendorRow[];
   offsiteVendors:     VendorRow[];
+  itemCosts:          ItemCostRow[];
 }

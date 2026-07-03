@@ -15,10 +15,12 @@ import NeedsReview from './tabs/NeedsReview';
 import OpenItems from './tabs/OpenItems';
 import MEOverall from './tabs/MEOverall';
 import PinkSheets from './tabs/PinkSheets';
+import EntreeMix from './tabs/EntreeMix';
 
 const TABS = [
   { id: 'overview',   label: 'Overview',           icon: 'ti-layout-dashboard' },
   { id: 'itemmix',    label: 'Item Mix',            icon: 'ti-list' },
+  { id: 'entreemix',  label: 'Entree Mix',          icon: 'ti-bowl' },
   { id: 'loccompare', label: 'Location Compare',    icon: 'ti-map-pin' },
   { id: 'chanmenu',   label: 'Channels',             icon: 'ti-chart-pie' },
   { id: 'byo',        label: 'BYO Breakdown',       icon: 'ti-salad' },
@@ -38,6 +40,7 @@ type TabId = typeof TABS[number]['id'];
 const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location: boolean }> = {
   overview:   { channel: true,  category: true,  location: true  },
   itemmix:    { channel: true,  category: true,  location: true  },
+  entreemix:  { channel: false, category: false, location: false },
   loccompare: { channel: true,  category: true,  location: false },
   chanmenu:   { channel: true,  category: true,  location: true  },
   byo:        { channel: false, category: false, location: true  },
@@ -223,6 +226,7 @@ export default function Dashboard({ data }: { data: DashboardData }) {
       channel:        i.channel,
       qty:            i.qty,
       revenue:        i.revenue,
+      gross_sales:    i.gross_sales,
     }));
   }, [selectedLocations, locationBaseItems, data.channelItems]);
 
@@ -244,20 +248,21 @@ export default function Dashboard({ data }: { data: DashboardData }) {
   const channelFilteredItems = useMemo((): ItemRow[] => {
     if (selectedChannels.length === 0) return locationBaseItems;
 
-    const agg = new Map<string, { qty: number; revenue: number }>();
+    const agg = new Map<string, { qty: number; revenue: number; gross_sales: number }>();
     locationAdjustedChannelItems
       .filter(ci => selectedChannels.includes(ci.channel))
       .forEach(ci => {
-        const e = agg.get(ci.canonical_name) ?? { qty: 0, revenue: 0 };
-        e.qty     += ci.qty;
-        e.revenue += ci.revenue;
+        const e = agg.get(ci.canonical_name) ?? { qty: 0, revenue: 0, gross_sales: 0 };
+        e.qty         += ci.qty;
+        e.revenue     += ci.revenue;
+        e.gross_sales += ci.gross_sales;
         agg.set(ci.canonical_name, e);
       });
 
     const totalRev = [...agg.values()].reduce((s, v) => s + v.revenue, 0);
     const totalQty = [...agg.values()].reduce((s, v) => s + v.qty,     0);
 
-    return [...agg.entries()].map(([name, { qty, revenue }]) => {
+    return [...agg.entries()].map(([name, { qty, revenue, gross_sales }]) => {
       const meta = itemMetaMap.get(name);
       return {
         canonical_name: name,
@@ -269,7 +274,8 @@ export default function Dashboard({ data }: { data: DashboardData }) {
         sub_category: meta?.sub_category ?? '',
         qty,
         revenue,
-        avg_price:   qty > 0 ? revenue / qty : 0,
+        gross_sales,
+        avg_price:   qty > 0 ? gross_sales / qty : 0,
         revenue_pct: totalRev > 0 ? (revenue / totalRev) * 100 : 0,
         qty_pct:     totalQty > 0 ? (qty / totalQty) * 100 : 0,
       };
@@ -588,7 +594,8 @@ export default function Dashboard({ data }: { data: DashboardData }) {
 
       {/* ── TAB CONTENT ── */}
       {tab === 'overview'   && <Overview         data={filteredData} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
-      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} meItems={finalMEItems} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
+      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={data.pinkSheets} meItems={finalMEItems} itemCosts={data.itemCosts} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
+      {tab === 'entreemix'  && <EntreeMix        pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} meItems={finalMEItems} />}
       {tab === 'loccompare' && <LocationCompare  data={filteredData} />}
       {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} />}
       {tab === 'byo'        && <BYOBreakdown     modifiers={data.modifiers} items={locationBaseItems} pinkSheets={data.pinkSheets} meItems={finalMEItems} />}
