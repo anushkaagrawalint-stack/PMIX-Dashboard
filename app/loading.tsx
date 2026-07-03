@@ -1,3 +1,5 @@
+import Image from 'next/image';
+
 export default function Loading() {
   return (
     <div className="container">
@@ -5,7 +7,9 @@ export default function Loading() {
       {/* Header shell */}
       <div className="hdr">
         <div className="hdr-l">
-          <div className="rasa-box">RASA</div>
+          <div className="rasa-box">
+            <Image src="/rasa-logo.png" alt="RASA" width={120} height={39} style={{ height: 20, width: 'auto', display: 'block' }} priority />
+          </div>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span className="hdr-title">Product Mix Dashboard</span>
@@ -19,7 +23,9 @@ export default function Loading() {
             <span className="loading-spinner" />
             Querying database…
           </div>
-          <span className="klogo">Kutlerri</span>
+          <span className="klogo">
+            <Image src="/kutlerri-logo.png" alt="Kutlerri" width={120} height={39} style={{ height: 16, width: 'auto', display: 'block' }} priority />
+          </span>
         </div>
       </div>
 

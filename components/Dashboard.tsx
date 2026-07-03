@@ -1,5 +1,6 @@
 'use client';
 import { useState, useMemo } from 'react';
+import Image from 'next/image';
 import type { DashboardData, ItemRow, MERow, ChannelRow, ChannelItemRow, ChannelCategoryRow } from '@/lib/types';
 import { CHANNELS, CHANNEL_LABEL } from '@/lib/constants';
 import DatePicker from './DatePicker';
@@ -636,7 +637,9 @@ export default function Dashboard({ data, isAdmin }: { data: DashboardData; isAd
       {/* ── HEADER ── */}
       <div className="hdr">
         <div className="hdr-l">
-          <div className="rasa-box">RASA</div>
+          <div className="rasa-box">
+            <Image src="/rasa-logo.png" alt="RASA" width={120} height={39} style={{ height: 20, width: 'auto', display: 'block' }} priority />
+          </div>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span className="hdr-title">Product Mix Dashboard</span>
@@ -653,7 +656,9 @@ export default function Dashboard({ data, isAdmin }: { data: DashboardData; isAd
           <button className="rbtn" onClick={() => window.location.reload()}>
             <i className="ti ti-refresh" aria-hidden="true" /> Refresh
           </button>
-          <span className="klogo">Kutlerri</span>
+          <span className="klogo">
+            <Image src="/kutlerri-logo.png" alt="Kutlerri" width={120} height={39} style={{ height: 16, width: 'auto', display: 'block' }} priority />
+          </span>
           <button
             className="logout-btn"
             onClick={async () => {

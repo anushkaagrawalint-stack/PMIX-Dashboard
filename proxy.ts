@@ -21,5 +21,7 @@ export async function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  // Static public assets (logos, icons, etc.) must stay reachable pre-login too —
+  // the login page itself renders /rasa-logo.png and /kutlerri-logo.png.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.png|.*\\.(?:png|svg|jpg|jpeg|gif|webp|ico)$).*)'],
 };

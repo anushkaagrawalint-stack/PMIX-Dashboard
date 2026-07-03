@@ -1,6 +1,7 @@
 'use client';
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 
 export default function LoginPage() {
   const router    = useRouter();
@@ -34,12 +35,17 @@ export default function LoginPage() {
   return (
     <div className="login-screen">
       <div className="login-logo-wrap">
-        <div className="rasa-box" style={{ fontSize: 22, padding: '10px 18px' }}>RASA</div>
+        <div className="rasa-box" style={{ padding: '8px 14px' }}>
+          <Image src="/rasa-logo.png" alt="RASA" width={120} height={39} style={{ height: 26, width: 'auto' }} priority />
+        </div>
       </div>
 
       <form className="login-card" onSubmit={handleSubmit}>
         <div className="login-title">Product Mix Dashboard</div>
-        <div className="login-sub">Sign in to continue · Powered by Kutlerri</div>
+        <div className="login-sub" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+          Sign in to continue · Powered by
+          <Image src="/kutlerri-logo.png" alt="Kutlerri" width={160} height={54} style={{ height: 13, width: 'auto', filter: 'invert(1)' }} />
+        </div>
 
         <label className="login-label" htmlFor="login-email">Email</label>
         <input
