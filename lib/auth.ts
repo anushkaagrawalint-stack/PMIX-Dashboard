@@ -6,17 +6,20 @@ const EXPIRY = '8h';
 
 export { COOKIE };
 
-export async function signToken(email: string): Promise<string> {
-  return new SignJWT({ email })
+export type Role = 'admin' | 'user';
+
+export async function signToken(email: string, role: Role): Promise<string> {
+  return new SignJWT({ email, role })
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime(EXPIRY)
     .sign(SECRET);
 }
 
-export async function verifyToken(token: string): Promise<{ email: string } | null> {
+export async function verifyToken(token: string): Promise<{ email: string; role: Role } | null> {
   try {
     const { payload } = await jwtVerify(token, SECRET);
-    return payload as { email: string };
+    const p = payload as { email: string; role?: Role };
+    return { email: p.email, role: p.role === 'admin' ? 'admin' : 'user' };
   } catch {
     return null;
   }
@@ -36,5 +39,17 @@ export function getUsers(): Record<string, string> {
     return out;
   } catch {
     return {};
+  }
+}
+
+// Returns { email → role }. Plain-string entries (no explicit role) default to 'user'.
+export function getUserRole(email: string): Role {
+  try {
+    const raw = JSON.parse(process.env.USERS_JSON ?? '{}');
+    const v = raw[email];
+    if (v && typeof v === 'object' && (v as Record<string, unknown>).role === 'admin') return 'admin';
+    return 'user';
+  } catch {
+    return 'user';
   }
 }

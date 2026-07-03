@@ -1,6 +1,7 @@
 'use client';
 import { useState, useMemo } from 'react';
-import type { ItemRow, MERow, PinkSheetRow, ItemCostRow } from '@/lib/types';
+import type { ItemRow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow } from '@/lib/types';
+import { computeFinalAvgCost } from '@/lib/pinkSheetCost';
 
 const fmt$  = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 const fmt$2 = (v: number) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -11,11 +12,13 @@ type SortKey     = ItemSortKey | 'avg_cost';
 interface Props {
   items:            ItemRow[];
   pinkSheets:       PinkSheetRow[];
-  meItems:          MERow[];
+  pinkSheetDetails: PinkSheetDetailRow[];
   itemCosts:        ItemCostRow[];
   selectedChannels: string[];
   categoryFilter:   string;
 }
+
+interface FinalCost { online: number; ih: number }
 
 const CH_LABEL: Record<string, string> = {
   IN_HOUSE:    'In-House',
@@ -39,7 +42,7 @@ function itemCat(i: ItemRow): string {
   return normCat(i.category);
 }
 
-export default function ItemMix({ items, pinkSheets, meItems, itemCosts = [], selectedChannels, categoryFilter }: Props) {
+export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts = [], selectedChannels, categoryFilter }: Props) {
   const [search,          setSearch]          = useState('');
   const [sortKey,         setSortKey]         = useState<SortKey>('gross_sales');
   const [sortDir,         setSortDir]         = useState<'asc' | 'desc'>('desc');
@@ -52,43 +55,43 @@ export default function ItemMix({ items, pinkSheets, meItems, itemCosts = [], se
     return Array.from(s).sort();
   }, [items]);
 
-  // canonical_name → PinkSheetRow (primary cost source, modifier-adjusted, latest period)
-  const psMap = useMemo(() => {
-    const m = new Map<string, PinkSheetRow>();
-    pinkSheets.forEach(p => m.set(p.canonical_name, p));
+  // canonical_name → Pink Sheet's actual displayed "FINAL AVG COST WITH MODIFIER"
+  // (same computation PinkSheets.tsx uses — not the backend's raw avg_cost_ih/
+  // avg_cost_online fields, which don't apply the same section-inclusion rules).
+  const fcMap = useMemo(() => {
+    const m = new Map<string, FinalCost>();
+    const dets = pinkSheetDetails ?? [];
+    pinkSheets.forEach(p => m.set(p.canonical_name, {
+      online: computeFinalAvgCost(p, dets, 'online'),
+      ih:     computeFinalAvgCost(p, dets, 'ih'),
+    }));
     return m;
-  }, [pinkSheets]);
+  }, [pinkSheets, pinkSheetDetails]);
 
-  // canonical_name → MERow (2nd fallback)
-  const meMap = useMemo(() => {
-    const m = new Map<string, MERow>();
-    meItems.forEach(i => m.set(i.canonical_name, i));
-    return m;
-  }, [meItems]);
-
-  // lowercase canonical_name → ItemCostRow (3rd fallback: r365 latest period, incl. MI recipes)
+  // lowercase canonical_name → ItemCostRow (fallback: r365 latest period, incl. MI recipes)
   const icMap = useMemo(() => {
     const m = new Map<string, ItemCostRow>();
     itemCosts.forEach(c => m.set(c.canonical_name.toLowerCase(), c));
     return m;
   }, [itemCosts]);
 
-  // Cost: pink sheet → ME row → r365 base cost.
+  // Cost cascade — matches PMIX_AppScript.txt's master row assembly (getPinkCost_ +
+  // the pc/ac fallback): Pink Sheet cost first, Item Cost Lookup (r365 via itemCosts)
+  // only when Pink Sheet has none. Two tiers, no "ME row" middle tier — that's not
+  // part of the source logic and only added a second, sometimes-divergent number.
+  // Item Mix never applies the 3PD packaging uplift (APP and TPD both read the same
+  // online figure) — that uplift is Menu Engineering / Pink Sheet's 3PD column only.
   function getAvgCost(item: ItemRow): number | undefined {
     const key = item.canonical_name.toLowerCase();
     if (item.channel === 'IN_HOUSE') {
-      const ps = psMap.get(item.canonical_name);
-      if (ps && ps.avg_cost_ih > 0) return ps.avg_cost_ih;
-      const me = meMap.get(item.canonical_name);
-      if (me && me.avg_cost_ih > 0) return me.avg_cost_ih;
+      const fc = fcMap.get(item.canonical_name);
+      if (fc && fc.ih > 0) return fc.ih;
       const ic = icMap.get(key);
       return ic && ic.ih_cost > 0 ? ic.ih_cost : undefined;
     }
     if (item.channel === 'APP' || item.channel === 'TPD') {
-      const ps = psMap.get(item.canonical_name);
-      if (ps && ps.avg_cost_online > 0) return ps.avg_cost_online;
-      const me = meMap.get(item.canonical_name);
-      if (me && me.avg_cost_lo > 0) return me.avg_cost_lo;
+      const fc = fcMap.get(item.canonical_name);
+      if (fc && fc.online > 0) return fc.online;
       const ic = icMap.get(key);
       return ic && ic.online_cost > 0 ? ic.online_cost : undefined;
     }

@@ -15,7 +15,7 @@ import type {
   OpenItemRow, OpenItemsSummary,
   UncategorizedItemRow,
   FiscalPeriodRow, VendorRow, PinkSheetRow, PinkSheetDetailRow,
-  ItemCostRow,
+  ItemCostRow, MissingCostRow,
 } from './types';
 
 function pool() {
@@ -327,20 +327,22 @@ export async function getWeeklyByChannel(dr: DateRange): Promise<WeeklyChannelRo
     SELECT
       DATE_TRUNC('week', fol.business_date)::DATE::TEXT AS week_start,
       (${CH})                                           AS channel,
+      COALESCE(fol.location_code, '')                   AS location_code,
       ROUND(SUM(fol.line_total)::NUMERIC, 0)            AS revenue,
       SUM(fol.quantity)::BIGINT                         AS qty
     FROM public.fact_order_lines fol
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-    GROUP BY 1, 2
+    GROUP BY 1, 2, 3
     ORDER BY 1, 2
   `, [dr.start, dr.end]);
   await db.end();
   return rows.map(r => ({
-    week_start: r.week_start as string,
-    channel:    r.channel    as string,
-    revenue:    Number(r.revenue),
-    qty:        Number(r.qty),
+    week_start:    r.week_start    as string,
+    channel:       r.channel       as string,
+    location_code: r.location_code as string,
+    revenue:       Number(r.revenue),
+    qty:           Number(r.qty),
   }));
 }
 
@@ -350,20 +352,22 @@ export async function getDailyByChannel(dr: DateRange): Promise<DailyChannelRow[
     SELECT
       fol.business_date::TEXT                          AS date,
       (${CH})                                          AS channel,
+      COALESCE(fol.location_code, '')                  AS location_code,
       ROUND(SUM(fol.line_total)::NUMERIC, 0)          AS revenue,
       SUM(fol.quantity)::BIGINT                        AS qty
     FROM public.fact_order_lines fol
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-    GROUP BY 1, 2
+    GROUP BY 1, 2, 3
     ORDER BY 1, 2
   `, [dr.start, dr.end]);
   await db.end();
   return rows.map(r => ({
-    date:    r.date    as string,
-    channel: r.channel as string,
-    revenue: Number(r.revenue),
-    qty:     Number(r.qty),
+    date:          r.date          as string,
+    channel:       r.channel       as string,
+    location_code: r.location_code as string,
+    revenue:       Number(r.revenue),
+    qty:           Number(r.qty),
   }));
 }
 
@@ -1733,7 +1737,8 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
           mt.modifier_type        AS raw_type,
           fm.canonical_name       AS modifier_name,
           fm.quantity             AS quantity,
-          fol.canonical_name      AS parent_item
+          fol.canonical_name      AS parent_item,
+          COALESCE(fol.location_code, '') AS location_code
         FROM public.fact_modifiers fm
         JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
         JOIN (
@@ -1765,9 +1770,10 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
           END AS mod_type,
           modifier_name,
           parent_item,
+          location_code,
           SUM(quantity) AS qty
         FROM raw_mods
-        GROUP BY 1, modifier_name, parent_item
+        GROUP BY 1, modifier_name, parent_item, location_code
       ),
       type_totals AS (
         SELECT mod_type, parent_item, SUM(qty) AS type_qty FROM byo_mods GROUP BY mod_type, parent_item
@@ -1850,6 +1856,7 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
         bm.mod_type,
         bm.modifier_name,
         bm.parent_item,
+        bm.location_code,
         bm.qty::BIGINT                                                        AS qty,
         ROUND((bm.qty*100.0/NULLIF(tt.type_qty,0))::NUMERIC, 1)              AS pct,
         CASE
@@ -1870,6 +1877,7 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
       mod_type:      r.mod_type      as string,
       modifier_name: r.modifier_name as string,
       parent_item:   r.parent_item   as string,
+      location_code: r.location_code as string,
       qty:           Number(r.qty),
       pct:           Number(r.pct),
       avg_cost:      r.avg_cost != null ? Number(r.avg_cost) : null,
@@ -2616,12 +2624,96 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
   }));
 }
 
+// ─── Missing R365 item costs (admin cost-entry tool) ─────────────────────────
+// Broader than Open Items' "NO COST" flag (which only covers items with no
+// menu_name at all): checks every normally-channeled item × sales bucket
+// (IH / online / catering / catering-3PD / offsite) against analytics.r365_item_cost
+// using the SAME menu-value mapping getItemCosts already uses for each bucket, so
+// "missing" here means the exact thing downstream cost lookups would also fail to find.
+export async function getMissingItemCosts(dr: DateRange): Promise<MissingCostRow[]> {
+  const db = pool();
+  const { rows } = await db.query(`
+    WITH
+    ${BYO_FIX_CTE},
+    sales AS (
+      SELECT
+        COALESCE(bf.clean, fol.canonical_name) AS canonical_name,
+        MIN(${CAT1})                           AS category,
+        MIN(fol.menu_group)                    AS menu_group,
+        CASE
+          WHEN fol.menu_name IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE')                      THEN 'ih'
+          WHEN fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP') THEN 'online'
+          WHEN fol.menu_name = 'CATERING'                                                     THEN 'catering'
+          WHEN fol.menu_name = 'CATERING - 3PD'                                               THEN 'catering_3pd'
+          WHEN fol.menu_name = 'OFFSITE POP-UPS'                                              THEN 'offsite'
+        END AS bucket,
+        SUM(fol.quantity)::BIGINT                AS qty,
+        ROUND(SUM(fol.line_total)::NUMERIC, 2)   AS net_sales
+      FROM public.fact_order_lines fol
+      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      WHERE NOT fol.is_voided AND NOT fol.is_deferred
+        AND fol.menu_name IN (
+          'FOOD - IN HOUSE','DRINKS - IN HOUSE',
+          'APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP',
+          'CATERING','CATERING - 3PD','OFFSITE POP-UPS'
+        )
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY COALESCE(bf.clean, fol.canonical_name), bucket
+    ),
+    has_ih AS (
+      SELECT DISTINCT item_name_updated FROM analytics.r365_item_cost
+      WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0
+    ),
+    has_online AS (
+      SELECT DISTINCT item_name_updated FROM analytics.r365_item_cost
+      WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0
+    ),
+    has_catering AS (
+      SELECT DISTINCT item_name_updated FROM analytics.r365_item_cost
+      WHERE menu = 'CATERING' AND avg_cost > 0
+    ),
+    has_catering_3pd AS (
+      SELECT DISTINCT item_name_updated FROM analytics.r365_item_cost
+      WHERE menu = 'CATERING - 3PD' AND avg_cost > 0
+    ),
+    has_offsite AS (
+      SELECT DISTINCT item_name_updated FROM analytics.r365_item_cost
+      WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0
+    )
+    SELECT s.canonical_name, s.category, s.menu_group, s.bucket, s.qty, s.net_sales
+    FROM sales s
+    LEFT JOIN has_ih           hih  ON hih.item_name_updated  = s.canonical_name
+    LEFT JOIN has_online       honl ON honl.item_name_updated = s.canonical_name
+    LEFT JOIN has_catering     hcat ON hcat.item_name_updated = s.canonical_name
+    LEFT JOIN has_catering_3pd hc3  ON hc3.item_name_updated  = s.canonical_name
+    LEFT JOIN has_offsite      hoff ON hoff.item_name_updated = s.canonical_name
+    WHERE s.bucket IS NOT NULL
+      AND (
+        (s.bucket = 'ih'           AND hih.item_name_updated  IS NULL) OR
+        (s.bucket = 'online'       AND honl.item_name_updated IS NULL) OR
+        (s.bucket = 'catering'     AND hcat.item_name_updated IS NULL) OR
+        (s.bucket = 'catering_3pd' AND hc3.item_name_updated  IS NULL) OR
+        (s.bucket = 'offsite'      AND hoff.item_name_updated IS NULL)
+      )
+    ORDER BY s.net_sales DESC
+  `, [dr.start, dr.end]);
+  await db.end();
+  return rows.map(r => ({
+    canonical_name: r.canonical_name as string,
+    category:       (r.category ?? 'Other') as string,
+    menu_group:     (r.menu_group ?? '') as string,
+    bucket:         r.bucket as MissingCostRow['bucket'],
+    qty:            Number(r.qty),
+    net_sales:      Number(r.net_sales),
+  }));
+}
+
 // ─── Master loader ────────────────────────────────────────────────────────────
 export async function loadDashboardData(
   override?: { start: string; end: string; label?: string }
 ) {
   'use cache';
-  cacheLife('minutes');
+  cacheLife('seconds');
   // Get date range + periods first so we can compute prev range for comparison
   const [dr, periods] = await Promise.all([
     getDateRange(override),
@@ -2643,7 +2735,7 @@ export async function loadDashboardData(
     openItemsResult,
     uncategorizedItems,
     cateringVendors, offsiteVendors,
-    itemCosts,
+    itemCosts, missingCosts,
     prevChannelItems, prevLocationItems, prevMEItems,
   ] = await Promise.all([
     getSummary(dr),
@@ -2674,6 +2766,7 @@ export async function loadDashboardData(
     getCateringVendors(dr),
     getOffsiteVendors(dr),
     getItemCosts(dr),
+    getMissingItemCosts(dr),
     // Prev-period granular data — lets Overview compute "vs prev X" deltas that
     // respect the active channel/category/location filters instead of comparing
     // a filtered current period against an unfiltered prev-period total.
@@ -2704,6 +2797,6 @@ export async function loadDashboardData(
     openItemsSummary: openItemsResult.summary,
     periods,
     cateringVendors, offsiteVendors,
-    itemCosts,
+    itemCosts, missingCosts,
   };
 }

@@ -74,15 +74,46 @@ export default function BYOBreakdown({
   items,
   pinkSheets,
   meItems,
+  selectedLocations,
 }: {
   modifiers:  ModifierRow[];
   items:      ItemRow[];
   pinkSheets: PinkSheetRow[];
   meItems:    MERow[];
+  selectedLocations: string[];
 }) {
   const [selectedBowl, setSelectedBowl] = useState<string>('__all__');
   const [view,         setView]         = useState<'pct' | 'qty'>('pct');
   const [costView,     setCostView]     = useState<CostView>('all');
+
+  // getModifiers now returns one row per location — aggregate across the selected
+  // location(s) (or all locations when none selected) and recompute pct within each
+  // (mod_type, parent_item) group, since the backend's pct is an all-locations figure.
+  const effectiveModifiers = useMemo((): ModifierRow[] => {
+    const src = selectedLocations.length === 0
+      ? modifiers
+      : modifiers.filter(m => selectedLocations.includes(m.location_code));
+
+    const agg = new Map<string, { mod_type: string; modifier_name: string; parent_item: string; qty: number; avg_cost: number | null }>();
+    src.forEach(m => {
+      const key = `${m.mod_type}||${m.modifier_name}||${m.parent_item}`;
+      const e = agg.get(key) ?? { mod_type: m.mod_type, modifier_name: m.modifier_name, parent_item: m.parent_item, qty: 0, avg_cost: m.avg_cost };
+      e.qty += m.qty;
+      agg.set(key, e);
+    });
+
+    const typeTotals = new Map<string, number>();
+    agg.forEach(e => {
+      const tkey = `${e.mod_type}||${e.parent_item}`;
+      typeTotals.set(tkey, (typeTotals.get(tkey) ?? 0) + e.qty);
+    });
+
+    return [...agg.values()].map(e => {
+      const tkey = `${e.mod_type}||${e.parent_item}`;
+      const total = typeTotals.get(tkey) ?? 0;
+      return { ...e, location_code: '', pct: total > 0 ? Math.round((e.qty / total) * 1000) / 10 : 0 };
+    });
+  }, [modifiers, selectedLocations]);
 
   const psMap = useMemo(() => {
     const m = new Map<string, PinkSheetRow>();
@@ -111,13 +142,13 @@ export default function BYOBreakdown({
   // Unique bowls that have modifier data, sorted by total qty desc
   const bowls = useMemo(() => {
     const totals = new Map<string, number>();
-    modifiers.forEach(r => {
+    effectiveModifiers.forEach(r => {
       if (r.mod_type === 'main' || r.mod_type === 'half_main') {
         totals.set(r.parent_item, (totals.get(r.parent_item) ?? 0) + r.qty);
       }
     });
     return [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name);
-  }, [modifiers]);
+  }, [effectiveModifiers]);
 
   // Item-level data (qty, revenue, avg_price) keyed by canonical_name
   const itemMap = useMemo(() => {
@@ -139,9 +170,9 @@ export default function BYOBreakdown({
   // Filtered modifiers for the selected bowl
   const filtered = useMemo(() =>
     selectedBowl === '__all__'
-      ? modifiers
-      : modifiers.filter(r => r.parent_item === selectedBowl),
-  [modifiers, selectedBowl]);
+      ? effectiveModifiers
+      : effectiveModifiers.filter(r => r.parent_item === selectedBowl),
+  [effectiveModifiers, selectedBowl]);
 
   // Group by mod_type
   const byType = useMemo(() => {
@@ -155,7 +186,7 @@ export default function BYOBreakdown({
 
   const types = MOD_ORDER.filter(t => byType[t]?.length);
 
-  if (!modifiers.length) {
+  if (!effectiveModifiers.length) {
     return (
       <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
         No BYO modifier data available for this period.

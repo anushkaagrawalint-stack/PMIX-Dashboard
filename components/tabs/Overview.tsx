@@ -15,6 +15,7 @@ interface Props {
   data: DashboardData;
   selectedChannels: string[];
   categoryFilter: string;
+  selectedLocations: string[];
 }
 
 function DeltaBadge({
@@ -40,7 +41,7 @@ function DeltaBadge({
 
 const mapCat = (cat: string) => cat === 'Kids Meal' ? 'Entrees' : cat;
 
-export default function Overview({ data, selectedChannels, categoryFilter }: Props) {
+export default function Overview({ data, selectedChannels, categoryFilter, selectedLocations }: Props) {
   const { summary, prevSummary, prevLabel, weekly, daily, periods, items, avgMargin,
           channelItems, channelCategories, weeklyByChannel, dailyByChannel,
           prevChannelItems, prevMEItems } = data;
@@ -60,12 +61,14 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
     return m;
   }, [items]);
 
-  // Weekly trend filtered by selected channels
+  // Weekly trend filtered by selected channels AND/OR locations
   const effectiveWeekly = useMemo(() => {
-    if (selectedChannels.length === 0) return weekly;
+    if (selectedChannels.length === 0 && selectedLocations.length === 0) return weekly;
     const map = new Map<string, { revenue: number; qty: number }>();
     weeklyByChannel
-      .filter(r => selectedChannels.includes(r.channel))
+      .filter(r =>
+        (selectedChannels.length === 0 || selectedChannels.includes(r.channel)) &&
+        (selectedLocations.length === 0 || selectedLocations.includes(r.location_code)))
       .forEach(r => {
         const e = map.get(r.week_start) ?? { revenue: 0, qty: 0 };
         e.revenue += r.revenue;
@@ -74,13 +77,15 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
       });
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
       .map(([week_start, { revenue, qty }]) => ({ week_start, revenue, qty }));
-  }, [weekly, weeklyByChannel, selectedChannels]);
+  }, [weekly, weeklyByChannel, selectedChannels, selectedLocations]);
 
   const effectiveDaily = useMemo(() => {
-    if (selectedChannels.length === 0) return daily;
+    if (selectedChannels.length === 0 && selectedLocations.length === 0) return daily;
     const map = new Map<string, { revenue: number; qty: number }>();
     dailyByChannel
-      .filter(r => selectedChannels.includes(r.channel))
+      .filter(r =>
+        (selectedChannels.length === 0 || selectedChannels.includes(r.channel)) &&
+        (selectedLocations.length === 0 || selectedLocations.includes(r.location_code)))
       .forEach(r => {
         const e = map.get(r.date) ?? { revenue: 0, qty: 0 };
         e.revenue += r.revenue;
@@ -89,7 +94,7 @@ export default function Overview({ data, selectedChannels, categoryFilter }: Pro
       });
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
       .map(([date, { revenue, qty }]) => ({ date, revenue, qty }));
-  }, [daily, dailyByChannel, selectedChannels]);
+  }, [daily, dailyByChannel, selectedChannels, selectedLocations]);
 
   // Category revenue map
   const effectiveCatRevMap = useMemo(() => {

@@ -1,11 +1,14 @@
 'use client';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { CHANNELS, CHANNEL_LABEL } from '@/lib/constants';
-import type { NeedsReviewRow, UncategorizedItemRow } from '@/lib/types';
+import type { NeedsReviewRow, UncategorizedItemRow, MissingCostRow, FiscalPeriodRow } from '@/lib/types';
 
 interface Props {
   needsReview:        NeedsReviewRow[];
   uncategorizedItems: UncategorizedItemRow[];
+  missingCosts:       MissingCostRow[];
+  periods:            FiscalPeriodRow[];
+  isAdmin:            boolean;
 }
 
 const fmt$ = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
@@ -30,10 +33,72 @@ const MENU_GROUPS: Record<string, string[]> = {
   'Other':     [],
 };
 
-type Section = 'channels' | 'items';
+// Bucket → allowed r365 "menu" values a cost can be written to — must match
+// app/api/costs/route.ts's BUCKET_MENUS exactly (server re-validates the same set).
+const BUCKET_MENUS: Record<MissingCostRow['bucket'], string[]> = {
+  ih:           ['FOOD - IN HOUSE', 'DRINKS - IN HOUSE'],
+  online:       ['DELIVERY', '3PD OPEN MARKUP'],
+  catering:     ['CATERING'],
+  catering_3pd: ['CATERING - 3PD'],
+  offsite:      ['OFFSITE POP-UPS'],
+};
 
-export default function NeedsReview({ needsReview, uncategorizedItems }: Props) {
+const BUCKET_LABEL: Record<MissingCostRow['bucket'], string> = {
+  ih: 'In-House', online: 'Online (LO/3PD)', catering: 'Catering',
+  catering_3pd: 'Catering 3PD', offsite: 'Offsite',
+};
+
+// FiscalPeriodRow → r365's period string format, e.g. period=5, fiscal_year=2026 → 'P05-2026'
+const toR365Period = (p: FiscalPeriodRow) => `P${String(p.period).padStart(2, '0')}-${p.fiscal_year}`;
+
+type Section = 'channels' | 'items' | 'costs';
+
+export default function NeedsReview({ needsReview, uncategorizedItems, missingCosts, periods, isAdmin }: Props) {
   const [section, setSection]     = useState<Section>('channels');
+
+  // ── Missing R365 cost state (admin only) ──────────────────────────────────
+  const defaultPeriod = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    return periods.find(p => today >= p.start_date && today <= p.end_date) ?? periods[periods.length - 1];
+  }, [periods]);
+
+  const costKey = (r: MissingCostRow) => `${r.canonical_name}||${r.bucket}`;
+  const [costMenu,   setCostMenu]   = useState<Record<string, string>>(() =>
+    Object.fromEntries(missingCosts.map(r => [costKey(r), BUCKET_MENUS[r.bucket][0]]))
+  );
+  const [costPeriod, setCostPeriod] = useState<Record<string, string>>(() =>
+    Object.fromEntries(missingCosts.map(r => [costKey(r), defaultPeriod ? toR365Period(defaultPeriod) : '']))
+  );
+  const [costValue,  setCostValue]  = useState<Record<string, string>>({});
+  const [costStatus, setCostStatus] = useState<Record<string, 'idle' | 'saving' | 'done' | 'error'>>({});
+
+  const saveCost = useCallback(async (r: MissingCostRow) => {
+    const key    = costKey(r);
+    const menu   = costMenu[key]   ?? BUCKET_MENUS[r.bucket][0];
+    const period = costPeriod[key] ?? (defaultPeriod ? toR365Period(defaultPeriod) : '');
+    const cost   = Number(costValue[key]);
+    if (!Number.isFinite(cost) || cost <= 0) {
+      setCostStatus(s => ({ ...s, [key]: 'error' }));
+      return;
+    }
+    setCostStatus(s => ({ ...s, [key]: 'saving' }));
+    try {
+      const res = await fetch('/api/costs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          canonical_name: r.canonical_name, bucket: r.bucket, menu, period,
+          avg_cost: cost, category: r.category, menu_group: r.menu_group,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setCostStatus(s => ({ ...s, [key]: 'done' }));
+    } catch {
+      setCostStatus(s => ({ ...s, [key]: 'error' }));
+    }
+  }, [costMenu, costPeriod, costValue, defaultPeriod]);
+
+  const doneCosts = Object.values(costStatus).filter(s => s === 'done').length;
 
   // ── Channel correction state ──────────────────────────────────────────────
   // channelDraft[order_guid] = selected channel value (not yet confirmed)
@@ -110,6 +175,11 @@ export default function NeedsReview({ needsReview, uncategorizedItems }: Props) 
           {/* <option value="items">
             Uncategorized Items ({uncategorizedItems.length}{doneItems > 0 ? ` · ${doneItems} fixed` : ''})
           </option> */}
+          {isAdmin && (
+            <option value="costs">
+              Missing R365 Costs ({missingCosts.length}{doneCosts > 0 ? ` · ${doneCosts} added` : ''})
+            </option>
+          )}
         </select>
       </div>
 
@@ -118,15 +188,6 @@ export default function NeedsReview({ needsReview, uncategorizedItems }: Props) 
       ══════════════════════════════════════════════════════════════════════ */}
       {section === 'channels' && (
         <>
-          <div className="info-banner yellow" style={{ marginBottom: 12 }}>
-            <i className="ti ti-alert-triangle" />
-            <div>
-              <strong>{needsReview.length}</strong> orders are excluded from the main dashboard.
-              Select the correct channel for each and confirm to update the database.
-              {doneChannels > 0 && <> <strong style={{ color: '#16a34a' }}>{doneChannels} fixed.</strong></>}
-            </div>
-          </div>
-
           {needsReview.length === 0 ? (
             <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)' }}>
               <i className="ti ti-check" style={{ fontSize: 28, opacity: 0.3, display: 'block' }} />
@@ -390,6 +451,181 @@ export default function NeedsReview({ needsReview, uncategorizedItems }: Props) 
               <div style={{ fontSize: 10, color: 'var(--muted)', padding: '8px 0 4px' }}>
                 {doneItems} of {uncategorizedItems.length} items categorized · Changes saved to{' '}
                 <code>analytics.item_category_override</code> and <code>analytics.item_lookup</code>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          SECTION 3 — Missing R365 costs (admin only)
+      ══════════════════════════════════════════════════════════════════════ */}
+      {section === 'costs' && isAdmin && (
+        <>
+          <div className="info-banner" style={{
+            background: 'rgba(220,38,38,0.08)', borderColor: '#dc2626', marginBottom: 12,
+          }}>
+            <i className="ti ti-currency-dollar-off" style={{ color: '#dc2626' }} />
+            <div>
+              <strong style={{ color: '#dc2626' }}>{missingCosts.length}</strong> item × channel
+              combinations have real sales but no matching cost in R365 — pick the menu/period and
+              enter a cost to save it directly to <code>analytics.r365_item_cost</code>.
+              {doneCosts > 0 && <> <strong style={{ color: '#16a34a' }}>{doneCosts} added.</strong></>}
+            </div>
+          </div>
+
+          {missingCosts.length === 0 ? (
+            <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)' }}>
+              <i className="ti ti-check" style={{ fontSize: 28, opacity: 0.3, display: 'block' }} />
+              <div style={{ marginTop: 8 }}>No missing costs in this date range.</div>
+            </div>
+          ) : (
+            <div className="tw">
+              <div className="tscroll">
+                <table style={{ fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left' }}>#</th>
+                      <th style={{ textAlign: 'left' }}>Item Name</th>
+                      <th style={{ textAlign: 'left' }}>Category</th>
+                      <th style={{ textAlign: 'left' }}>Menu Group</th>
+                      <th style={{ textAlign: 'left' }}>Bucket</th>
+                      <th>Qty</th>
+                      <th>Net Sales</th>
+                      <th style={{ textAlign: 'left' }}>Menu</th>
+                      <th style={{ textAlign: 'left' }}>Period</th>
+                      <th style={{ textAlign: 'left' }}>Avg Cost</th>
+                      <th style={{ textAlign: 'left' }}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {missingCosts.map((r, i) => {
+                      const key    = costKey(r);
+                      const status = costStatus[key] ?? 'idle';
+                      const isDone = status === 'done';
+                      const menu   = costMenu[key]   ?? BUCKET_MENUS[r.bucket][0];
+                      const period = costPeriod[key] ?? (defaultPeriod ? toR365Period(defaultPeriod) : '');
+                      const value  = costValue[key]  ?? '';
+
+                      return (
+                        <tr key={key} style={{
+                          background: isDone ? 'rgba(22,163,74,0.05)' : undefined,
+                          borderLeft: isDone ? '3px solid #16a34a' : undefined,
+                        }}>
+                          <td style={{ color: 'var(--muted)', fontSize: 11 }}>{i + 1}</td>
+                          <td style={{
+                            fontWeight: 600, maxWidth: 200,
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}>
+                            {r.canonical_name}
+                          </td>
+                          <td style={{ fontSize: 11, color: 'var(--muted)' }}>{r.category}</td>
+                          <td style={{ fontSize: 11, color: 'var(--muted)' }}>{r.menu_group || '—'}</td>
+                          <td>
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+                              background: 'var(--border)', color: 'var(--text)',
+                            }}>
+                              {BUCKET_LABEL[r.bucket]}
+                            </span>
+                          </td>
+                          <td style={{ fontWeight: 600 }}>{r.qty.toLocaleString()}</td>
+                          <td style={{ fontWeight: 600, color: 'var(--accent)' }}>{fmt$(r.net_sales)}</td>
+
+                          {/* Menu */}
+                          <td>
+                            {isDone ? (
+                              <span style={{ fontSize: 11, color: 'var(--muted)' }}>{menu}</span>
+                            ) : (
+                              <select
+                                className="fb-sel"
+                                value={menu}
+                                onChange={e => setCostMenu(prev => ({ ...prev, [key]: e.target.value }))}
+                                style={{ fontSize: 11, padding: '3px 6px', minWidth: 120 }}
+                              >
+                                {BUCKET_MENUS[r.bucket].map(m => (
+                                  <option key={m} value={m}>{m}</option>
+                                ))}
+                              </select>
+                            )}
+                          </td>
+
+                          {/* Period */}
+                          <td>
+                            {isDone ? (
+                              <span style={{ fontSize: 11, color: 'var(--muted)' }}>{period}</span>
+                            ) : (
+                              <select
+                                className="fb-sel"
+                                value={period}
+                                onChange={e => setCostPeriod(prev => ({ ...prev, [key]: e.target.value }))}
+                                style={{ fontSize: 11, padding: '3px 6px', minWidth: 100 }}
+                              >
+                                {periods.map(p => (
+                                  <option key={p.label} value={toR365Period(p)}>{p.label}</option>
+                                ))}
+                              </select>
+                            )}
+                          </td>
+
+                          {/* Avg cost */}
+                          <td>
+                            {isDone ? (
+                              <span style={{ fontSize: 11, fontWeight: 700, color: '#16a34a' }}>
+                                <i className="ti ti-check" /> ${value}
+                              </span>
+                            ) : (
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={value}
+                                onChange={e => setCostValue(prev => ({ ...prev, [key]: e.target.value }))}
+                                placeholder="0.00"
+                                style={{
+                                  fontSize: 11, padding: '3px 6px', width: 70,
+                                  border: '1px solid var(--border)', borderRadius: 5,
+                                  background: 'var(--card)', color: 'var(--text)',
+                                }}
+                              />
+                            )}
+                          </td>
+
+                          {/* Action */}
+                          <td style={{ whiteSpace: 'nowrap' }}>
+                            {isDone ? (
+                              <span style={{ fontSize: 10, color: '#16a34a', fontWeight: 700 }}>Saved</span>
+                            ) : (
+                              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                                <button
+                                  disabled={!value || status === 'saving'}
+                                  onClick={() => saveCost(r)}
+                                  style={{
+                                    padding: '4px 12px', borderRadius: 5, border: 'none',
+                                    background: value ? 'var(--accent)' : 'var(--border)',
+                                    color: value ? '#fff' : 'var(--muted)',
+                                    fontSize: 11, fontWeight: 700,
+                                    cursor: value ? 'pointer' : 'not-allowed',
+                                    opacity: status === 'saving' ? 0.6 : 1,
+                                  }}
+                                >
+                                  {status === 'saving' ? '…' : '✓ Save'}
+                                </button>
+                                {status === 'error' && (
+                                  <span style={{ fontSize: 10, color: '#dc2626' }}>Failed</span>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--muted)', padding: '8px 0 4px' }}>
+                {doneCosts} of {missingCosts.length} costs added · Changes saved directly to{' '}
+                <code>analytics.r365_item_cost</code>
               </div>
             </div>
           )}

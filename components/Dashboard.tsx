@@ -17,33 +17,43 @@ import MEOverall from './tabs/MEOverall';
 import PinkSheets from './tabs/PinkSheets';
 import EntreeMix from './tabs/EntreeMix';
 
+// BYO Breakdown + Pink Sheets are admin-only (owner request 2026-07-04) — every
+// other tab stays visible to all logged-in users.
 const TABS = [
-  { id: 'overview',   label: 'Overview',           icon: 'ti-layout-dashboard' },
-  { id: 'itemmix',    label: 'Item Mix',            icon: 'ti-list' },
-  { id: 'entreemix',  label: 'Entree Mix',          icon: 'ti-bowl' },
-  { id: 'loccompare', label: 'Location Compare',    icon: 'ti-map-pin' },
-  { id: 'chanmenu',   label: 'Channels',             icon: 'ti-chart-pie' },
-  { id: 'byo',        label: 'BYO Breakdown',       icon: 'ti-salad' },
-  { id: 'payment',    label: 'Payment Source',      icon: 'ti-credit-card' },
-  { id: 'meoverall',  label: 'Menu Engineering',    icon: 'ti-layout-grid' },
-  { id: 'pinksheets', label: 'Pink Sheets',         icon: 'ti-file-spreadsheet' },
-  { id: 'bikky',      label: 'Customer Retention',  icon: 'ti-users' },
-  { id: 'renames',    label: 'Renames Audit',       icon: 'ti-refresh' },
-  { id: 'needs',      label: 'Needs Review',        icon: 'ti-alert-triangle' },
-  { id: 'openitems',  label: 'Open Items',          icon: 'ti-package' },
+  { id: 'overview',   label: 'Overview',           icon: 'ti-layout-dashboard', adminOnly: false },
+  { id: 'itemmix',    label: 'Item Mix',            icon: 'ti-list',            adminOnly: false },
+  { id: 'entreemix',  label: 'Entree Mix',          icon: 'ti-bowl',            adminOnly: false },
+  { id: 'loccompare', label: 'Location Compare',    icon: 'ti-map-pin',         adminOnly: false },
+  { id: 'chanmenu',   label: 'Channels',             icon: 'ti-chart-pie',      adminOnly: false },
+  { id: 'byo',        label: 'BYO Breakdown',       icon: 'ti-salad',           adminOnly: true  },
+  { id: 'payment',    label: 'Payment Source',      icon: 'ti-credit-card',     adminOnly: false },
+  { id: 'meoverall',  label: 'Menu Engineering',    icon: 'ti-layout-grid',     adminOnly: false },
+  { id: 'pinksheets', label: 'Pink Sheets',         icon: 'ti-file-spreadsheet', adminOnly: true },
+  { id: 'bikky',      label: 'Customer Retention',  icon: 'ti-users',           adminOnly: false },
+  { id: 'renames',    label: 'Renames Audit',       icon: 'ti-refresh',         adminOnly: false },
+  { id: 'needs',      label: 'Needs Review',        icon: 'ti-alert-triangle',  adminOnly: false },
+  { id: 'openitems',  label: 'Open Items',          icon: 'ti-package',         adminOnly: false },
 ] as const;
 
 type TabId = typeof TABS[number]['id'];
+
+// Channel codes that roll up into Menu Engineering's IH/LO/3PD split (IN_HOUSE→IH,
+// APP→LO, TPD+TPD_MARKUP→3PD) — used as the default channel set when no explicit
+// channel filter is selected but a location filter still needs the per-channel recompute.
+const ME_CHANNELS = ['IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP'];
 
 // Which universal filter controls are meaningful for each tab.
 // Hidden when not applicable so the bar stays uncluttered.
 const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location: boolean }> = {
   overview:   { channel: true,  category: true,  location: true  },
   itemmix:    { channel: true,  category: true,  location: true  },
+  // Location dropdown disabled here pending v2 validation (owner request 2026-07-04)
+  // — these 4 tabs always show blended, all-location data regardless of the global
+  // location filter until re-enabled. Underlying scaling logic stays in place.
   entreemix:  { channel: false, category: false, location: false },
   loccompare: { channel: true,  category: true,  location: false },
   chanmenu:   { channel: true,  category: true,  location: true  },
-  byo:        { channel: false, category: false, location: true  },
+  byo:        { channel: false, category: false, location: false },
   payment:    { channel: false, category: false, location: true  },
   meoverall:  { channel: true,  category: true,  location: false },
   pinksheets: { channel: false, category: false, location: false },
@@ -55,7 +65,7 @@ const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location
 
 const fmt$ = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 
-export default function Dashboard({ data }: { data: DashboardData }) {
+export default function Dashboard({ data, isAdmin }: { data: DashboardData; isAdmin: boolean }) {
   const [tab, setTab]                       = useState<TabId>('overview');
   const [selectedChannels, setChannels]     = useState<string[]>([]);
   const [chOpen, setChOpen]                 = useState(false);
@@ -197,6 +207,35 @@ export default function Dashboard({ data }: { data: DashboardData }) {
       top_item_mix:     totalQty > 0 ? ((topEntry?.[1].qty ?? 0) / totalQty) * 100 : data.summary.top_item_mix,
     };
   }, [selectedLocations, data.locationItems, data.summary]);
+
+  // Same location adjustment, for the previous-period comparison summary — without
+  // this, Overview's "vs prev X" deltas compared a location-adjusted current period
+  // against an all-locations previous period whenever only a location filter was active.
+  const locationAdjustedPrevSummary = useMemo(() => {
+    if (!data.prevSummary) return data.prevSummary;
+    if (selectedLocations.length === 0) return data.prevSummary;
+    const locItems = data.prevLocationItems.filter(li => selectedLocations.includes(li.location_code));
+    const totalRev = locItems.reduce((s, li) => s + li.revenue, 0);
+    const totalQty = locItems.reduce((s, li) => s + li.qty,     0);
+    const uniqueItems = new Set(locItems.map(li => li.canonical_name)).size;
+    const itemAgg = new Map<string, { qty: number; revenue: number }>();
+    locItems.forEach(li => {
+      const e = itemAgg.get(li.canonical_name) ?? { qty: 0, revenue: 0 };
+      e.qty     += li.qty;
+      e.revenue += li.revenue;
+      itemAgg.set(li.canonical_name, e);
+    });
+    const topEntry = [...itemAgg.entries()].sort((a, b) => b[1].revenue - a[1].revenue)[0];
+    return {
+      ...data.prevSummary,
+      total_revenue:    totalRev,
+      total_qty:        totalQty,
+      unique_items:     uniqueItems,
+      top_item:         topEntry?.[0]           ?? data.prevSummary.top_item,
+      top_item_revenue: topEntry?.[1].revenue   ?? data.prevSummary.top_item_revenue,
+      top_item_mix:     totalQty > 0 ? ((topEntry?.[1].qty ?? 0) / totalQty) * 100 : data.prevSummary.top_item_mix,
+    };
+  }, [selectedLocations, data.prevLocationItems, data.prevSummary]);
 
   // Location-adjusted channel revenue — computed directly from locationItems (which now has channel),
   // giving exact per-channel totals for the selected location instead of proportional approximation.
@@ -396,10 +435,14 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     });
   }, [selectedChannels, categoryFilter, data.locationItems, channelFilteredItems, itemMetaMap]);
 
-  // ME items — channel-specific recompute following SOP formula chain
+  // ME items — channel-specific recompute following SOP formula chain. Also runs
+  // (with the full IH+LO+3PD channel set) whenever a location filter is active, so
+  // qty/net_sales/cost genuinely rescale to the location's share (via
+  // locationAdjustedChannelItems, which already has exact per-location numbers)
+  // instead of merely filtering which items are present.
   const filteredMEItems = useMemo((): MERow[] => {
-    // Blended: server values are already correct
-    if (selectedChannels.length === 0) {
+    // Fast path: no channel or location filter — server (blended) values are already correct.
+    if (selectedChannels.length === 0 && selectedLocations.length === 0) {
       return categoryFilter === 'all'
         ? data.meItems
         : data.meItems.filter(i => normCat(i.category) === categoryFilter);
@@ -407,10 +450,11 @@ export default function Dashboard({ data }: { data: DashboardData }) {
 
     // Per-channel recompute
     const costMeta = new Map(data.meItems.map(i => [i.canonical_name, i]));
+    const channels = selectedChannels.length > 0 ? selectedChannels : ME_CHANNELS;
 
     const acc = new Map<string, { qty: number; net_sales: number; total_cost: number }>();
-    for (const ci of data.channelItems) {
-      if (!selectedChannels.includes(ci.channel)) continue;
+    for (const ci of locationAdjustedChannelItems) {
+      if (!channels.includes(ci.channel)) continue;
       const meta = costMeta.get(ci.canonical_name);
       if (!meta) continue;
       // TPD: apply 1.18× cost uplift per SOP
@@ -465,14 +509,94 @@ export default function Dashboard({ data }: { data: DashboardData }) {
         quadrant, margin_flag, mix_flag, margin_threshold, mix_threshold,
       };
     });
-  }, [selectedChannels, categoryFilter, data.meItems, data.channelItems]);
+  }, [selectedChannels, selectedLocations, categoryFilter, data.meItems, locationAdjustedChannelItems]);
 
-  // Apply location filter on top of channel+category ME filter
-  const finalMEItems = useMemo(() => {
-    if (selectedLocations.length === 0) return filteredMEItems;
+  // Location scaling is now baked into filteredMEItems itself (see above) — kept as an
+  // alias so downstream consumers/props don't need to change name.
+  const finalMEItems = filteredMEItems;
+
+  // Per-item qty scale ratios (IH bucket vs combined online bucket = APP+TPD+TPD_MARKUP)
+  // for the selected location(s), built from the same exact per-location totals
+  // (data.locationItems) used everywhere else, against the all-location total
+  // (data.channelItems). Pink Sheet unit costs (avg_cost_ih/online/3pd) are genuinely
+  // location-invariant — r365 costs carry no location dimension at all — so only qty
+  // (and $ totals derived from qty × rate) can honestly be rescaled to a location's share.
+  const pinkSheetLocationRatios = useMemo(() => {
+    const m = new Map<string, { ih: number; online: number }>();
+    if (selectedLocations.length === 0) return m; // empty map ⇒ callers treat as "no scaling"
+
+    const isOnlineCh = (c: string) => c === 'APP' || c === 'TPD' || c === 'TPD_MARKUP';
+    const locAgg = new Map<string, { ih: number; online: number }>();
+    data.locationItems
+      .filter(li => selectedLocations.includes(li.location_code))
+      .forEach(li => {
+        const e = locAgg.get(li.canonical_name) ?? { ih: 0, online: 0 };
+        if (li.channel === 'IN_HOUSE') e.ih += li.qty;
+        else if (isOnlineCh(li.channel)) e.online += li.qty;
+        locAgg.set(li.canonical_name, e);
+      });
+
+    const totAgg = new Map<string, { ih: number; online: number }>();
+    data.channelItems.forEach(ci => {
+      const e = totAgg.get(ci.canonical_name) ?? { ih: 0, online: 0 };
+      if (ci.channel === 'IN_HOUSE') e.ih += ci.qty;
+      else if (isOnlineCh(ci.channel)) e.online += ci.qty;
+      totAgg.set(ci.canonical_name, e);
+    });
+
+    new Set([...locAgg.keys(), ...totAgg.keys()]).forEach(name => {
+      const loc = locAgg.get(name) ?? { ih: 0, online: 0 };
+      const tot = totAgg.get(name) ?? { ih: 0, online: 0 };
+      m.set(name, {
+        ih:     tot.ih     > 0 ? loc.ih     / tot.ih     : 0,
+        online: tot.online > 0 ? loc.online / tot.online : 0,
+      });
+    });
+    return m;
+  }, [selectedLocations, data.locationItems, data.channelItems]);
+
+  // Pink Sheets, genuinely rescaled to the selected location(s): ih_qty/online_qty (and
+  // the modifier cost totals, scaled by the same ratio so avg_cost stays mathematically
+  // consistent) reflect the location's actual share of orders; unit-cost fields
+  // (base_cost_*, avg_cost_*) are left untouched since they carry no location dimension.
+  const locationFilteredPinkSheets = useMemo(() => {
+    if (selectedLocations.length === 0) return data.pinkSheets;
+    return data.pinkSheets.flatMap(p => {
+      const r = pinkSheetLocationRatios.get(p.canonical_name);
+      if (!r) return [];
+      const ih_qty     = Math.round(p.ih_qty     * r.ih);
+      const online_qty = Math.round(p.online_qty * r.online);
+      if (ih_qty === 0 && online_qty === 0) return [];
+      return [{
+        ...p, ih_qty, online_qty,
+        total_ih_mod_cost: p.total_ih_mod_cost * r.ih,
+        total_mod_cost:    p.total_mod_cost    * r.online,
+      }];
+    });
+  }, [data.pinkSheets, selectedLocations, pinkSheetLocationRatios]);
+
+  // Pink Sheet modifier-level detail rows, scaled by the same per-item ratio as above
+  // (ih rows by r.ih, online rows by r.online) — this keeps computeFinalAvgCost's
+  // (totalModCost + baseCost·qty) / qty math exactly invariant (both scale by the same
+  // factor) while genuinely reflecting the location's order volume in section subtotals.
+  const locationFilteredPinkSheetDetails = useMemo(() => {
+    if (selectedLocations.length === 0) return data.pinkSheetDetails;
+    return data.pinkSheetDetails.flatMap(d => {
+      const r = pinkSheetLocationRatios.get(d.parent_item);
+      const ratio = d.channel === 'ih' ? (r?.ih ?? 0) : (r?.online ?? 0);
+      const qty = Math.round(d.qty * ratio * 1000) / 1000; // fractional qty kept (weighted-avg math)
+      if (qty === 0) return [];
+      return [{ ...d, qty, total_cost: d.total_cost * ratio }];
+    });
+  }, [data.pinkSheetDetails, selectedLocations, pinkSheetLocationRatios]);
+
+  // Same presence filter for itemCosts (Item Mix's cost fallback tier) — r365 costs
+  // aren't tracked per location, so this restricts which items appear, not their cost.
+  const locationFilteredItemCosts = useMemo(() => {
+    if (selectedLocations.length === 0) return data.itemCosts;
     const locNames = new Set(locationBaseItems.map(i => i.canonical_name));
-    return filteredMEItems.filter(i => locNames.has(i.canonical_name));
-  }, [filteredMEItems, selectedLocations, locationBaseItems]);
+    return data.itemCosts.filter(c => locNames.has(c.canonical_name));
+  }, [data.itemCosts, selectedLocations, locationBaseItems]);
 
   // Find the most recent fiscal period that overlaps the selected date range
   const activeBikkyPeriod = useMemo(() => {
@@ -492,6 +616,7 @@ export default function Dashboard({ data }: { data: DashboardData }) {
   const filteredData = useMemo(() => ({
     ...data,
     summary:           locationAdjustedSummary,
+    prevSummary:       locationAdjustedPrevSummary,
     items:             locationBaseItems,
     channels:          filteredChannels,
     channelItems:      filteredChannelItems,
@@ -500,7 +625,7 @@ export default function Dashboard({ data }: { data: DashboardData }) {
     meItems:           finalMEItems,
     prevChannelItems:  prevFilteredChannelItems,
     prevMEItems:       prevFilteredMEItems,
-  }), [data, locationAdjustedSummary, locationBaseItems, filteredChannels, filteredChannelItems, filteredChannelCategories, filteredLocationItems, finalMEItems, prevFilteredChannelItems, prevFilteredMEItems]);
+  }), [data, locationAdjustedSummary, locationAdjustedPrevSummary, locationBaseItems, filteredChannels, filteredChannelItems, filteredChannelCategories, filteredLocationItems, finalMEItems, prevFilteredChannelItems, prevFilteredMEItems]);
 
   return (
     <div className="container">
@@ -637,7 +762,7 @@ export default function Dashboard({ data }: { data: DashboardData }) {
       {/* ── TABS ── */}
       <div className="tabs-o">
         <div className="tabs-i">
-          {TABS.map(t => (
+          {TABS.filter(t => !t.adminOnly || isAdmin).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} className={`tb${tab === t.id ? ' on' : ''}`}>
               <i className={`ti ${t.icon}`} aria-hidden="true" />
               {t.label}
@@ -650,15 +775,6 @@ export default function Dashboard({ data }: { data: DashboardData }) {
                   {data.openItemsSummary.total}
                 </span>
               )}
-              {t.id === 'needs' && (data.needsReview.length + data.uncategorizedItems.length) > 0 && (
-                <span style={{
-                  background: '#ef4444', color: '#fff',
-                  fontSize: 9, fontWeight: 700,
-                  padding: '1px 5px', borderRadius: 10, marginLeft: 3,
-                }}>
-                  {data.needsReview.length + data.uncategorizedItems.length}
-                </span>
-              )}
             </button>
           ))}
         </div>
@@ -667,18 +783,21 @@ export default function Dashboard({ data }: { data: DashboardData }) {
       </div>{/* end sticky-bar */}
 
       {/* ── TAB CONTENT ── */}
-      {tab === 'overview'   && <Overview         data={filteredData} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
-      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={data.pinkSheets} meItems={finalMEItems} itemCosts={data.itemCosts} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
-      {tab === 'entreemix'  && <EntreeMix        pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} meItems={finalMEItems} />}
+      {tab === 'overview'   && <Overview         data={filteredData} selectedChannels={selectedChannels} categoryFilter={categoryFilter} selectedLocations={selectedLocations} />}
+      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} itemCosts={locationFilteredItemCosts} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
+      {/* entreemix/byo/meoverall/pinksheets: location dropdown commented out pending v2
+          validation — always pass blended, all-location data here regardless of the
+          global location filter (the location-scaled memos stay wired for itemmix). */}
+      {tab === 'entreemix'  && <EntreeMix        pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} meItems={data.meItems} />}
       {tab === 'loccompare' && <LocationCompare  data={filteredData} />}
       {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} />}
-      {tab === 'byo'        && <BYOBreakdown     modifiers={data.modifiers} items={locationBaseItems} pinkSheets={data.pinkSheets} meItems={finalMEItems} />}
+      {tab === 'byo'        && isAdmin && <BYOBreakdown modifiers={data.modifiers} items={data.items} pinkSheets={data.pinkSheets} meItems={data.meItems} selectedLocations={[]} />}
       {tab === 'payment'    && <PaymentSource    payments={data.payments} paymentsByLocation={data.paymentsByLocation} paymentSourcesByLocation={data.paymentSourcesByLocation} selectedLocations={selectedLocations} />}
-      {tab === 'meoverall'  && <MEOverall meItems={finalMEItems} pinkSheets={data.pinkSheets} itemCosts={data.itemCosts} />}
-      {tab === 'pinksheets' && <PinkSheets pinkSheets={data.pinkSheets} details={data.pinkSheetDetails} />}
+      {tab === 'meoverall'  && <MEOverall meItems={data.meItems} pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} itemCosts={data.itemCosts} />}
+      {tab === 'pinksheets' && isAdmin && <PinkSheets pinkSheets={data.pinkSheets} details={data.pinkSheetDetails} />}
       {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} />}
       {tab === 'renames'    && <RenamesAudit     renames={data.renames} />}
-      {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} />}
+      {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}
     </div>
   );

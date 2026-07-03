@@ -1,6 +1,7 @@
 'use client';
 import { useState, useMemo } from 'react';
-import type { MERow, PinkSheetRow, ItemCostRow } from '@/lib/types';
+import type { MERow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow } from '@/lib/types';
+import { computeFinalAvgCost } from '@/lib/pinkSheetCost';
 import {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
   ResponsiveContainer, ReferenceLine, Legend,
@@ -31,6 +32,13 @@ const QUAD: Record<QuadrantKey, { bg: string; color: string; fill: string; label
   'Plow Horse': { bg: '#ede9fe', color: '#5b21b6', fill: '#7c3aed', label: 'Plow Horses' },
   Puzzle:       { bg: '#dbeafe', color: '#1e3a8a', fill: '#1e40af', label: 'Puzzles' },
   Dog:          { bg: '#fee2e2', color: '#991b1b', fill: '#dc2626', label: 'Dogs' },
+};
+// What each quadrant means (High/Low margin × High/Low menu mix)
+const QUAD_DESC: Record<QuadrantKey, string> = {
+  Star:         'High margin + High menu mix — popular and profitable. Keep promoting.',
+  'Plow Horse': 'Low margin + High menu mix — popular but low-profit. Consider a price increase or cost reduction.',
+  Puzzle:       'High margin + Low menu mix — profitable but underordered. Needs marketing/menu placement to sell more.',
+  Dog:          'Low margin + Low menu mix — low-profit and unpopular. Candidate for rework, re-pricing, or removal.',
 };
 const CH_BADGE: Record<'IH' | 'LO' | '3PD', { bg: string; color: string }> = {
   IH:    { bg: '#eff6ff', color: '#1e40af' },
@@ -64,26 +72,27 @@ function getChData(i: MERow, c: 'IH' | 'LO' | '3PD') {
   if (c === 'LO')  return { qty: i.qty_lo,  ns: i.net_sales_lo,  price: i.avg_price_lo };
   return                   { qty: i.qty_3pd, ns: i.net_sales_3pd, price: i.avg_price_3pd };
 }
-// Cost cascade: pink sheet → meItems' own embedded cost → itemCosts (r365), matching
-// the same 3-tier fallback Item Mix uses. itemCosts has no separate 3PD-uplifted
-// field, so the ×1.18 packaging uplift is applied here when falling to that tier.
-function getChCost(i: MERow, c: 'IH' | 'LO' | '3PD', ps: PinkSheetRow | undefined, ic: ItemCostRow | undefined) {
-  if (ps) {
-    const v = c === 'IH' ? ps.avg_cost_ih : c === 'LO' ? ps.avg_cost_online : ps.avg_cost_3pd;
-    if (v > 0) return v;
-  }
-  const meCost = c === 'IH' ? i.avg_cost_ih : c === 'LO' ? i.avg_cost_lo : i.avg_cost_3pd;
-  if (meCost > 0) return meCost;
-  if (ic) {
-    if (c === 'IH')  return ic.ih_cost;
-    if (c === 'LO')  return ic.online_cost;
-    if (c === '3PD') return ic.online_cost * 1.18;
-  }
-  return 0;
+// The Pink Sheet's actual "FINAL AVG COST WITH MODIFIER" for one item — computed via
+// computeFinalAvgCost (same rules as PinkSheets.tsx: excludes 1/2 Main, excludes 1/2 Base
+// unless there's no real Base section, re-prices "1/2 and 1/2" composites), NOT the
+// backend's raw avg_cost_ih/avg_cost_online fields, which skip all of that.
+interface FinalCost { online: number; ih: number }
+
+// Cost cascade — matches PMIX_AppScript.txt's master row assembly exactly (getPinkCost_
+// + the pc/ac fallback around "RATE_3PD_COST"): Pink Sheet cost first, Item Cost Lookup
+// (r365 via itemCosts) only when Pink Sheet has none. Two tiers, no third "meItems' own
+// embedded cost" — that doesn't exist in the source logic and only added ambiguity.
+// LO and 3PD both key off the SAME Pink Sheet "online" figure — there's no separate
+// Loyalty pink sheet — 3PD then applies the ×1.18 packaging uplift on top (AppScript
+// RATE_3PD_COST), whichever tier resolved the base cost.
+function getChCost(i: MERow, c: 'IH' | 'LO' | '3PD', fc: FinalCost | undefined, ic: ItemCostRow | undefined) {
+  const pinkBase = fc ? (c === 'IH' ? fc.ih : fc.online) : 0;
+  const base = pinkBase > 0 ? pinkBase : (ic ? (c === 'IH' ? ic.ih_cost : ic.online_cost) : 0);
+  return c === '3PD' ? base * 1.18 : base;
 }
 
 function buildBaseRows(
-  meItems: MERow[], ch: ChannelTab, psMap: Map<string, PinkSheetRow>, icMap: Map<string, ItemCostRow>,
+  meItems: MERow[], ch: ChannelTab, fcMap: Map<string, FinalCost>, icMap: Map<string, ItemCostRow>,
 ): BaseRow[] {
   return meItems.map(i => {
     let price: number, qty: number, ns: number;
@@ -94,16 +103,16 @@ function buildBaseRows(
       default:    price = i.avg_price;     qty = i.qty;     ns = i.net_sales;
     }
     if (!qty) return null;
-    const ps = psMap.get(i.canonical_name);
+    const fc = fcMap.get(i.canonical_name);
     const ic = icMap.get(i.canonical_name.toLowerCase());
     let cost: number;
     if (ch === 'IH' || ch === 'LO' || ch === '3PD') {
-      cost = getChCost(i, ch, ps, ic);
-    } else if (ps) {
+      cost = getChCost(i, ch, fc, ic);
+    } else if (fc) {
       const tq = i.qty_ih + i.qty_lo + i.qty_3pd;
       cost = tq > 0
-        ? (ps.avg_cost_ih * i.qty_ih + ps.avg_cost_online * i.qty_lo + ps.avg_cost_3pd * i.qty_3pd) / tq
-        : ps.avg_cost_online;
+        ? (fc.ih * i.qty_ih + fc.online * i.qty_lo + (fc.online * 1.18) * i.qty_3pd) / tq
+        : fc.online;
     } else {
       cost = i.avg_cost;
     }
@@ -132,24 +141,65 @@ function addQuadrant(
   });
 }
 
+// Dedicated bar chart for one quadrant (Dogs / Puzzles) — always visible, independent
+// of the main view toggle, so the "needs attention" items are never one click away.
+function QuadrantBarChart({ title, subtitle, color, data }: {
+  title: string; subtitle: string; color: string;
+  data: { name: string; fullName: string; net_sales: number; cogs: number }[];
+}) {
+  if (!data.length) return null;
+  return (
+    <div style={{ background: 'var(--card)', borderRadius: 'var(--radius)', padding: '14px 16px', boxShadow: 'var(--shadow)', marginBottom: 14 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 2 }}>{title}</div>
+      <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 8 }}>{subtitle}</div>
+      <ResponsiveContainer width="100%" height={Math.max(200, data.length * 26 + 40)}>
+        <BarChart data={data} layout="vertical" margin={{ top: 4, right: 60, left: 8, bottom: 4 }}>
+          <CartesianGrid stroke="#f3f4f6" horizontal={false} />
+          <XAxis type="number" tick={{ fontSize: 9 }} tickLine={false} tickFormatter={fmtK} />
+          <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={134} />
+          <RTooltip content={({ payload }) => {
+            const p = payload?.[0]?.payload; if (!p) return null;
+            return (
+              <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px', fontSize: 11 }}>
+                <div style={{ fontWeight: 700, marginBottom: 3 }}>{p.fullName}</div>
+                <div>Net sales: {fmt$R(p.net_sales)}</div>
+                <div>COGS: {p.cogs}%</div>
+              </div>
+            );
+          }} />
+          <Bar dataKey="net_sales" radius={[0, 3, 3, 0]} fill={`${color}cc`} stroke={color} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 export default function MEOverall({
-  meItems, pinkSheets, itemCosts,
+  meItems, pinkSheets, pinkSheetDetails, itemCosts,
 }: {
   meItems: MERow[];
   pinkSheets: PinkSheetRow[];
+  pinkSheetDetails: PinkSheetDetailRow[];
   itemCosts: ItemCostRow[];
 }) {
   const [ch,         setCh]         = useState<ChannelTab>('ALL');
   const [search,     setSearch]     = useState('');
   const [quadFilter, setQuadFilter] = useState<Set<QuadrantKey>>(new Set());
   const [view,       setView]       = useState<ViewMode>('table');
+  const [quadChartMode, setQuadChartMode] = useState<'top' | 'bottom'>('top');
   const safeItems = meItems ?? [];
 
-  const psMap = useMemo(() => {
-    const m = new Map<string, PinkSheetRow>();
-    (pinkSheets ?? []).forEach(p => m.set(p.canonical_name, p));
+  // Pink Sheet's actual displayed cost per item — same computation PinkSheets.tsx uses,
+  // not the backend's raw avg_cost_ih/avg_cost_online fields.
+  const fcMap = useMemo(() => {
+    const m = new Map<string, FinalCost>();
+    const dets = pinkSheetDetails ?? [];
+    (pinkSheets ?? []).forEach(p => m.set(p.canonical_name, {
+      online: computeFinalAvgCost(p, dets, 'online'),
+      ih:     computeFinalAvgCost(p, dets, 'ih'),
+    }));
     return m;
-  }, [pinkSheets]);
+  }, [pinkSheets, pinkSheetDetails]);
 
   const icMap = useMemo(() => {
     const m = new Map<string, ItemCostRow>();
@@ -161,8 +211,8 @@ export default function MEOverall({
   const rawRows = useMemo(() => {
     // BL scatter/bar uses 'ALL' (IH+LO+3PD) to match AppScript blended
     const tab = ch === 'BL' ? 'ALL' : ch;
-    return buildBaseRows(safeItems, tab as ChannelTab, psMap, icMap);
-  }, [safeItems, ch, psMap, icMap]);
+    return buildBaseRows(safeItems, tab as ChannelTab, fcMap, icMap);
+  }, [safeItems, ch, fcMap, icMap]);
 
   const grandSales = useMemo(() => rawRows.reduce((s, r) => s + r.net_sales,  0), [rawRows]);
   const grandQty   = useMemo(() => rawRows.reduce((s, r) => s + r.qty,        0), [rawRows]);
@@ -173,15 +223,6 @@ export default function MEOverall({
   const rows = useMemo<ChannelRow[]>(() =>
     addQuadrant(rawRows, grandSales, grandQty, grandCost),
   [rawRows, grandSales, grandQty, grandCost]);
-
-  const quadStats = useMemo(() => {
-    const s: Record<QuadrantKey, { count: number; revenue: number }> = {
-      Star: { count: 0, revenue: 0 }, 'Plow Horse': { count: 0, revenue: 0 },
-      Puzzle: { count: 0, revenue: 0 }, Dog: { count: 0, revenue: 0 },
-    };
-    rows.forEach(r => { s[r.quadrant].count++; s[r.quadrant].revenue += r.net_sales; });
-    return s;
-  }, [rows]);
 
   const catSales = useMemo(() => {
     const m: Record<string, number> = {};
@@ -203,10 +244,10 @@ export default function MEOverall({
       safeItems.forEach(i => {
         const { qty, ns } = getChData(i, c);
         if (qty <= 0) return;
-        const ps = psMap.get(i.canonical_name);
+        const fc = fcMap.get(i.canonical_name);
         const ic = icMap.get(i.canonical_name.toLowerCase());
         tNS   += ns;
-        tCost += getChCost(i, c, ps, ic) * qty;
+        tCost += getChCost(i, c, fc, ic) * qty;
         tQty  += qty;
         n++;
       });
@@ -217,62 +258,80 @@ export default function MEOverall({
       };
     });
     return res;
-  }, [safeItems, psMap, icMap]);
+  }, [safeItems, fcMap, icMap]);
 
-  // ── Overall (ALL) flat list: one row per item × channel ──
-  const overallFlatRows = useMemo((): FlatRow[] => {
+  // ── Overall (ALL) flat list, unfiltered by search/quadFilter — one row per item ×
+  // channel (so an item sold in IH+LO+3PD contributes 3 rows). This is the same
+  // per-channel breakdown the Overall table shows, and is what quadrant counts /
+  // charts should be based on for ch==='ALL' so the numbers match the table 1:1.
+  const overallFlatRowsAll = useMemo((): FlatRow[] => {
     if (ch !== 'ALL') return [];
-    const q = search.toLowerCase();
     const t = perChThresh;
     const grandNSAll  = t.IH.totalNS  + t.LO.totalNS  + t['3PD'].totalNS;
-    // category NS across all channels (for Sls% Category)
     const catNS: Record<string, number> = {};
     safeItems.forEach(i => {
       catNS[i.category] = (catNS[i.category] ?? 0) + i.net_sales_ih + i.net_sales_lo + i.net_sales_3pd;
     });
-
     const result: FlatRow[] = [];
-    safeItems
-      .filter(i => i.qty > 0 && (!q || i.canonical_name.toLowerCase().includes(q)))
-      .forEach(i => {
-        const ps = psMap.get(i.canonical_name);
-        const ic = icMap.get(i.canonical_name.toLowerCase());
-        (['IH', 'LO', '3PD'] as const).forEach(c => {
-          const { qty, ns, price } = getChData(i, c);
-          if (qty <= 0) return;
-          const cost       = getChCost(i, c, ps, ic);
-          const margin     = price - cost;
-          const tc         = cost * qty;
-          const totMgn     = ns - tc;
-          const cogs_pct   = ns > 0 ? tc / ns : 0;
-          const margin_pct = price > 0 ? margin / price : 0;
-          const thresh     = t[c];
-          // Mix % is within each channel's own pool so it's comparable to mmThresh=(1/n_ch)*0.7
-          const mix_pct    = thresh.totalQty > 0 ? qty / thresh.totalQty : 0;
-          const mf:  'High' | 'Low' = margin_pct > thresh.mThresh  ? 'High' : 'Low';
-          const mxf: 'High' | 'Low' = mix_pct    > thresh.mmThresh ? 'High' : 'Low';
-          const quadrant: QuadrantKey =
-            mxf === 'High' && mf === 'High' ? 'Star' :
-            mxf === 'High' && mf === 'Low'  ? 'Plow Horse' :
-            mxf === 'Low'  && mf === 'High' ? 'Puzzle' : 'Dog';
-          result.push({
-            name: i.canonical_name, category: i.category, sub_category: i.sub_category,
-            avg_price: price, avg_cost: cost, margin, qty, total_cost: tc,
-            net_sales: ns, total_margin: totMgn, cogs_pct, margin_pct, mix_pct,
-            margin_flag: mf, mix_flag: mxf, quadrant,
-            menu: MENU_LABELS[c],
-            sls_pct:     grandNSAll > 0 ? ns / grandNSAll : 0,
-            sls_cat_pct: catNS[i.category] > 0 ? ns / catNS[i.category] : 0,
-            ch: c,
-          });
+    safeItems.filter(i => i.qty > 0).forEach(i => {
+      const fc = fcMap.get(i.canonical_name);
+      const ic = icMap.get(i.canonical_name.toLowerCase());
+      (['IH', 'LO', '3PD'] as const).forEach(c => {
+        const { qty, ns, price } = getChData(i, c);
+        if (qty <= 0) return;
+        const cost       = getChCost(i, c, fc, ic);
+        const margin     = price - cost;
+        const tc         = cost * qty;
+        const totMgn     = ns - tc;
+        const cogs_pct   = ns > 0 ? tc / ns : 0;
+        const margin_pct = price > 0 ? margin / price : 0;
+        const thresh     = t[c];
+        const mix_pct    = thresh.totalQty > 0 ? qty / thresh.totalQty : 0;
+        const mf:  'High' | 'Low' = margin_pct > thresh.mThresh  ? 'High' : 'Low';
+        const mxf: 'High' | 'Low' = mix_pct    > thresh.mmThresh ? 'High' : 'Low';
+        const quadrant: QuadrantKey =
+          mxf === 'High' && mf === 'High' ? 'Star' :
+          mxf === 'High' && mf === 'Low'  ? 'Plow Horse' :
+          mxf === 'Low'  && mf === 'High' ? 'Puzzle' : 'Dog';
+        result.push({
+          name: i.canonical_name, category: i.category, sub_category: i.sub_category,
+          avg_price: price, avg_cost: cost, margin, qty, total_cost: tc,
+          net_sales: ns, total_margin: totMgn, cogs_pct, margin_pct, mix_pct,
+          margin_flag: mf, mix_flag: mxf, quadrant,
+          menu: MENU_LABELS[c],
+          sls_pct:     grandNSAll > 0 ? ns / grandNSAll : 0,
+          sls_cat_pct: catNS[i.category] > 0 ? ns / catNS[i.category] : 0,
+          ch: c,
         });
       });
-    // Sort: item name asc, then by channel order IH → LO → 3PD
+    });
+    return result;
+  }, [safeItems, ch, fcMap, icMap, perChThresh]);
+
+  // Source rows for quadrant counts/charts: for Overall, use the per-channel flat
+  // rows (3 per item) so counts match what the Overall table actually shows; for
+  // every other view (Blended / IH / LO / 3PD) one row per item is already correct.
+  const quadSourceRows = useMemo(() => (ch === 'ALL' ? overallFlatRowsAll : rows), [ch, overallFlatRowsAll, rows]);
+
+  const quadStats = useMemo(() => {
+    const s: Record<QuadrantKey, { count: number; revenue: number }> = {
+      Star: { count: 0, revenue: 0 }, 'Plow Horse': { count: 0, revenue: 0 },
+      Puzzle: { count: 0, revenue: 0 }, Dog: { count: 0, revenue: 0 },
+    };
+    quadSourceRows.forEach(r => { s[r.quadrant].count++; s[r.quadrant].revenue += r.net_sales; });
+    return s;
+  }, [quadSourceRows]);
+
+  // ── Overall (ALL) flat table: search + quadrant-card filter applied on top of
+  // overallFlatRowsAll (the per-channel, unfiltered source used for counts/charts) ──
+  const overallFlatRows = useMemo((): FlatRow[] => {
+    if (ch !== 'ALL') return [];
+    const q = search.toLowerCase();
     const ORDER = { IH: 0, LO: 1, '3PD': 2 };
-    return result
-      .filter(r => quadFilter.size === 0 || quadFilter.has(r.quadrant))
+    return overallFlatRowsAll
+      .filter(r => (!q || r.name.toLowerCase().includes(q)) && (quadFilter.size === 0 || quadFilter.has(r.quadrant)))
       .sort((a, b) => a.name.localeCompare(b.name) || ORDER[a.ch] - ORDER[b.ch]);
-  }, [safeItems, ch, psMap, icMap, perChThresh, search, quadFilter]);
+  }, [overallFlatRowsAll, ch, search, quadFilter]);
 
   // ── Blended (BL) table rows: IH+LO+3PD aggregated (AppScript stepBuildBlendedMaster) ──
   // Quadrant comes from full-portfolio thresholds already in `rows` — don't recompute on filtered subset.
@@ -319,6 +378,27 @@ export default function MEOverall({
       }))
       .reverse(),
   [filtered]);
+
+  // Bar-chart data for all 4 quadrants (hidden in Table view), independent of the
+  // quadrant-card click filter above. Capped at 5 (top or bottom by net sales,
+  // per quadChartMode) — these are meant as a quick spot-check, not a full listing.
+  function quadBarData(q: QuadrantKey, mode: 'top' | 'bottom') {
+    const sorted = quadSourceRows
+      .filter(r => r.quadrant === q)
+      .sort((a, b) => mode === 'top' ? b.net_sales - a.net_sales : a.net_sales - b.net_sales)
+      .slice(0, 5)
+      .map(r => ({
+        name:      r.name.length > 22 ? r.name.slice(0, 20) + '…' : r.name,
+        fullName:  r.name,
+        net_sales: Math.round(r.net_sales),
+        cogs:      Math.round(r.cogs_pct * 100),
+      }));
+    return mode === 'top' ? sorted.reverse() : sorted;
+  }
+  const starBarData       = useMemo(() => quadBarData('Star', quadChartMode),        [quadSourceRows, quadChartMode]);
+  const plowHorseBarData  = useMemo(() => quadBarData('Plow Horse', quadChartMode),  [quadSourceRows, quadChartMode]);
+  const puzzleBarData     = useMemo(() => quadBarData('Puzzle', quadChartMode),      [quadSourceRows, quadChartMode]);
+  const dogBarData        = useMemo(() => quadBarData('Dog', quadChartMode),         [quadSourceRows, quadChartMode]);
 
   const totalMargin = grandSales - grandCost;
 
@@ -471,13 +551,66 @@ export default function MEOverall({
                 borderRadius: 10, padding: '10px 14px', cursor: 'pointer',
                 opacity: quadFilter.size > 0 && !checked ? 0.45 : 1,
                 boxShadow: checked ? `0 0 0 2px ${qd.fill}` : 'none' }}>
-              <div style={{ fontSize: 9, fontWeight: 700, color: qd.color, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 2 }}>{qd.label}</div>
-              <div style={{ fontSize: 24, fontWeight: 800, color: qd.color, lineHeight: 1.1 }}>{s.count}</div>
-              <div style={{ fontSize: 10, color: qd.color, opacity: 0.8, marginTop: 2 }}>{fmt$R(s.revenue)}</div>
+              <div style={{ fontSize: 9, fontWeight: 700, color: qd.color, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 2 }}
+                title={QUAD_DESC[q]}>
+                {qd.label}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                <span style={{ fontSize: 24, fontWeight: 800, color: qd.color, lineHeight: 1.1 }}>{s.count}</span>
+                <span style={{ fontSize: 10, color: qd.color, opacity: 0.7 }}>item{s.count === 1 ? '' : 's'}</span>
+              </div>
+              <div style={{ fontSize: 10, color: qd.color, opacity: 0.8, marginTop: 2 }}>
+                {fmt$R(s.revenue)} net sales
+              </div>
             </div>
           );
         })}
       </div>
+
+      {/* ── Quadrant charts (hidden in Table view) ── */}
+      {view !== 'table' && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginBottom: 8 }}>
+            <span style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 600 }}>Show</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {(['top', 'bottom'] as const).map(m => (
+                <button key={m} onClick={() => setQuadChartMode(m)} style={{
+                  padding: '4px 12px', borderRadius: 8, border: '1px solid var(--border)',
+                  fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                  background: quadChartMode === m ? 'var(--accent)' : 'var(--card)',
+                  color: quadChartMode === m ? '#fff' : 'var(--muted)',
+                }}>{m === 'top' ? 'Top 5' : 'Bottom 5'}</button>
+              ))}
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14, marginBottom: 14 }}>
+            <QuadrantBarChart
+              title={`Star Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Net Sales (${starBarData.length} of ${quadStats.Star.count})`}
+              subtitle={QUAD_DESC.Star}
+              color={QUAD.Star.fill}
+              data={starBarData}
+            />
+            <QuadrantBarChart
+              title={`Plow Horse Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Net Sales (${plowHorseBarData.length} of ${quadStats['Plow Horse'].count})`}
+              subtitle={QUAD_DESC['Plow Horse']}
+              color={QUAD['Plow Horse'].fill}
+              data={plowHorseBarData}
+            />
+            <QuadrantBarChart
+              title={`Puzzle Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Net Sales (${puzzleBarData.length} of ${quadStats.Puzzle.count})`}
+              subtitle={QUAD_DESC.Puzzle}
+              color={QUAD.Puzzle.fill}
+              data={puzzleBarData}
+            />
+            <QuadrantBarChart
+              title={`Dog Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Net Sales (${dogBarData.length} of ${quadStats.Dog.count})`}
+              subtitle={QUAD_DESC.Dog}
+              color={QUAD.Dog.fill}
+              data={dogBarData}
+            />
+          </div>
+        </>
+      )}
 
       {/* ── Scatter chart ── */}
       {view === 'scatter' && (

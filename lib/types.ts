@@ -42,17 +42,19 @@ export interface DailyRow {
 }
 
 export interface WeeklyChannelRow {
-  week_start: string;
-  channel:    string;
-  revenue:    number;
-  qty:        number;
+  week_start:    string;
+  channel:       string;
+  location_code: string;
+  revenue:       number;
+  qty:           number;
 }
 
 export interface DailyChannelRow {
-  date:    string;
-  channel: string;
-  revenue: number;
-  qty:     number;
+  date:          string;
+  channel:       string;
+  location_code: string;
+  revenue:       number;
+  qty:           number;
 }
 
 // ─── Items ────────────────────────────────────────────────────────────────────
@@ -179,6 +181,7 @@ export interface ModifierRow {
   mod_type:      string;
   modifier_name: string;
   parent_item:   string;
+  location_code: string;
   qty:           number;
   pct:           number;
   avg_cost:      number | null;
@@ -314,6 +317,18 @@ export interface CategoryRow {
   qty:      number;
 }
 
+// ─── Missing R365 item costs (admin cost-entry tool) ─────────────────────────
+// One row per (item, sales bucket) that has real sales but no matching
+// analytics.r365_item_cost row for that bucket's r365 "menu" value(s).
+export interface MissingCostRow {
+  canonical_name: string;
+  category:       string;
+  menu_group:     string;
+  bucket:         'ih' | 'online' | 'catering' | 'catering_3pd' | 'offsite';
+  qty:            number;
+  net_sales:      number;
+}
+
 // ─── Catering / Offsite vendor breakdown ─────────────────────────────────────
 export interface VendorRow {
   vendor:   string;   // alt_payment_name
@@ -361,4 +376,5 @@ export interface DashboardData {
   cateringVendors:    VendorRow[];
   offsiteVendors:     VendorRow[];
   itemCosts:          ItemCostRow[];
+  missingCosts:       MissingCostRow[];
 }

@@ -345,19 +345,45 @@ function SecBlock({ sec, accent, qtyMode }: { sec: SectionData; accent: string; 
           {fmt$2(sec.sectionTotal)} total cost
         </span>
         {isHalf && (
-          <span style={{ fontSize: 9, color: accent, marginLeft: 'auto', fontWeight: 700 }}>
-            wtd. avg {fmt$4(wAvg)}
+          <span
+            style={{ fontSize: 9, color: accent, marginLeft: 'auto', fontWeight: 700 }}
+            title="Weighted average unit cost across all options chosen in this half-portion section, weighted by how many times each was picked"
+          >
+            weighted avg cost/unit: {fmt$4(wAvg)}
           </span>
         )}
       </div>
 
-      {/* Option rows — name · qty% or qty# · cost, no bars */}
+      {/* Column headers — % mode shows both qty share and cost share; # mode shows raw count */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: qtyMode === '%' ? '1fr 46px 46px 68px' : '1fr 46px 68px',
+        gap: 6, padding: '0 4px 2px', marginBottom: 1,
+      }}>
+        <span style={{ fontSize: 8, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+          Modifier
+        </span>
+        <span style={{ fontSize: 8, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right' }}>
+          {qtyMode === '%' ? 'Qty %' : 'Qty'}
+        </span>
+        {qtyMode === '%' && (
+          <span style={{ fontSize: 8, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right' }}
+            title="This modifier's total cost as a % of the section's total cost">
+            Cost %
+          </span>
+        )}
+        <span style={{ fontSize: 8, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right' }}>
+          Unit Cost
+        </span>
+      </div>
+
+      {/* Option rows — name · qty%/cost% or qty# · unit cost, no bars */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         {sec.mods.map((m, i) => {
-          const pct = totalQty > 0 ? m.qty / totalQty : 0;
+          const pct     = totalQty > 0 ? m.qty / totalQty : 0;
+          const costPct = sec.sectionTotal > 0 ? m.total_cost / sec.sectionTotal : 0;
           return (
             <div key={m.modifier_name} style={{
-              display: 'grid', gridTemplateColumns: '1fr 46px 68px',
+              display: 'grid', gridTemplateColumns: qtyMode === '%' ? '1fr 46px 46px 68px' : '1fr 46px 68px',
               alignItems: 'center', gap: 6,
               padding: '2px 4px', borderRadius: 4,
               background: i % 2 === 0 ? 'transparent' : `${accent}08`,
@@ -370,6 +396,12 @@ function SecBlock({ sec, accent, qtyMode }: { sec: SectionData; accent: string; 
                 color: pct >= 0.3 ? accent : 'var(--text)' }}>
                 {qtyMode === '%' ? `${(pct * 100).toFixed(0)}%` : m.qty.toLocaleString()}
               </span>
+              {qtyMode === '%' && (
+                <span style={{ fontSize: 10, fontWeight: 700, textAlign: 'right',
+                  color: costPct >= 0.3 ? accent : 'var(--text)' }}>
+                  {(costPct * 100).toFixed(0)}%
+                </span>
+              )}
               <span style={{ fontSize: 9, textAlign: 'right',
                 color: m.unit_cost > 0 ? 'var(--muted)' : 'transparent' }}>
                 {m.unit_cost > 0 ? fmt$4(m.unit_cost) : '—'}
@@ -881,10 +913,12 @@ export default function EntreeMix({ pinkSheets, pinkSheetDetails, meItems }: Pro
           })}
         </div>
 
-        {/* Sidebar footer — COGS legend */}
+        {/* Sidebar footer — COGS% legend: the dot next to each item shows its
+            modifier cost as a % of price (COGS = Cost of Goods Sold) */}
         <div style={{ padding: '7px 12px', borderTop: '1px solid var(--border)', background: '#fff',
-          display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          {[['#10b981','< 28%'],['#f59e0b','28–35%'],['#ef4444','> 35%']].map(([c,l]) => (
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)' }}>COGS %:</span>
+          {[['#10b981','< 28% (good)'],['#f59e0b','28–35% (ok)'],['#ef4444','> 35% (high)']].map(([c,l]) => (
             <span key={l} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, color: 'var(--muted)' }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: c, display: 'inline-block' }} />
               {l}

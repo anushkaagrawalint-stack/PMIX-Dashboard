@@ -1,128 +1,12 @@
 'use client';
 import { useState, useMemo } from 'react';
 import type { PinkSheetRow, PinkSheetDetailRow } from '@/lib/types';
+import { buildSections, applyHalfHalfCosts, computeTotalModCost, isZeroBaseItem, type SectionData } from '@/lib/pinkSheetCost';
 
 const fmt$ = (v: number, d = 4) =>
   `$${v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
 const fmt2 = (v: number) =>
   `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-// Section rank — more specific patterns BEFORE shorter overlapping ones
-const SECTION_RANK: [string, number][] = [
-  ['1/2 base',      2],
-  ['base',          1],
-  ['extra main',    5],
-  ['1/2 main',      4],
-  ['main',          3],
-  ['extra veggie',  6],   // right after Extra Main, before Sauce
-  ['sauce',         7],
-  ['veggie',        8],
-  ['topping',       9],
-  ['chutney',      10],
-  ['make it',      11],
-];
-function sectionRank(s: string): number {
-  const l = s.toLowerCase();
-  for (const [k, r] of SECTION_RANK) if (l.includes(k)) return r;
-  return 99;
-}
-
-// Canonical display names — normalize plural/variant forms so sections merge correctly
-const CANONICAL: Record<string, string> = {
-  'bases':                  'Base',
-  'base':                   'Base',
-  '1/2 base':               '1/2 Base',
-  '1/2 bases':              '1/2 Base',
-  'main':                   'Main',
-  'mains':                  'Main',
-  '1/2 main':               '1/2 Main',
-  '1/2 mains':              '1/2 Main',
-  'extra main':             'Extra Main',
-  'extra mains':            'Extra Main',
-  'sauce':                  'Sauce',
-  'sauces':                 'Sauce',
-  'veggie':                 'Veggie',
-  'veggies':                'Veggie',
-  'extra veggie':           'Extra Veggie',
-  'extra veggies':          'Extra Veggie',
-  'topping':                'Topping',
-  'toppings':               'Topping',
-  'chutney + dressing':     'Chutney + Dressing',
-  'chutney + dressings':    'Chutney + Dressing',
-  'chutney and dressing':   'Chutney + Dressing',
-  'chutney and dressings':  'Chutney + Dressing',
-  'chutney & dressing':     'Chutney + Dressing',
-  'chutney':                'Chutney + Dressing',
-  'make it meal':           'Make It Meal',
-  'make it':                'Make It Meal',
-  'side':                   'Make It Meal',
-  'drink':                  'Make It Meal',
-  'sweet':                  'Make It Meal',
-};
-
-function effectiveDisplayName(s: string): string {
-  const m = s.match(/^[^-]+-\s*(.+)$/);
-  const stripped = m ? m[1].trim() : s;
-  return CANONICAL[stripped.toLowerCase()] ?? stripped;
-}
-
-interface SectionData {
-  rawKeys:     string[];
-  displayName: string;
-  rank:        number;
-  mods:        PinkSheetDetailRow[];
-  sectionTotal: number;
-}
-
-function buildSections(dets: PinkSheetDetailRow[]): SectionData[] {
-  const byDisplay: Record<string, { rawKeys: Set<string>; rank: number; mods: PinkSheetDetailRow[] }> = {};
-
-  for (const d of dets) {
-    const dn   = effectiveDisplayName(d.section);
-    const rank = sectionRank(d.section);
-    if (!byDisplay[dn]) byDisplay[dn] = { rawKeys: new Set(), rank, mods: [] };
-    byDisplay[dn].rawKeys.add(d.section);
-    byDisplay[dn].mods.push(d);
-  }
-
-  return Object.entries(byDisplay)
-    .sort(([, a], [, b]) => a.rank - b.rank || 0)
-    .map(([displayName, { rawKeys, rank, mods }]) => ({
-      rawKeys:      [...rawKeys],
-      displayName,
-      rank,
-      mods:         mods.sort((a, b) => a.modifier_name.localeCompare(b.modifier_name)),
-      sectionTotal: mods.reduce((s, m) => s + m.total_cost, 0),
-    }));
-}
-
-function applyHalfHalfCosts(sections: SectionData[]): SectionData[] {
-  const halfBase = sections.find(s => s.rank === 2);
-  const halfMain = sections.find(s => s.rank === 4);
-  const halfBaseAvgUnit = halfBase
-    ? halfBase.sectionTotal / Math.max(halfBase.mods.reduce((s, m) => s + m.qty, 0), 1)
-    : 0;
-  const halfMainAvgUnit = halfMain
-    ? halfMain.sectionTotal / Math.max(halfMain.mods.reduce((s, m) => s + m.qty, 0), 1)
-    : 0;
-
-  return sections.map(sec => {
-    const fixed = sec.mods.map(m => {
-      if (m.unit_cost > 0) return m;
-      const l = m.modifier_name.toLowerCase();
-      if (l.startsWith('1/2 and 1/2') && !l.includes('main') && halfBaseAvgUnit > 0) {
-        const tc = halfBaseAvgUnit * m.qty;
-        return { ...m, unit_cost: halfBaseAvgUnit, total_cost: tc };
-      }
-      if ((l === '1/2 and 1/2 mains' || l === '1/2 and 1/2 main') && halfMainAvgUnit > 0) {
-        const tc = halfMainAvgUnit * m.qty;
-        return { ...m, unit_cost: halfMainAvgUnit, total_cost: tc };
-      }
-      return m;
-    });
-    return { ...sec, mods: fixed, sectionTotal: fixed.reduce((s, m) => s + m.total_cost, 0) };
-  });
-}
 
 type ChannelMode = 'online' | 'ih';
 
@@ -261,13 +145,23 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
     [selected, filteredItems, rows],
   );
 
+  // Zero-baseCost items (Sides, Homemade Juice) are channel-agnostic — their IH cost
+  // mirrors the online weighted-average modifier cost exactly, never recomputed from
+  // IH's own (often sparse or nonexistent) modifier orders. Homemade Juice specifically
+  // has ZERO IH modifier rows at all (flavor choice only happens online), so computing
+  // IH independently would give $0. `effectiveChannel` redirects the WHOLE breakdown
+  // (sections, base cost, qty) to online for these items while still showing the
+  // item's true IH order count in the header for information.
+  const isActiveZeroBase = !!activeItem && isZeroBaseItem(activeItem.canonical_name);
+  const effectiveChannel: ChannelMode = (channel === 'ih' && isActiveZeroBase) ? 'online' : channel;
+
   const rawSections = useMemo(() => {
     if (!activeItem) return [];
     const itemDets = dets.filter(
-      d => d.parent_item === activeItem.canonical_name && d.channel === channel,
+      d => d.parent_item === activeItem.canonical_name && d.channel === effectiveChannel,
     );
     return buildSections(itemDets);
-  }, [activeItem, dets, channel]);
+  }, [activeItem, dets, effectiveChannel]);
 
   const sections = useMemo(() => applyHalfHalfCosts(rawSections), [rawSections]);
 
@@ -276,19 +170,9 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
 
   // Pattern 1 (BYO Greens+Grains): no real Base section → 1/2 Base IS the primary → include in cost
   // Pattern 2/3 (BYO Grain/Salad): real Base section exists → 1/2 Base is sub-table → exclude
-  const baseSection = sections.find(s => s.rank === 1);
-  const hasRealBase = !!baseSection?.mods.some(m => !m.modifier_name.toLowerCase().startsWith('skip'));
-  const isPattern1 = !hasRealBase && sections.some(s => s.rank === 2 && s.mods.length > 0);
-  const totalModCost = sections
-    .filter(s => {
-      if (s.rank === 4) return false;                              // always exclude 1/2 Main
-      if (s.rawKeys.some(k => k === 'Plate - Main')) return false; // protein shown but not added to cost
-      if (s.rank === 2) return isPattern1;                         // 1/2 Base: include only in Pattern 1
-      return true;
-    })
-    .reduce((s, sec) => s + sec.sectionTotal, 0);
-  const baseCost     = channel === 'ih' ? (activeItem?.base_cost_ih ?? 0) : (activeItem?.base_cost_online ?? 0);
-  const activeQty    = channel === 'ih' ? ihQty : onlineQty;
+  const { totalModCost, isPattern1 } = computeTotalModCost(sections);
+  const baseCost     = effectiveChannel === 'ih' ? (activeItem?.base_cost_ih ?? 0) : (activeItem?.base_cost_online ?? 0);
+  const activeQty    = effectiveChannel === 'ih' ? ihQty : onlineQty;
   const totalAvgCost = baseCost * activeQty;
   const modPlusAvg   = totalModCost + totalAvgCost;
   const finalAvgCost = activeQty > 0 ? modPlusAvg / activeQty : 0;
@@ -377,6 +261,11 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
                 <span>Base cost IH: <strong>{fmt$(activeItem.base_cost_ih)}</strong></span>
                 <span>Menu group: <strong>{activeItem.menu_group || '—'}</strong></span>
               </div>
+              {isActiveZeroBase && (
+                <div style={{ fontSize: 10, color: '#166534', marginTop: 6, fontStyle: 'italic' }}>
+                  Channel-agnostic item — cost below mirrors the Online weighted average (this item has no cost basis of its own in-house).
+                </div>
+              )}
             </div>
 
             {sections.map(sec => (
