@@ -28,7 +28,7 @@ export function modifierCostBatchSQL(): string {
     FROM public.fact_modifiers fm
     JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
     LEFT JOIN public.dim_fiscal_period fp
-           ON fol.business_date >  fp.start_date::DATE
+           ON fol.business_date >= fp.start_date::DATE
           AND fol.business_date <= fp.end_date::DATE
     WHERE NOT fol.is_voided AND NOT fol.is_deferred AND NOT fm.is_voided
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE

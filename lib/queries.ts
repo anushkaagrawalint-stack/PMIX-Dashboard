@@ -682,7 +682,7 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       FROM public.fact_order_lines fol
       LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
       LEFT JOIN public.dim_fiscal_period fp
-             ON fol.business_date >  fp.start_date::DATE
+             ON fol.business_date >= fp.start_date::DATE
             AND fol.business_date <= fp.end_date::DATE
       WHERE NOT fol.is_voided
         AND NOT fol.is_deferred
@@ -741,7 +741,7 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
       LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
       LEFT JOIN public.dim_fiscal_period fp
-             ON fol.business_date >  fp.start_date::DATE
+             ON fol.business_date >= fp.start_date::DATE
             AND fol.business_date <= fp.end_date::DATE
       LEFT JOIN mod_costs mc
              ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
@@ -795,7 +795,7 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
       LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
       LEFT JOIN public.dim_fiscal_period fp
-             ON fol.business_date >  fp.start_date::DATE
+             ON fol.business_date >= fp.start_date::DATE
             AND fol.business_date <= fp.end_date::DATE
       LEFT JOIN mod_costs mc
              ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
@@ -1239,7 +1239,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
         'P'||LPAD(period::TEXT,2,'0')||'-'||fiscal_year::TEXT AS pkey,
         fiscal_year * 100 + period                            AS pnum
       FROM public.dim_fiscal_period
-      WHERE start_date::DATE < $2::DATE
+      WHERE start_date::DATE <= $2::DATE
         AND end_date::DATE   >= $1::DATE
       ORDER BY fiscal_year DESC, period DESC
       LIMIT 1
@@ -1251,7 +1251,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
       CROSS JOIN selected_period sp
       LEFT JOIN public.dim_fiscal_period fp
-             ON fol.business_date > fp.start_date::DATE
+             ON fol.business_date >= fp.start_date::DATE
             AND fol.business_date <= fp.end_date::DATE
       WHERE NOT fol.is_voided AND NOT fol.is_deferred
         AND fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
@@ -1276,7 +1276,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
       CROSS JOIN selected_period sp
       LEFT JOIN public.dim_fiscal_period fp
-             ON fol.business_date > fp.start_date::DATE
+             ON fol.business_date >= fp.start_date::DATE
             AND fol.business_date <= fp.end_date::DATE
       WHERE NOT fol.is_voided AND NOT fol.is_deferred
         AND fol.menu_name IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE')
@@ -1305,7 +1305,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
       LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
       LEFT JOIN public.dim_fiscal_period fp
-             ON fol.business_date > fp.start_date::DATE
+             ON fol.business_date >= fp.start_date::DATE
             AND fol.business_date <= fp.end_date::DATE
       LEFT JOIN mod_costs mc
              ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
@@ -1352,7 +1352,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
       LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
       LEFT JOIN public.dim_fiscal_period fp
-             ON fol.business_date > fp.start_date::DATE
+             ON fol.business_date >= fp.start_date::DATE
             AND fol.business_date <= fp.end_date::DATE
       LEFT JOIN mod_costs mc
              ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
@@ -1553,7 +1553,7 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       ) AS modifier_type
     ) mt
     LEFT JOIN public.dim_fiscal_period fp
-           ON fol.business_date > fp.start_date::DATE
+           ON fol.business_date >= fp.start_date::DATE
           AND fol.business_date <= fp.end_date::DATE
     LEFT JOIN mod_costs mc
            ON mc.norm_name = LOWER(nm.base_name)
