@@ -2,6 +2,7 @@
 import { useState, useMemo } from 'react';
 import type { ItemRow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow } from '@/lib/types';
 import { computeFinalAvgCost } from '@/lib/pinkSheetCost';
+import { normalizeCategory } from '@/lib/constants';
 
 const fmt$  = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 const fmt$2 = (v: number) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -33,7 +34,7 @@ const CH_LABEL: Record<string, string> = {
 
 const CH_ORDER  = ['IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP', 'CATERING', 'CATERING_3PD', 'OFFSITE', 'OPEN_ITEMS'];
 const CAT_ORDER = ['Entrees', 'Sides', 'NA Drinks', 'Sweets', 'Alc Drinks', 'Retail', 'Other'];
-const normCat = (c: string | null | undefined) => (c === 'Kids Meal' ? 'Entrees' : c || 'Other');
+const normCat = normalizeCategory;
 const VENDOR_CH = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE']);
 
 function itemCat(i: ItemRow): string {
@@ -138,9 +139,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
     const map = new Map<string, ItemRow>();
     filtered.forEach(item => {
       const ch  = item.channel;
-      const cat = VENDOR_CH.has(ch) ? (item.menu_group || 'Other')
-                : ch === 'OPEN_ITEMS' ? (item.category || 'Other')
-                : (item.category || 'Other');
+      const cat = itemCat(item);
       const sub = (VENDOR_CH.has(ch) || ch === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
       const key = `${item.canonical_name}|${ch}|${cat}|${sub}`;
       const ex  = map.get(key);
@@ -186,9 +185,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
     const out: Record<string, Record<string, Record<string, ItemRow[]>>> = {};
     dedupedFiltered.forEach(i => {
       const ch  = i.channel;
-      const cat = VENDOR_CH.has(ch) ? (i.menu_group || 'Other')
-                : ch === 'OPEN_ITEMS' ? (i.category || 'Other')
-                : (i.category || 'Other');
+      const cat = itemCat(i);
       const sub = (VENDOR_CH.has(ch) || ch === 'OPEN_ITEMS') ? '' : (i.sub_category || '');
       if (!out[ch])           out[ch]           = {};
       if (!out[ch][cat])      out[ch][cat]      = {};

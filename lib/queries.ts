@@ -1,7 +1,7 @@
 import { Pool } from '@neondatabase/serverless';
 import { cacheLife } from 'next/cache';
 import {
-  CHANNEL_SQL,
+  CHANNEL_SQL, CHANNEL_SQL_WITH_OVERRIDE, CHANNEL_OVERRIDE_JOIN_SQL,
   GRP_TO_CAT_SQL, ITEM_SUBCAT_SQL, GRP_TO_SUBCAT_SQL,
 } from './constants';
 import { modifierAliasCaseSQL, modifierCostBatchSQL } from './modifierCost';
@@ -11,7 +11,7 @@ import type {
   ItemRow, ChannelItemRow, LocationItemRow, LocationRow,
   MERow, ModifierRow, PaymentRow, PaymentByLocationRow, PaymentSourceLocationRow, BikkyRow,
   CategoryRow, ChannelCategoryRow,
-  RenameRow, NeedsReviewRow,
+  RenameRow, NeedsReviewRow, NeedsReviewLineItem,
   OpenItemRow, OpenItemsSummary,
   UncategorizedItemRow,
   FiscalPeriodRow, VendorRow, PinkSheetRow, PinkSheetDetailRow,
@@ -25,6 +25,14 @@ function pool() {
 // ─── Channel CASE embedded in SQL ─────────────────────────────────────────────
 // All queries use this instead of channel_code.
 const CH = CHANNEL_SQL;
+
+// Override-aware channel — prefers a Needs Review correction (analytics.
+// channel_overrides, joined as `co`) over the raw menu_name derivation.
+// Keyed on selection_guid (per-line), not order_guid, so fixing one mistracked
+// line never touches that order's other, already-correct lines.
+// Any query using CHO must also add CH_OVERRIDE_JOIN(<selection_guid column>).
+const CHO = CHANNEL_SQL_WITH_OVERRIDE;
+const CH_OVERRIDE_JOIN = CHANNEL_OVERRIDE_JOIN_SQL;
 
 // modifier_type join — identifies modifier rows so they get 'Modifier' category
 // item_lookup is NOT used for category (AppScript uses GRP_TO_CATEGORY instead)
@@ -259,11 +267,13 @@ export async function getChannels(dr: DateRange): Promise<ChannelRow[]> {
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     )
     SELECT
-      (${CH}) AS channel,
+      (${CHO}) AS channel,
       SUM(fol.quantity)::BIGINT                                        AS qty,
       ROUND(SUM(fol.line_total)::NUMERIC, 2)                          AS revenue,
       ROUND(SUM(fol.line_total)*100.0/NULLIF(g.total,0)::NUMERIC, 1) AS pct
-    FROM public.fact_order_lines fol, grand g
+    FROM public.fact_order_lines fol
+    CROSS JOIN grand g
+    ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY 1, g.total
@@ -326,11 +336,12 @@ export async function getWeeklyByChannel(dr: DateRange): Promise<WeeklyChannelRo
   const { rows } = await db.query(`
     SELECT
       DATE_TRUNC('week', fol.business_date)::DATE::TEXT AS week_start,
-      (${CH})                                           AS channel,
+      (${CHO})                                          AS channel,
       COALESCE(fol.location_code, '')                   AS location_code,
       ROUND(SUM(fol.line_total)::NUMERIC, 0)            AS revenue,
       SUM(fol.quantity)::BIGINT                         AS qty
     FROM public.fact_order_lines fol
+    ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY 1, 2, 3
@@ -351,11 +362,12 @@ export async function getDailyByChannel(dr: DateRange): Promise<DailyChannelRow[
   const { rows } = await db.query(`
     SELECT
       fol.business_date::TEXT                          AS date,
-      (${CH})                                          AS channel,
+      (${CHO})                                         AS channel,
       COALESCE(fol.location_code, '')                  AS location_code,
       ROUND(SUM(fol.line_total)::NUMERIC, 0)          AS revenue,
       SUM(fol.quantity)::BIGINT                        AS qty
     FROM public.fact_order_lines fol
+    ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY 1, 2, 3
@@ -392,7 +404,7 @@ export async function getItems(dr: DateRange): Promise<ItemRow[]> {
       ${mappedExpr}                                                           AS canonical_name,
       fol.menu_name,
       COALESCE(fol.menu_group, '')                                           AS menu_group,
-      (${CH})                                                                AS channel,
+      (${CHO})                                                               AS channel,
       ${IS_OPEN}                                                             AS is_open_item,
       SUM(fol.quantity)::BIGINT                                              AS qty,
       ROUND(SUM(fol.line_total)::NUMERIC, 2)                                AS revenue,
@@ -405,12 +417,13 @@ export async function getItems(dr: DateRange): Promise<ItemRow[]> {
     FROM public.fact_order_lines fol
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
     ${IL_JOIN}
-    , grand g
+    ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+    CROSS JOIN grand g
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY
       ${mappedExpr}, fol.menu_name, fol.menu_group,
-      mlt.modifier_name,
+      mlt.modifier_name, co.correct_channel,
       g.total_rev, g.total_qty
     ORDER BY revenue DESC
   `, [dr.start, dr.end]);
@@ -439,12 +452,13 @@ export async function getChannelItems(dr: DateRange): Promise<ChannelItemRow[]> 
     WITH ${BYO_FIX_CTE}
     SELECT
       COALESCE(bf.clean, fol.canonical_name) AS canonical_name,
-      (${CH}) AS channel,
+      (${CHO}) AS channel,
       SUM(fol.quantity)::BIGINT               AS qty,
       ROUND(SUM(fol.line_total)::NUMERIC,2)   AS revenue,
       ROUND(SUM(fol.pre_discount)::NUMERIC,2) AS gross_sales
     FROM public.fact_order_lines fol
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+    ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY COALESCE(bf.clean, fol.canonical_name), 2
@@ -476,16 +490,17 @@ export async function getLocationItems(dr: DateRange): Promise<LocationItemRow[]
     SELECT
       COALESCE(bf.clean, fol.canonical_name)                            AS canonical_name,
       fol.location_code,
-      (${CH})                                                            AS channel,
+      (${CHO})                                                           AS channel,
       SUM(fol.quantity)::BIGINT                                          AS qty,
       ROUND(SUM(fol.line_total)::NUMERIC, 2)                            AS revenue,
       ROUND(SUM(fol.quantity)*100.0/NULLIF(lt.loc_qty,0)::NUMERIC, 2)  AS mix_pct
     FROM public.fact_order_lines fol
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
     JOIN loc_totals lt ON lt.location_code = fol.location_code
+    ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-    GROUP BY COALESCE(bf.clean, fol.canonical_name), fol.location_code, (${CH}), lt.loc_qty
+    GROUP BY COALESCE(bf.clean, fol.canonical_name), fol.location_code, (${CHO}), lt.loc_qty
     ORDER BY COALESCE(bf.clean, fol.canonical_name), fol.location_code
   `, [dr.start, dr.end]);
   await db.end();
@@ -543,11 +558,12 @@ export async function getChannelCategories(dr: DateRange): Promise<ChannelCatego
   const { rows } = await db.query(`
     WITH line_data AS (
       SELECT
-        (${CH})      AS channel,
+        (${CHO})     AS channel,
         ${CAT1}      AS category,
         fol.line_total
       FROM public.fact_order_lines fol
       ${IL_JOIN}
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     )
@@ -574,8 +590,9 @@ export async function getCateringVendors(dr: DateRange): Promise<VendorRow[]> {
     WITH catering_orders AS (
       SELECT DISTINCT fol.order_guid
       FROM public.fact_order_lines fol
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE ${BASE_WHERE}
-        AND fol.menu_name IN ('CATERING','CATERING - 3PD')
+        AND (${CHO}) IN ('CATERING', 'CATERING_3PD')
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     ),
     vendor_rev AS (
@@ -615,8 +632,9 @@ export async function getOffsiteVendors(dr: DateRange): Promise<VendorRow[]> {
     WITH offsite_orders AS (
       SELECT DISTINCT fol.order_guid
       FROM public.fact_order_lines fol
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE ${BASE_WHERE}
-        AND fol.menu_name = 'OFFSITE POP-UPS'
+        AND (${CHO}) = 'OFFSITE'
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     ),
     vendor_rev AS (
@@ -673,10 +691,14 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       SELECT
         COALESCE(bf.clean, fol.canonical_name)                                AS canonical_name,
         MIN(fol.menu_group)                                                    AS menu_group,
-        CASE
-          WHEN fol.menu_name IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') THEN 'IH'
-          WHEN fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING')  THEN 'LO'
-          WHEN fol.menu_name IN ('DELIVERY','3PD OPEN MARKUP')          THEN '3PD'
+        -- Override-aware: map the full 8-value channel (co.correct_channel if a
+        -- Needs Review fix exists, else the natural menu_name derivation) into
+        -- ME's narrower IH/LO/3PD split. TPD + TPD_MARKUP both roll into 3PD.
+        CASE (${CHO})
+          WHEN 'IN_HOUSE'   THEN 'IH'
+          WHEN 'APP'        THEN 'LO'
+          WHEN 'TPD'        THEN '3PD'
+          WHEN 'TPD_MARKUP' THEN '3PD'
         END                                                                    AS channel,
         'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT            AS cost_period,
         SUM(fol.quantity)                                                       AS qty,
@@ -687,13 +709,10 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       LEFT JOIN public.dim_fiscal_period fp
              ON fol.business_date >= fp.start_date::DATE
             AND fol.business_date <= fp.end_date::DATE
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fol.is_voided
         AND NOT fol.is_deferred
-        AND fol.menu_name IN (
-          'FOOD - IN HOUSE','DRINKS - IN HOUSE',
-          'APP','FOOD - TOAST ONLINE ORDERING',
-          'DELIVERY','3PD OPEN MARKUP'
-        )
+        AND (${CHO}) IN ('IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP')
         AND COALESCE(fol.menu_group,'') NOT IN (
           'Aramark','BAG TAX','Cater Cow','Catering Bundles',
           'Catering Packages - BYO Bowl Bar',
@@ -758,13 +777,11 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       LEFT JOIN mod_costs mc
              ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
             AND mc.pnum      = fp.fiscal_year * 100 + fp.period
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fol.is_voided
         AND NOT fol.is_deferred
         AND NOT fm.is_voided
-        AND fol.menu_name IN (
-          'APP','FOOD - TOAST ONLINE ORDERING',
-          'DELIVERY','3PD OPEN MARKUP'
-        )
+        AND (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
@@ -812,10 +829,11 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       LEFT JOIN mod_costs mc
              ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
             AND mc.pnum      = fp.fiscal_year * 100 + fp.period
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fol.is_voided
         AND NOT fol.is_deferred
         AND NOT fm.is_voided
-        AND fol.menu_name IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE')
+        AND (${CHO}) = 'IN_HOUSE'
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
@@ -1217,8 +1235,9 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
         SUM(fol.quantity)                      AS online_qty
       FROM public.fact_order_lines fol
       LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fol.is_voided AND NOT fol.is_deferred
-        AND fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
+        AND (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
@@ -1240,8 +1259,9 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
         SUM(fol.quantity)                      AS ih_qty
       FROM public.fact_order_lines fol
       LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fol.is_voided AND NOT fol.is_deferred
-        AND fol.menu_name IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE')
+        AND (${CHO}) = 'IN_HOUSE'
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
@@ -1275,8 +1295,9 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       LEFT JOIN public.dim_fiscal_period fp
              ON fol.business_date >= fp.start_date::DATE
             AND fol.business_date <= fp.end_date::DATE
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fol.is_voided AND NOT fol.is_deferred
-        AND fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
+        AND (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
@@ -1300,8 +1321,9 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       LEFT JOIN public.dim_fiscal_period fp
              ON fol.business_date >= fp.start_date::DATE
             AND fol.business_date <= fp.end_date::DATE
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fol.is_voided AND NOT fol.is_deferred
-        AND fol.menu_name IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE')
+        AND (${CHO}) = 'IN_HOUSE'
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
@@ -1332,8 +1354,9 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       LEFT JOIN mod_costs mc
              ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
             AND mc.pnum      = fp.fiscal_year * 100 + fp.period
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fol.is_voided AND NOT fol.is_deferred AND NOT fm.is_voided
-        AND fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
+        AND (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
@@ -1379,8 +1402,9 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       LEFT JOIN mod_costs mc
              ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
             AND mc.pnum      = fp.fiscal_year * 100 + fp.period
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fol.is_voided AND NOT fol.is_deferred AND NOT fm.is_voided
-        AND fol.menu_name IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE')
+        AND (${CHO}) = 'IN_HOUSE'
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
@@ -1440,8 +1464,9 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       JOIN mod_costs mc
         ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
        AND mc.pnum      = sp.pnum
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fol.is_voided AND NOT fol.is_deferred AND NOT fm.is_voided
-        AND fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
+        AND (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
         AND COALESCE(bf.clean, fol.canonical_name) IN (SELECT nm FROM zero_base)
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
         AND mc.unit_cost > 0
@@ -1622,7 +1647,7 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
            ELSE mt.modifier_type
       END                                       AS section,
       nm.base_name                              AS modifier_name,
-      CASE WHEN fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
+      CASE WHEN (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
            THEN 'online' ELSE 'ih' END         AS channel,
       SUM(fm.quantity)::BIGINT                  AS qty,
       ROUND(SUM(fm.quantity * COALESCE(mc.unit_cost, 0))::NUMERIC, 4)
@@ -1630,6 +1655,7 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
     FROM public.fact_modifiers fm
     JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+    ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     -- Toast sometimes sends the already-canonical name directly (e.g. 'BYO Grain Bowl')
     -- instead of the short form byo_fix expects ('Grain Bowl') — parent_item_type only
     -- has the short form, so a plain equality join misses those rows entirely (and any
@@ -1645,9 +1671,8 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
            -- parent_item_type at all) we'd rather leave item_type NULL than mislabel
            -- an online order with an '... - In House' item_type.
            p.parent_item IN (SELECT raw FROM byo_fix WHERE clean = fol.canonical_name)
-           AND p.item_type ILIKE '%' || CASE WHEN fol.menu_name IN (
-                 'APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP'
-               ) THEN 'Online' ELSE 'In House' END
+           AND p.item_type ILIKE '%' || CASE WHEN (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
+                 THEN 'Online' ELSE 'In House' END
          )
       ORDER BY (p.parent_item = fol.canonical_name) DESC
       LIMIT 1
@@ -1685,10 +1710,7 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
            ON mc.norm_name = LOWER(nm.base_name)
           AND mc.pnum      = sp.pnum
     WHERE NOT fol.is_voided AND NOT fol.is_deferred AND NOT fm.is_voided
-      AND fol.menu_name IN (
-        'APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP',
-        'FOOD - IN HOUSE','DRINKS - IN HOUSE'
-      )
+      AND (${CHO}) IN ('IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP')
       AND (
         UPPER(fol.menu_group) IN (
           'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
@@ -1710,7 +1732,7 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
            ELSE mt.modifier_type
       END,
       nm.base_name,
-      CASE WHEN fol.menu_name IN ('APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP')
+      CASE WHEN (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
            THEN 'online' ELSE 'ih' END
     ORDER BY parent_item, channel, section, modifier_name
   `, [dr.start, dr.end]);
@@ -2103,6 +2125,11 @@ export async function getRenames(): Promise<RenameRow[]> {
 export async function getNeedsReview(dr: DateRange): Promise<NeedsReviewRow[]> {
   const db = pool();
   try {
+    // Flagged at the LINE level: a line qualifies if IT is on an In-House menu
+    // and its order was paid via a known catering/offsite vendor. An order can
+    // have several already-correct lines (e.g. Catering-3PD) alongside one
+    // mistracked line — only the mistracked line(s) show up here, which is what
+    // the Confirm/Undo actions below actually operate on (never the whole order).
     const { rows } = await db.query(`
       WITH order_stats AS (
         SELECT
@@ -2115,11 +2142,13 @@ export async function getNeedsReview(dr: DateRange): Promise<NeedsReviewRow[]> {
           AND business_date BETWEEN $1::DATE AND $2::DATE
         GROUP BY order_guid
       )
-      SELECT DISTINCT ON (fol.order_guid)
+      SELECT
         fol.order_guid,
+        fol.selection_guid,
+        fol.canonical_name,
         fol.location_code                                    AS location,
         fol.business_date::TEXT                              AS business_date,
-        (${CH})                                              AS current_channel,
+        co.correct_channel                                   AS override_channel,
         fol.dining_option,
         os.amount,
         os.item_count,
@@ -2127,11 +2156,9 @@ export async function getNeedsReview(dr: DateRange): Promise<NeedsReviewRow[]> {
         CASE
           WHEN p.alt_payment_name IN ('EzCater','Ez Cater','HUNGRY','Sharebite',
             'Territory Foods','Cater Cow','WCK','Food Fleet','ZeroCater','Cater2Me')
-           AND (${CH}) = 'IN_HOUSE'
           THEN 'CATERING'
           WHEN p.alt_payment_name IN ('Fooda','Aramark','Eurest','Metz Corp',
             'Taher','Foodworks','Cureate','Guest Services')
-           AND (${CH}) = 'IN_HOUSE'
           THEN 'OFFSITE'
           ELSE NULL
         END AS suggested_channel
@@ -2142,33 +2169,107 @@ export async function getNeedsReview(dr: DateRange): Promise<NeedsReviewRow[]> {
         WHERE order_guid = fol.order_guid AND alt_payment_name IS NOT NULL
         ORDER BY amount DESC LIMIT 1
       ) p ON TRUE
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+        AND (${CH}) = 'IN_HOUSE'
         AND (
-          (p.alt_payment_name IN ('EzCater','Ez Cater','HUNGRY','Sharebite',
+          p.alt_payment_name IN ('EzCater','Ez Cater','HUNGRY','Sharebite',
             'Territory Foods','Cater Cow','WCK','Food Fleet','ZeroCater','Cater2Me')
-           AND (${CH}) = 'IN_HOUSE')
           OR
-          (p.alt_payment_name IN ('Fooda','Aramark','Eurest','Metz Corp',
+          p.alt_payment_name IN ('Fooda','Aramark','Eurest','Metz Corp',
             'Taher','Foodworks','Cureate','Guest Services')
-           AND (${CH}) = 'IN_HOUSE')
         )
-      ORDER BY fol.order_guid, fol.business_date DESC
-      LIMIT 100
+      ORDER BY fol.order_guid, fol.line_total DESC
+      LIMIT 500
     `, [dr.start, dr.end]);
+
+    // Group flagged lines by order — the card is still one-per-order, but the
+    // fix (and its undo) only ever touches the specific flagged selection_guids.
+    type Group = {
+      location: string; business_date: string; amount: number; item_count: number;
+      dining_option: string; alt_payment_name: string; suggested_channel: string;
+      flagged_lines: { selection_guid: string; canonical_name: string }[];
+      override_channels: (string | null)[];
+    };
+    const byOrder = new Map<string, Group>();
+    for (const r of rows) {
+      const guid = r.order_guid as string;
+      let g = byOrder.get(guid);
+      if (!g) {
+        g = {
+          location:          r.location as string,
+          business_date:     r.business_date as string,
+          amount:            Number(r.amount),
+          item_count:        Number(r.item_count),
+          dining_option:     (r.dining_option ?? '') as string,
+          alt_payment_name:  r.alt_payment_name as string,
+          suggested_channel: (r.suggested_channel ?? '') as string,
+          flagged_lines:     [],
+          override_channels: [],
+        };
+        byOrder.set(guid, g);
+      }
+      g.flagged_lines.push({
+        selection_guid: r.selection_guid as string,
+        canonical_name: r.canonical_name as string,
+      });
+      g.override_channels.push((r.override_channel ?? null) as string | null);
+    }
+
+    // Line-level detail per flagged order (ALL lines, not just the flagged ones) —
+    // lets the UI show the full order for context alongside which specific lines
+    // are the actual problem.
+    const orderGuids = [...byOrder.keys()];
+    const lineItemsByOrder: Record<string, NeedsReviewLineItem[]> = {};
+    if (orderGuids.length > 0) {
+      const { rows: lineRows } = await db.query(`
+        SELECT order_guid, selection_guid, canonical_name, menu_name, quantity, line_total, (${CH}) AS channel
+        FROM public.fact_order_lines
+        WHERE order_guid = ANY($1::TEXT[])
+          AND NOT is_voided AND NOT is_deferred
+        ORDER BY order_guid, line_total DESC
+      `, [orderGuids]);
+      for (const lr of lineRows) {
+        const guid = lr.order_guid as string;
+        (lineItemsByOrder[guid] ??= []).push({
+          selection_guid: lr.selection_guid as string,
+          canonical_name: lr.canonical_name as string,
+          menu_name:      (lr.menu_name ?? null) as string | null,
+          channel:        lr.channel as string,
+          quantity:       Number(lr.quantity),
+          line_total:     Number(lr.line_total),
+        });
+      }
+    }
+
     await db.end();
-    return rows.map(r => ({
-      order_guid:       r.order_guid       as string,
-      location:         r.location         as string,
-      business_date:    r.business_date    as string,
-      amount:           Number(r.amount),
-      item_count:       Number(r.item_count),
-      issue_type:       'CATERING-PAYMENT-WITH-WRONG-CHANNEL',
-      current_channel:  r.current_channel  as string,
-      dining_option:    (r.dining_option   ?? '') as string,
-      alt_payment_name: r.alt_payment_name as string,
-      suggested_channel: (r.suggested_channel ?? '') as string,
-    }));
+    return orderGuids.map(order_guid => {
+      const g = byOrder.get(order_guid)!;
+      // "Done" only if every flagged line in this order shares the same
+      // override value — Confirm/Undo always act on all of an order's flagged
+      // lines together, so this should never actually be partial in practice.
+      const allOverridden = g.override_channels.every(v => v !== null);
+      const distinctValues = new Set(g.override_channels);
+      const override_channel = allOverridden && distinctValues.size === 1
+        ? g.override_channels[0]
+        : null;
+      return {
+        order_guid,
+        location:         g.location,
+        business_date:    g.business_date,
+        amount:           g.amount,
+        item_count:       g.item_count,
+        issue_type:       'CATERING-PAYMENT-WITH-WRONG-CHANNEL',
+        current_channel:  'IN_HOUSE', // guaranteed by the WHERE clause above
+        override_channel,
+        dining_option:    g.dining_option,
+        alt_payment_name: g.alt_payment_name,
+        suggested_channel: g.suggested_channel,
+        flagged_lines:    g.flagged_lines,
+        line_items:       lineItemsByOrder[order_guid] ?? [],
+      };
+    });
   } catch (err) {
     console.error('getNeedsReview error:', err);
     await db.end().catch(() => {}); // connection may already be broken; don't let cleanup crash the request
@@ -2292,7 +2393,7 @@ export async function getUncategorizedItems(dr: DateRange): Promise<Uncategorize
     const { rows } = await db.query(`
       SELECT
         fol.canonical_name,
-        (${CH}) AS channel,
+        (${CHO}) AS channel,
         SUM(fol.quantity)::BIGINT              AS qty,
         ROUND(SUM(fol.line_total)::NUMERIC, 2) AS revenue,
         MAX(fol.business_date)::TEXT           AS last_seen
@@ -2303,9 +2404,10 @@ export async function getUncategorizedItems(dr: DateRange): Promise<Uncategorize
       LEFT JOIN (
         SELECT DISTINCT modifier_name FROM analytics.modifier_type
       ) mlt ON mlt.modifier_name = fol.canonical_name
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-        AND (${CH}) NOT IN ('OFFSITE', 'OPEN_ITEMS')
+        AND (${CHO}) NOT IN ('OFFSITE', 'OPEN_ITEMS')
         AND il.raw_item_name  IS NULL
         AND mlt.modifier_name IS NULL
         AND (${GRP_TO_CAT_SQL}) IS NULL

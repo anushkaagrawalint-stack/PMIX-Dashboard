@@ -5,6 +5,7 @@ import {
   ScatterChart, Scatter, ReferenceLine,
 } from 'recharts';
 import type { BikkyRow, MERow, ItemRow } from '@/lib/types';
+import { normalizeCategory } from '@/lib/constants';
 
 
 interface Props {
@@ -191,8 +192,9 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
     const m = new Map<string, string>();
     items.forEach(i => {
       if (!i.category) return;
-      m.set(i.canonical_name, i.category);
-      CANONICAL_ALIASES.get(i.canonical_name)?.forEach(alias => m.set(alias, i.category));
+      const cat = normalizeCategory(i.category);
+      m.set(i.canonical_name, cat);
+      CANONICAL_ALIASES.get(i.canonical_name)?.forEach(alias => m.set(alias, cat));
     });
     return m;
   }, [items]);

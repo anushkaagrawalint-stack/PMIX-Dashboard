@@ -1,7 +1,7 @@
 'use client';
 import { useState, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { CHANNEL_LABEL, CHANNEL_COLOR } from '@/lib/constants';
+import { CHANNEL_LABEL, CHANNEL_COLOR, normalizeCategory } from '@/lib/constants';
 import type { DashboardData } from '@/lib/types';
 
 const HBarChart = dynamic(() => import('../charts/HBarChart'), { ssr: false });
@@ -155,9 +155,10 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
     const map: Record<string, Array<{ name: string; value: number }>> = {};
     channelCategories.forEach(cc => {
       if (!map[cc.channel]) map[cc.channel] = [];
-      const existing = map[cc.channel].find(e => e.name === cc.category);
+      const cat = normalizeCategory(cc.category);
+      const existing = map[cc.channel].find(e => e.name === cat);
       if (existing) existing.value += cc.revenue;
-      else map[cc.channel].push({ name: cc.category, value: cc.revenue });
+      else map[cc.channel].push({ name: cat, value: cc.revenue });
     });
     Object.values(map).forEach(cats => cats.sort((a, b) => b.value - a.value));
     return map;

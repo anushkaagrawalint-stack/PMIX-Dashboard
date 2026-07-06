@@ -2,6 +2,7 @@
 import { useState, useMemo } from 'react';
 import type { MERow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow } from '@/lib/types';
 import { computeFinalAvgCost } from '@/lib/pinkSheetCost';
+import { normalizeCategory } from '@/lib/constants';
 import {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
   ResponsiveContainer, ReferenceLine, Legend,
@@ -116,7 +117,7 @@ function buildBaseRows(
     } else {
       cost = i.avg_cost;
     }
-    return { name: i.canonical_name, category: i.category, sub_category: i.sub_category,
+    return { name: i.canonical_name, category: normalizeCategory(i.category), sub_category: i.sub_category,
              avg_price: price, avg_cost: cost, qty, net_sales: ns, total_cost: cost * qty };
   }).filter(Boolean) as BaseRow[];
 }
@@ -270,7 +271,8 @@ export default function MEOverall({
     const grandNSAll  = t.IH.totalNS  + t.LO.totalNS  + t['3PD'].totalNS;
     const catNS: Record<string, number> = {};
     safeItems.forEach(i => {
-      catNS[i.category] = (catNS[i.category] ?? 0) + i.net_sales_ih + i.net_sales_lo + i.net_sales_3pd;
+      const cat = normalizeCategory(i.category);
+      catNS[cat] = (catNS[cat] ?? 0) + i.net_sales_ih + i.net_sales_lo + i.net_sales_3pd;
     });
     const result: FlatRow[] = [];
     safeItems.filter(i => i.qty > 0).forEach(i => {
@@ -293,14 +295,15 @@ export default function MEOverall({
           mxf === 'High' && mf === 'High' ? 'Star' :
           mxf === 'High' && mf === 'Low'  ? 'Plow Horse' :
           mxf === 'Low'  && mf === 'High' ? 'Puzzle' : 'Dog';
+        const cat = normalizeCategory(i.category);
         result.push({
-          name: i.canonical_name, category: i.category, sub_category: i.sub_category,
+          name: i.canonical_name, category: cat, sub_category: i.sub_category,
           avg_price: price, avg_cost: cost, margin, qty, total_cost: tc,
           net_sales: ns, total_margin: totMgn, cogs_pct, margin_pct, mix_pct,
           margin_flag: mf, mix_flag: mxf, quadrant,
           menu: MENU_LABELS[c],
           sls_pct:     grandNSAll > 0 ? ns / grandNSAll : 0,
-          sls_cat_pct: catNS[i.category] > 0 ? ns / catNS[i.category] : 0,
+          sls_cat_pct: catNS[cat] > 0 ? ns / catNS[cat] : 0,
           ch: c,
         });
       });

@@ -101,12 +101,21 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
   const doneCosts = Object.values(costStatus).filter(s => s === 'done').length;
 
   // ── Channel correction state ──────────────────────────────────────────────
-  // channelDraft[order_guid] = selected channel value (not yet confirmed)
+  // channelDraft[order_guid] = selected channel value (not yet confirmed).
+  // Pre-fills from a persisted override if one already exists (survives reload),
+  // else falls back to the suggested channel.
   const [channelDraft,    setChannelDraft]    = useState<Record<string, string>>(() =>
-    Object.fromEntries(needsReview.map(r => [r.order_guid, r.suggested_channel]))
+    Object.fromEntries(needsReview.map(r => [r.order_guid, r.override_channel ?? r.suggested_channel]))
   );
-  const [channelStatus,  setChannelStatus]   = useState<Record<string, 'idle' | 'saving' | 'done' | 'error'>>({});
+  const [channelStatus,  setChannelStatus]   = useState<Record<string, 'idle' | 'saving' | 'done' | 'undoing' | 'error'>>({});
   const [channelEditing, setChannelEditing]  = useState<Set<string>>(new Set());
+  const [expandedOrders, setExpandedOrders]  = useState<Set<string>>(new Set());
+  const toggleExpanded = (order_guid: string) =>
+    setExpandedOrders(prev => {
+      const n = new Set(prev);
+      n.has(order_guid) ? n.delete(order_guid) : n.add(order_guid);
+      return n;
+    });
 
   // ── Item categorization state ─────────────────────────────────────────────
   const [catDraft,   setCatDraft]   = useState<Record<string, string>>({});
@@ -114,25 +123,49 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
   const [itemStatus, setItemStatus] = useState<Record<string, 'idle' | 'saving' | 'done' | 'error'>>({});
   const [itemEditing,setItemEditing]= useState<Set<string>>(new Set());
 
-  // ── Channel confirm ───────────────────────────────────────────────────────
-  const confirmChannel = useCallback(async (order_guid: string) => {
-    const channel = channelDraft[order_guid];
+  // ── Channel confirm — only ever touches THIS order's flagged line(s), never
+  // the whole order, so already-correct lines (e.g. a Catering-3PD line sitting
+  // next to a mistracked In-House one) are never rewritten. ───────────────────
+  const confirmChannel = useCallback(async (r: NeedsReviewRow) => {
+    const channel = channelDraft[r.order_guid];
     if (!channel) return;
-    setChannelStatus(s => ({ ...s, [order_guid]: 'saving' }));
+    setChannelStatus(s => ({ ...s, [r.order_guid]: 'saving' }));
     try {
       const res = await fetch('/api/review/update-channel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order_guid, channel }),
+        body: JSON.stringify({
+          order_guid: r.order_guid,
+          selection_guids: r.flagged_lines.map(l => l.selection_guid),
+          channel,
+        }),
       });
       if (!res.ok) throw new Error(await res.text());
-      setChannelStatus(s => ({ ...s, [order_guid]: 'done' }));
-      setChannelEditing(prev => { const n = new Set(prev); n.delete(order_guid); return n; });
+      setChannelStatus(s => ({ ...s, [r.order_guid]: 'done' }));
+      setChannelEditing(prev => { const n = new Set(prev); n.delete(r.order_guid); return n; });
       window.location.reload();
     } catch {
-      setChannelStatus(s => ({ ...s, [order_guid]: 'error' }));
+      setChannelStatus(s => ({ ...s, [r.order_guid]: 'error' }));
     }
   }, [channelDraft]);
+
+  // ── Channel undo — removes the override for THIS order's flagged line(s)
+  // only, so those specific lines revert to whatever they naturally derive to
+  // from menu_name (their pre-fix state). Other lines are untouched. ─────────
+  const undoChannel = useCallback(async (r: NeedsReviewRow) => {
+    setChannelStatus(s => ({ ...s, [r.order_guid]: 'undoing' }));
+    try {
+      const res = await fetch('/api/review/update-channel', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selection_guids: r.flagged_lines.map(l => l.selection_guid) }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      window.location.reload();
+    } catch {
+      setChannelStatus(s => ({ ...s, [r.order_guid]: 'error' }));
+    }
+  }, []);
 
   // ── Item confirm ──────────────────────────────────────────────────────────
   const confirmItem = useCallback(async (canonical_name: string) => {
@@ -154,7 +187,9 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
     }
   }, [catDraft, grpDraft]);
 
-  const doneChannels = Object.values(channelStatus).filter(s => s === 'done').length;
+  // Persisted count (survives reload) — a session-local 'done' status only briefly
+  // exists between save success and the reload that follows it.
+  const doneChannels = needsReview.filter(r => r.override_channel !== null).length;
   const doneItems    = Object.values(itemStatus).filter(s => s === 'done').length;
 
   return (
@@ -196,10 +231,25 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {needsReview.map((r) => {
-                const status  = channelStatus[r.order_guid] ?? 'idle';
-                const isDone  = status === 'done';
-                const isEdit  = channelEditing.has(r.order_guid);
-                const draft   = channelDraft[r.order_guid] ?? r.suggested_channel;
+                const status    = channelStatus[r.order_guid] ?? 'idle';
+                // Persisted (survives reload) — this is the real source of truth once the
+                // page has reloaded after a save; the ephemeral 'done'/'undoing' statuses
+                // only matter in the brief instant before that reload happens.
+                const hasOverride = r.override_channel !== null;
+                const isDone    = hasOverride || status === 'done';
+                const isUndoing = status === 'undoing';
+                const isEdit    = channelEditing.has(r.order_guid);
+                const draft     = channelDraft[r.order_guid] ?? r.override_channel ?? r.suggested_channel;
+                const updatedToChannel = r.override_channel ?? channelDraft[r.order_guid];
+                // Which of this order's lines are actually the mistracked one(s) —
+                // Confirm/Undo only ever touch these, never the rest of the order.
+                const flaggedGuids = new Set(r.flagged_lines.map(l => l.selection_guid));
+                const flaggedNames = [...new Set(r.flagged_lines.map(l => l.canonical_name))];
+                // The actual $ that moves if you confirm — just the flagged line(s),
+                // NOT the whole order's total (r.amount includes already-correct lines too).
+                const flaggedAmount = r.line_items
+                  .filter(li => flaggedGuids.has(li.selection_guid))
+                  .reduce((s, li) => s + li.line_total, 0);
 
                 return (
                   <div key={r.order_guid} className="nr-card" style={{
@@ -213,7 +263,7 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
                         </div>
                         {isDone && !isEdit && (
                           <span style={{ fontSize: 10, fontWeight: 700, color: '#16a34a' }}>
-                            <i className="ti ti-check" /> Updated to {CHANNEL_LABEL[channelDraft[r.order_guid]] ?? channelDraft[r.order_guid]}
+                            <i className="ti ti-check" /> Updated to {CHANNEL_LABEL[updatedToChannel] ?? updatedToChannel}
                           </span>
                         )}
                       </div>
@@ -223,13 +273,111 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
                       </div>
                       <div className="nr-hint">
                         <i className="ti ti-info-circle" style={{ fontSize: 9, marginRight: 3 }} />
-                        {r.suggested_channel}
+                        Paid via <strong>{r.alt_payment_name || '(none)'}</strong>
+                        {r.dining_option && r.dining_option !== r.alt_payment_name && <> · Dining option: <strong>{r.dining_option}</strong></>}
+                        {' '}but {flaggedNames.length === 1
+                          ? <><strong>{flaggedNames[0]}</strong> is</>
+                          : <><strong>{r.flagged_lines.length} line{r.flagged_lines.length !== 1 ? 's' : ''}</strong> ({flaggedNames.join(', ')}) are</>
+                        }
+                        {' '}still marked <strong>In-House</strong> — should be <strong>{CHANNEL_LABEL[r.suggested_channel] ?? r.suggested_channel}</strong>.
+                        {' '}Only {flaggedNames.length === 1 ? 'this line' : 'these lines'} will move — the rest of the order is untouched.
                       </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                        <span style={{ fontSize: 9, color: 'var(--muted)', fontFamily: 'monospace' }}>
+                          {r.order_guid}
+                        </span>
+                        <button
+                          onClick={() => toggleExpanded(r.order_guid)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 3,
+                            padding: 0, border: 'none', background: 'transparent',
+                            fontSize: 10, fontWeight: 600, color: 'var(--accent)', cursor: 'pointer',
+                          }}
+                        >
+                          <i className={`ti ti-chevron-${expandedOrders.has(r.order_guid) ? 'up' : 'down'}`} style={{ fontSize: 10 }} />
+                          {expandedOrders.has(r.order_guid) ? 'Hide' : 'Show'} {r.line_items.length} line item{r.line_items.length !== 1 ? 's' : ''}
+                        </button>
+                      </div>
+
+                      {/* Line-item detail — shows every line in the order for context, but
+                          Confirm/Undo ONLY ever touch the specific flagged line(s) below
+                          (matched by selection_guid, not by channel) — an order can have
+                          several already-correct lines sitting right next to the mistracked
+                          one(s), and those are never rewritten. */}
+                      {expandedOrders.has(r.order_guid) && (
+                        <div style={{
+                          marginTop: 6, border: '1px solid var(--border)', borderRadius: 6,
+                          overflow: 'hidden', fontSize: 10.5,
+                        }}>
+                          <div style={{
+                            padding: '5px 8px', fontSize: 9.5, color: 'var(--muted)',
+                            background: 'var(--bg)', borderBottom: '1px solid var(--border)',
+                          }}>
+                            Target if you confirm: <strong>{CHANNEL_LABEL[draft] ?? draft}</strong>
+                            {' '}· <span style={{ color: '#991b1b' }}>red</span> = flagged, will move to it
+                            {' '}· gray = not flagged, left as-is (even if its own channel looks different)
+                          </div>
+                          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                            <thead>
+                              <tr style={{ background: 'var(--bg)' }}>
+                                <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 700, color: 'var(--muted)' }}>Item</th>
+                                <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 700, color: 'var(--muted)' }}>Menu (raw)</th>
+                                <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 700, color: 'var(--muted)' }}>Channel</th>
+                                <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 700, color: 'var(--muted)' }}>Payment Method</th>
+                                <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 700, color: 'var(--muted)' }}>Qty</th>
+                                <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 700, color: 'var(--muted)' }}>Line Total</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {r.line_items.map((li, i) => {
+                                // Flagged = this exact line (by selection_guid) is one of the
+                                // mistracked ones Confirm/Undo will act on. NOT a channel
+                                // comparison — a line can look "wrong" vs the target and still
+                                // not be flagged (e.g. it's fine as Catering-3PD and was never
+                                // part of the problem), and confirming must never touch it.
+                                const isFlagged = flaggedGuids.has(li.selection_guid);
+                                return (
+                                  <tr key={li.selection_guid + i} style={{
+                                    borderTop: '1px solid var(--border)',
+                                    background: isFlagged ? 'rgba(220,38,38,0.06)' : undefined,
+                                  }}>
+                                    <td style={{ padding: '4px 8px', fontWeight: 600 }}>{li.canonical_name}</td>
+                                    <td style={{ padding: '4px 8px', color: 'var(--muted)' }}>{li.menu_name ?? '(blank)'}</td>
+                                    <td style={{ padding: '4px 8px' }}>
+                                      <span style={{
+                                        fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+                                        background: isFlagged ? '#fee2e2' : 'var(--border)',
+                                        color: isFlagged ? '#991b1b' : 'var(--text)',
+                                      }}>
+                                        {CHANNEL_LABEL[li.channel] ?? li.channel}
+                                      </span>
+                                      {isFlagged && (
+                                        <span style={{ marginLeft: 5, fontSize: 9, color: '#991b1b', fontWeight: 700 }}>
+                                          → {CHANNEL_LABEL[draft] ?? draft}
+                                        </span>
+                                      )}
+                                    </td>
+                                    {/* Payment is captured per ORDER in Toast, not per line — same
+                                        value repeats for every line of this order. This is exactly
+                                        the evidence proving the flagged line(s) are mistracked (paid
+                                        via a catering vendor while Toast still shows them In-House). */}
+                                    <td style={{ padding: '4px 8px', color: 'var(--muted)' }}>{r.alt_payment_name || '—'}</td>
+                                    <td style={{ padding: '4px 8px', textAlign: 'right' }}>{li.quantity}</td>
+                                    <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmt$(li.line_total)}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
 
                       {/* Action row */}
                       {(!isDone || isEdit) && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
-                          <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600 }}>Correct channel:</span>
+                          <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600 }}>
+                            Correct channel for {flaggedNames.length === 1 ? flaggedNames[0] : `${r.flagged_lines.length} flagged lines`}:
+                          </span>
                           <select
                             className="fb-sel"
                             value={draft}
@@ -242,7 +390,7 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
                           </select>
                           <button
                             disabled={status === 'saving'}
-                            onClick={() => confirmChannel(r.order_guid)}
+                            onClick={() => confirmChannel(r)}
                             style={{
                               padding: '4px 14px', borderRadius: 6, border: 'none',
                               background: 'var(--accent)', color: '#fff',
@@ -259,22 +407,41 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
                       )}
                     </div>
 
-                    {/* Edit button after done */}
+                    {/* Edit / Undo buttons after done */}
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                      {/* The flagged line(s)' own $ — what actually moves — not the whole
+                          order's total (r.amount), which includes already-correct lines. */}
                       <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent)', minWidth: 70, textAlign: 'right' }}>
-                        {fmt$(r.amount)}
+                        {fmt$(flaggedAmount)}
+                      </div>
+                      <div style={{ fontSize: 9, color: 'var(--muted)', textAlign: 'right' }}>
+                        of {fmt$(r.amount)} order
                       </div>
                       {isDone && !isEdit && (
-                        <button
-                          onClick={() => setChannelEditing(prev => { const n = new Set(prev); n.add(r.order_guid); return n; })}
-                          style={{
-                            padding: '3px 10px', borderRadius: 5,
-                            border: '1px solid var(--border)', background: 'transparent',
-                            fontSize: 10, fontWeight: 600, cursor: 'pointer', color: 'var(--muted)',
-                          }}
-                        >
-                          Edit
-                        </button>
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <button
+                            disabled={isUndoing}
+                            onClick={() => undoChannel(r)}
+                            style={{
+                              padding: '3px 10px', borderRadius: 5,
+                              border: '1px solid #dc2626', background: 'transparent',
+                              fontSize: 10, fontWeight: 600, cursor: 'pointer', color: '#dc2626',
+                              opacity: isUndoing ? 0.6 : 1,
+                            }}
+                          >
+                            {isUndoing ? 'Undoing…' : 'Undo'}
+                          </button>
+                          <button
+                            onClick={() => setChannelEditing(prev => { const n = new Set(prev); n.add(r.order_guid); return n; })}
+                            style={{
+                              padding: '3px 10px', borderRadius: 5,
+                              border: '1px solid var(--border)', background: 'transparent',
+                              fontSize: 10, fontWeight: 600, cursor: 'pointer', color: 'var(--muted)',
+                            }}
+                          >
+                            Edit
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>

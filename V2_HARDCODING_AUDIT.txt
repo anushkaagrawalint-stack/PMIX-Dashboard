@@ -1,0 +1,655 @@
+================================================================================
+PMIX DASHBOARD — HARDCODING AUDIT & V2 "NOTHING HARDCODED" BLUEPRINT
+Generated: 2026-07-06
+Scope: full repo (lib/, app/, components/) against production Neon Postgres
+================================================================================
+
+
+1. EXECUTIVE SUMMARY
+================================================================================
+
+The dashboard works correctly TODAY because every edge case discovered so far
+(one item at a time, over many sessions) has been hand-encoded as a literal
+value, a name-mapping table, or a special-case branch, usually copy-pasted
+into 2-4 places at once. There is no config layer and no admin UI for any of
+this — every change requires a code edit + redeploy.
+
+This is not "bad code" — it is the natural result of reverse-engineering a
+legacy Google Apps Script (PMIX_AppScript.txt) against messy, inconsistently-
+named POS/R365 data with no clean ID system. The logic is correct; it is just
+not DATA. That is the entire V2 thesis: move facts out of code and into
+tables, without touching the business rules that already took many sessions
+to get right.
+
+Three findings deserve top billing because they are correctness/security
+risks, not just maintenance debt:
+
+  1. CHANNEL_FROM_MENU_SQL's catch-all `ELSE 'OFFSITE'` — ANY unrecognized
+     menu_name (new Toast revenue center, typo, temporary promo menu) is
+     silently miscounted as Offsite revenue with no error, no log, no alert.
+     This is the single highest-risk hardcode in the system.
+
+  2. JWT_SECRET has a hardcoded fallback ('dev-secret-change-me') that
+     activates silently if the env var is ever missing on a deploy — anyone
+     who reads the (public, in this doc — no, NOT reproduced here) source
+     could forge an admin token. Must become a hard boot-time failure, not
+     a silent fallback.
+
+  3. The BYO/IH item name-alias map ("byo_fix") is hand-copied into FOUR
+     separate SQL blocks across lib/queries.ts, each with slightly different
+     contents. They have already drifted once this session (the getMEItems
+     copy is measurably sparser than the other three) and caused real bugs
+     (Harvest Chicken Bowl cost collision). This WILL happen again the next
+     time someone adds a menu item, because there is no single source of
+     truth enforcing the four copies stay identical.
+
+Bottom line for a "nothing hardcoded" v2: this is fundamentally a DATA
+MODELING project, not a rewrite. ~90% of the work is: create 6-8 small
+Postgres config tables, backfill them from the current hardcoded lists
+(one-time script), point the existing SQL at the tables via JOINs instead of
+inline VALUES/CASE, and build one small internal admin screen to edit them
+(you already have the admin-role plumbing from this session — reuse it).
+The query logic itself (weighted averages, period-fallback rules, 1/2-and-1/2
+repricing, quadrant thresholds) is business logic, not hardcoding, and should
+NOT change.
+
+
+2. HOW TO READ THIS DOCUMENT
+================================================================================
+
+Section 3 is the full inventory: every hardcoded thing, where it lives, why
+it exists, and how many copies of it exist.
+
+Section 4 is "kab fategi" — concrete scenarios that will break the dashboard
+TODAY, in order of how soon they will realistically happen.
+
+Section 5 is the V2 blueprint: proposed table schemas, which hardcodes each
+one replaces, and what the SQL/TS changes look like at a high level.
+
+Section 6 is a phased migration plan with effort estimates.
+
+Section 7 is a flat appendix table (file, line, what, risk) for quick lookup.
+
+
+3. COMPLETE INVENTORY OF HARDCODED ELEMENTS
+================================================================================
+
+3.1 NAME-MAPPING TABLES (item identity)
+--------------------------------------------------------------------------
+(A) "byo_fix" raw→clean canonical-name alias table
+    Purpose: Toast stores BYO bowls/burritos and "- In House" variants under
+    short/raw names; every query needs to fold these into one canonical name
+    (e.g. 'Grain Bowl' + 'Grain Bowl - In House' → 'BYO Grain Bowl').
+    Where it lives (4 INDEPENDENT COPIES, NOT ONE SHARED CONSTANT USED
+    EVERYWHERE — this is the #1 duplication risk in the codebase):
+      1. lib/queries.ts:120  BYO_FIX_CTE (module constant) — used by
+         getItems / getChannelItems / getLocationItems (3 call sites)
+      2. lib/queries.ts:659  inline copy inside getMEItems — SPARSER than
+         the others (7 rows vs ~27) — confirmed drift, root-caused a real
+         bug this session (Harvest Chicken Bowl cost collision)
+      3. lib/queries.ts:1180 inline copy inside getMEPinkSheets
+      4. lib/queries.ts:1571 inline copy inside getMEPinkSheetDetails
+    Row count: ~27 entries in copies 1/3/4, ~7 in copy 2.
+    Risk: any new BYO variant or IH-suffix rename must be added to all 4
+    copies by hand or numbers silently diverge between tabs (as already
+    happened).
+
+(B) Harvest Chicken Bowl special-case exclusion
+    Purpose: r365_item_cost stores Harvest Chicken Bowl's cost under the
+    SAME item_name_updated as the true "BYO Greens + Grains Bowl" recipe, at
+    the same period/menu — a genuine upstream data collision, not a bug in
+    this codebase. Worked around by matching on the more specific item_name
+    column and excluding it everywhere else.
+    Where it lives: 26 occurrences across lib/queries.ts (getMEItems,
+    getMEPinkSheets, getMEPinkSheetDetails, getItemCosts — every single
+    `avg_cost > 0` filter reading r365_item_cost has an extra
+    `AND item_name <> 'Harvest Chicken Bowl - In House'` clause, plus 3
+    dedicated `harvest_chicken_*` CTEs).
+    Risk: extremely fragile pattern-matched workaround for ONE upstream data
+    quality issue. Any other item that collides the same way (same
+    item_name_updated, different item_name, different real recipe) will
+    silently corrupt a totally unrelated item's cost, and no one will know
+    until someone notices a dollar figure looks wrong (as happened here).
+
+(C) Zero-base ("channel-agnostic") item list
+    Items: Side of Main, Side of Grain, Side of Sauce, Side of Veggie,
+    Homemade Juice, Handcrafted Juice for a Group - 1/2 Gallon.
+    Rule: these have IH cost = Online cost always (no per-channel cost of
+    their own), confirmed as a deliberate business rule 2026-07-03.
+    Where it lives (2 copies, same list, different languages):
+      - lib/queries.ts:1421  zero_base(nm) AS (VALUES ...) — SQL
+      - lib/pinkSheetCost.ts:146  ZERO_BASE_ITEMS (JS Set) — client-side
+    Risk: low currently (list is small and stable), but a new zero-base item
+    (e.g. a future "Side of X") needs a synchronized 2-file edit.
+
+(D) Menu-group → category / sub-category taxonomy
+    This is the single biggest hardcoded surface area in the app. Toast's
+    menu_group field is a free-text string with no canonical ID; the
+    dashboard classifies revenue into Entrees / Sides / NA Drinks / Alc
+    Drinks / Sweets / Retail / Kids Meal / Other via string matching.
+    Where it lives (parallel SQL + TS implementations that must be kept in
+    lockstep by hand):
+      - lib/constants.ts: NORM_CAT1_SQL, NORM_CAT2_SQL, GRP_TO_CAT_SQL,
+        ITEM_SUBCAT_SQL, GRP_TO_SUBCAT_SQL (5 separate SQL CASE blocks)
+      - lib/constants.ts: GRP_TO_CAT_MAP, ITEM_SUBCAT_MAP, GRP_TO_SUBCAT_MAP
+        (3 TS object literals — line-for-line re-implementations of 3 of the
+        5 SQL blocks above, for client-side/JS-side classification)
+      - lib/queries.ts:42  CAT1 — an ADDITIONAL, THIRD layer of override on
+        top of the above: hardcoded canonical_name IN (...) exceptions for
+        'That Fire Hot Sauce (Bottle)'/'- Side' → Retail, and 'Harvest
+        Chicken Bowl'/'Spicy Chili Chicken Bowl'/'Chicken Tikka Burrito' →
+        Entrees (these three don't classify correctly via menu_group alone)
+      - components/tabs/NeedsReview.tsx: CATEGORIES array + MENU_GROUPS map
+        (a FOURTH, independent copy, used only for the manual
+        "categorize uncategorized item" admin action)
+    Total distinct name/category literal strings across these ~9 blocks:
+    60+.
+    Risk: HIGH. This is the taxonomy most likely to need a new entry (new
+    menu item, new sub-category), and it is the most duplicated. A change
+    here today means finding and editing up to 4 files by hand with no
+    compiler or test to catch a missed spot.
+
+(E) Modifier-name alias table (Toast display name → R365 recipe name)
+    Where it lives: lib/modifierCost.ts, modifierAliasCaseSQL() — single
+    source of truth, ALREADY properly centralized (explicitly documented as
+    such in the file's own header comment: "every query that needs the alias
+    expansion must call modifierAliasCaseSQL rather than inlining its own
+    copy"). 7 aliases (tomato garlic, tikka masala, tamarind chili, peanut
+    sesame, coconut ginger, tandoori paneer, romaine).
+    This is the ONE part of the "name mapping" surface that is already done
+    the "right" way (one function, four callers) — hold this up as the
+    pattern to replicate for (A) and (D) above.
+    Risk: low (already centralized), but still a code constant, not data —
+    a new alias still requires a deploy.
+
+(F) One literal hardcoded modifier price
+    "spicy mango chutney" / "spicy mango chutney - side" = $0.1777, hardcoded
+    directly in lib/modifierCost.ts (both modifierCostBatchSQL and
+    modifierUnitCostSQL), explicitly commented "keep until R365 adds the
+    recipe row."
+    Risk: low/contained, but it is a real $ amount that can go stale
+    silently — no expiry check, no comment date.
+
+3.2 BUSINESS-RULE CONSTANTS (rates, thresholds, formulas)
+--------------------------------------------------------------------------
+(G) 3PD cost uplift ×1.18 ("packaging/delivery cost markup")
+    Hardcoded independently in AT LEAST 9 places: lib/queries.ts (6
+    occurrences across getMEItems/getMEPinkSheets), components/Dashboard.tsx
+    (2 occurrences, both the current-period and prev-period per-channel
+    recompute), components/tabs/MEOverall.tsx (2), components/tabs/
+    PinkSheets.tsx (1 display-only recompute).
+    Risk: MEDIUM-HIGH. If this rate ever changes (it is a real operational
+    packaging-cost assumption, not a law of physics), it must be changed in
+    9+ places with zero automated way to verify all were caught.
+
+(H) 3PD price "×1.22 markup" — VERIFIED NOT A CODE HARDCODE
+    components/tabs/MenuEngineering.tsx displays a "×1.22" label next to 3PD
+    prices, and lib/types.ts documents avg_price_3pd as "includes ×1.22
+    markup." Checked lib/queries.ts:1022 directly: avg_price_3pd is computed
+    as a plain SUM(revenue)/SUM(qty) average for 3PD orders — NO 1.22
+    multiplier is applied anywhere in this codebase. The "×1.22" is
+    describing a fact about the SOURCE data (Toast's 3PD/delivery menu
+    prices are themselves already marked up ~22% over base menu price as an
+    upstream business practice) — it is documentation, not a hardcode, and
+    needs no migration. Listed here only so v2 work doesn't waste time
+    hunting for a multiplier that doesn't exist in code.
+
+(I) Menu-mix "High/Low" threshold multiplier ×0.7
+    Formula: an item is "High mix" if its share of portfolio quantity is
+    above (1/n_items) × 0.7. This 0.7 is a deliberate business calibration
+    (AppScript-derived), hardcoded independently in 5 places: lib/queries.ts
+    (1), components/Dashboard.tsx (1), components/tabs/MEOverall.tsx (3).
+    Risk: MEDIUM — same "N places to edit, no way to verify all changed"
+    problem as (G).
+
+(J) Fiscal period uplift/exclusion vendor lists
+    A ~25-entry hardcoded exclusion list of catering vendor/menu_group
+    names ('Aramark','BAG TAX','Cater Cow','Catering Bundles', 'EzCater...',
+    'Fooda','HUNGRY','Metz','Sharebite','Taher','TERRITORY','ZeroCater',...)
+    used to keep 3rd-party catering marketplace noise out of getMEItems'
+    numbers. A SEPARATE, overlapping (not identical) vendor list appears
+    twice more in lib/queries.ts (~line 2132, ~2152) for payment-source
+    classification ('Fooda','Aramark','Eurest','Metz Corp',...).
+    Risk: MEDIUM — vendor rosters change over time (new catering platforms
+    added, old ones dropped) and there is no admin UI to manage this list;
+    every new vendor requires a code change, and the 2 overlapping-but-not-
+    identical copies can drift.
+
+3.3 CHANNEL / MENU TAXONOMY
+--------------------------------------------------------------------------
+(K) CHANNEL_FROM_MENU_SQL — the menu_name → channel_code mapping
+    Location: lib/constants.ts:5-16. Single source of truth for THIS
+    mapping specifically (good — it is referenced via ${CH}/${CHANNEL_SQL}
+    everywhere, not copy-pasted) BUT:
+      - The mapping itself is a hardcoded literal CASE list of 8 exact
+        menu_name strings, no DB-backed lookup table.
+      - Its ELSE branch is `'OFFSITE'` — see Section 4.1, this is the
+        single highest-risk fragility point in the app.
+    CHANNELS array (same file, line 23-32) duplicates the code→label→color
+    mapping again as a parallel hardcoded array (8 entries) that must stay
+    in sync with the CASE statement by hand (adding a channel means editing
+    both the SQL CASE AND the CHANNELS array).
+
+(L) getMEItems' OWN, narrower channel bucket definition
+    getMEItems re-derives IH/LO/3PD (not the 8-value CHANNEL_SQL taxonomy)
+    via its own separate CASE statement on menu_name (lib/queries.ts:676-680)
+    rather than deriving from CHANNEL_SQL's output. This is a SECOND,
+    independently-maintained channel taxonomy living next to (K). The
+    Dashboard.tsx ME_CHANNELS constant (['IN_HOUSE','APP','TPD',
+    'TPD_MARKUP']) is yet a THIRD encoding of "which of the 8 channel codes
+    roll up into ME's IH/LO/3PD," used only for the client-side location-
+    scaling recompute added this session.
+    Risk: three independent encodings of essentially the same fact (how
+    Toast menu_name buckets into a channel) that must be kept consistent by
+    a human, forever.
+
+(M) BUCKET_MENUS (r365 "menu" values allowed per cost-entry bucket)
+    Introduced this session for the admin cost-entry tool. Hardcoded
+    IDENTICALLY in TWO places: app/api/costs/route.ts:10 (server-side
+    validation) and components/tabs/NeedsReview.tsx:38 (client-side
+    dropdown options) — the code comment in NeedsReview.tsx explicitly
+    flags this as "must match exactly," i.e. a known, accepted duplication
+    risk introduced deliberately for lack of a shared config source at the
+    time.
+
+3.4 LOCATIONS
+--------------------------------------------------------------------------
+(N) LOCATION_COLORS — lib/constants.ts:45-51. A hardcoded 5-entry map
+    (BALLPARK/MOSAIC/MVT/NL/ROCKVILLE → hex color) for chart coloring. The
+    actual location LIST is properly DB-driven already (getLocations() reads
+    dim_location — this is a genuinely good pattern, hold it up as the
+    template), but the per-location DISPLAY COLOR is not — a 6th location
+    added to dim_location gets no entry here and likely falls through to
+    some undefined/default color in whatever chart renders it.
+
+3.5 FISCAL PERIODS
+--------------------------------------------------------------------------
+(O) FISCAL_PERIODS — lib/constants.ts:239-248. A hardcoded array of 8
+    fiscal periods (P1 2026 – P8 2026) with literal start/end dates.
+    CONFIRMED DEAD CODE — grepped across the entire app/lib/components
+    tree, this constant is defined but never imported or referenced
+    anywhere. The REAL period data already comes correctly from the DB via
+    getPeriods() → dim_fiscal_period (good pattern, matches (N) above).
+    Risk: none functionally (unused), but it is a maintenance trap — a
+    future engineer may "fix" a period bug by editing this dead constant
+    and wonder why nothing changes. Should simply be deleted in v2 cleanup,
+    independent of the rest of the migration.
+
+3.6 AUTH / USERS (introduced this session)
+--------------------------------------------------------------------------
+(P) USERS_JSON env var as the entire user database
+    All login credentials (email → bcrypt hash → role) live in a single
+    JSON blob inside an environment variable, edited by hand (or by a
+    one-off Node script, as done this session) rather than a database
+    table. No self-serve signup, no password reset, no audit log of who
+    logged in when, no per-user last-login tracking, no way to revoke a
+    single user without redeploying.
+    Extra fragility discovered THIS session: Next.js's built-in dotenv-
+    expand logic tries to interpolate `$...` sequences inside .env file
+    values as variable references — since bcrypt hashes are FULL of dollar
+    signs ($2b$10$...), every hash must be manually escaped (`\$`) in the
+    LOCAL .env file specifically, or logins silently break with no error
+    beyond "Invalid credentials." (Vercel's dashboard-injected env vars do
+    NOT have this problem since they bypass the file-parsing/expansion
+    step — but this asymmetry itself is a footgun: the same value needs a
+    DIFFERENT escaping convention depending on which environment it's
+    pasted into.)
+
+(Q) JWT_SECRET silent insecure fallback
+    lib/auth.ts:3 — `process.env.JWT_SECRET ?? 'dev-secret-change-me'`. If
+    the env var is ever unset on any deploy (a typo'd Vercel env var name, a
+    forgotten env var on a new preview environment, etc.), the app does NOT
+    fail loudly — it silently signs and verifies tokens with a well-known,
+    public (checked into git history via this very audit's earlier
+    exchanges) fallback secret. This is the most serious finding in this
+    document from a pure security standpoint.
+
+(R) Two-tier role model only ('admin' | 'user')
+    lib/auth.ts Role type. No granular per-tab or per-action permissions —
+    "admin" is all-or-nothing (BYO + Pink Sheets + cost-entry tool). Adding
+    a third tier (e.g. "read-only analyst who can see Pink Sheets but not
+    write costs") requires a code change to every place that currently
+    checks `isAdmin`/`role === 'admin'`.
+
+3.7 TAB / UI CONFIGURATION
+--------------------------------------------------------------------------
+(S) TABS array + TAB_FILTERS map — components/Dashboard.tsx:20-56. Which
+    tabs exist, their icons, their admin-only flag, and which universal
+    filters (channel/category/location) apply to each, are all hardcoded
+    parallel arrays/objects that must be edited together to add a tab.
+    Reasonable for a 13-tab app maintained by one team, but is "hardcoded
+    UI config" in the literal sense the user asked about.
+
+(T) EntreeMix GROUP_THEME / GROUP_ORDER / GROUP_LABEL — components/tabs/
+    EntreeMix.tsx:80-161. Hardcoded color theme, sort order, and raw-to-
+    pretty name mapping for menu groups (BYO Bowls, Classic Indian Plates,
+    etc.), a FOURTH independent copy of "what is a menu group" logic
+    alongside (D)'s taxonomy blocks.
+
+3.8 CONNECTION / INFRASTRUCTURE PATTERNS
+--------------------------------------------------------------------------
+(U) pool() Neon connection factory duplicated 4 times, byte-for-byte
+    identical, in lib/queries.ts and 3 separate app/api/*/route.ts files,
+    each opening a brand-new Postgres connection Pool per request and
+    manually calling db.end(). A SEPARATE, apparently-intended shared
+    helper already exists (lib/db.ts, using neon()'s HTTP driver) but is
+    NOT ACTUALLY USED anywhere — it is orphaned/dead code sitting next to
+    4 hand-copied reinventions of the same concept.
+
+(V) BLOB_READ_WRITE_TOKEN env var — present in .env, zero references
+    anywhere in the codebase (grepped for @vercel/blob and the token name
+    itself). Either leftover from a template/future feature, or a forgotten
+    integration. Flag for the user to confirm intent; not touched by this
+    audit.
+
+(W) cacheLife('seconds') — lib/queries.ts loadDashboardData. A single
+    hardcoded Next.js Cache Components TTL, changed once this session from
+    'minutes' to 'seconds' specifically to work around stale-data confusion
+    during active development. This is a reasonable dev-time value but is
+    itself a hardcoded operational parameter with no environment-based
+    override (e.g. you may want 'minutes' or longer in true production to
+    reduce DB load once active development slows down).
+
+
+4. "KAB FATEGI" — FRAGILITY / FAILURE-MODE CATALOG
+================================================================================
+Ordered by how soon each is realistically likely to bite, not by abstract
+severity.
+
+4.1 — WILL HAPPEN THE NEXT TIME TOAST SETTINGS CHANGE
+    Trigger: a new revenue center / menu_name is added in Toast (new
+    delivery platform, new POS terminal config, a seasonal pop-up menu,
+    even a typo'd menu name during Toast admin work).
+    What happens: CHANNEL_FROM_MENU_SQL's `ELSE 'OFFSITE'` silently buckets
+    every order line under that new menu_name into Offsite revenue. No
+    error. No warning banner. Numbers just quietly drift wrong across every
+    tab that uses channel breakdowns, until someone manually notices Offsite
+    revenue looks unusually high and traces it back.
+    Fix priority: HIGHEST. See Section 5.1.
+
+4.2 — WILL HAPPEN THE NEXT TIME A MENU ITEM IS RENAMED OR ADDED
+    Trigger: a new BYO bowl variant, a new "- In House" suffix naming
+    pattern, or R365 introduces another item_name/item_name_updated
+    collision like Harvest Chicken Bowl.
+    What happens: the 4 independent byo_fix copies (3.1.A) or the 26-site
+    Harvest-Chicken-style exclusion pattern (3.1.B) need to be found and
+    edited by hand in multiple files. Missing even one copy produces a
+    dashboard where SOME tabs show the right number for an item and OTHERS
+    show a different (wrong) one for the exact same item — which is exactly
+    the class of bug that consumed a large fraction of this session's
+    effort (Paneer Tikka Bowl $3.76 vs $3.70 mismatch, Harvest Chicken Bowl
+    $0 cost, Homemade Juice IH≠Online regression).
+    Fix priority: HIGHEST. See Section 5.2.
+
+4.3 — WILL HAPPEN THE NEXT TIME A MENU GROUP OR CATEGORY IS INTRODUCED
+    Trigger: a new item that doesn't cleanly fall into an existing
+    menu_group, or a menu_group whose category should change.
+    What happens: up to 4 files (constants.ts SQL blocks, constants.ts TS
+    maps, queries.ts CAT1 override, NeedsReview.tsx CATEGORIES/MENU_GROUPS)
+    may each need a matching edit. If only some are updated, an item can
+    show one category in the ME/Item Mix tabs and a different (or "Other")
+    category in the Needs Review categorization tool.
+    Fix priority: HIGH. See Section 5.3.
+
+4.4 — WILL HAPPEN ON THE NEXT ENV VAR / DEPLOY MISTAKE
+    Trigger A: JWT_SECRET env var missing/misspelled on any environment.
+    What happens: app doesn't crash — it silently accepts the hardcoded
+    fallback secret, a real security hole (anyone with knowledge of the
+    fallback string can mint an admin token).
+    Trigger B: pasting USERS_JSON into a LOCAL .env file without escaping
+    `$` in the bcrypt hash.
+    What happens: login silently fails with "Invalid credentials" — no
+    indication the root cause is dotenv-expand mangling the value, not a
+    wrong password. (Already hit and fixed once this session.)
+    Fix priority: HIGH (security) / MEDIUM (DX). See Section 5.4.
+
+4.5 — WILL HAPPEN THE NEXT TIME A NEW LOCATION OPENS
+    Trigger: RASA opens a 6th location.
+    What happens: getLocations() correctly picks it up (DB-driven, good),
+    but LOCATION_COLORS (3.4.N) has no entry for it, so any chart keying
+    color off that map either falls back to some default/undefined color or
+    (depending on the specific component's fallback handling, not audited
+    line-by-line here) potentially renders inconsistently across tabs.
+    Fix priority: MEDIUM.
+
+4.6 — WILL HAPPEN IF/WHEN THE 3PD UPLIFT RATE OR MIX-THRESHOLD RATIO EVER
+    CHANGES (business decision, e.g. packaging cost renegotiation)
+    Trigger: ops decides the 1.18× or 0.7× constants need to change.
+    What happens: someone has to find and edit 9 (for 1.18) or 5 (for 0.7)
+    separate literal occurrences across both SQL and TS, by hand, with no
+    single source of truth and no automated check that all copies match.
+    History shows this exact class of drift already happened once this
+    session with the byo_fix tables — there's no reason to expect the rate
+    constants are any less prone to it.
+    Fix priority: MEDIUM. See Section 5.5.
+
+4.7 — LOW-URGENCY BUT REAL: CATERING VENDOR ROSTER DRIFT
+    Trigger: a new catering marketplace/vendor starts sending orders, or an
+    old one is discontinued.
+    What happens: the vendor exclusion list (3.2.J) and the payment-source
+    vendor list don't automatically agree (they are already NOT identical
+    today), so a vendor might be excluded from ME numbers but still show up
+    unclassified in Payment Source, or vice versa.
+    Fix priority: LOW-MEDIUM.
+
+4.8 — LATENT, NOT YET TRIGGERED: CONNECTION-PER-REQUEST PATTERN
+    Every API route + every dashboard load opens a brand-new Postgres
+    Pool via 4 independently copy-pasted pool() functions and manually
+    tears it down. Under any real concurrent load (multiple admins editing
+    costs simultaneously, multiple users loading the dashboard at once) this
+    is a connection-churn pattern that Neon's serverless driver is designed
+    to tolerate reasonably well, but it is not a pooled/singleton pattern
+    and has no shared retry/error-handling logic across the 4 copies.
+    Fix priority: LOW today, MEDIUM as usage grows. See Section 5.6.
+
+
+5. V2 BLUEPRINT — CONFIG-DRIVEN ARCHITECTURE
+================================================================================
+Guiding principle: the WEIGHTED-AVERAGE MATH, PERIOD-FALLBACK RULES, 1/2-AND-
+1/2 REPRICING, AND QUADRANT CLASSIFICATION FORMULAS ARE NOT HARDCODES — THEY
+ARE THE PRODUCT. Do not "fix" them. Only the NAME/CATEGORY/RATE LOOKUP DATA
+described in Section 3 should move out of code.
+
+5.1 — Fix the OFFSITE catch-all (do this FIRST, independent of everything
+      else, smallest possible change with the highest risk reduction)
+    - Change CHANNEL_FROM_MENU_SQL's `ELSE 'OFFSITE'` to `ELSE 'UNKNOWN'`.
+    - Add a lightweight "unknown channel" surfacing mechanism: either (a) a
+      new count on the existing Needs Review / Open Items summary banner,
+      or (b) a scheduled check that alerts if any UNKNOWN-bucket revenue
+      appears in a period. Either is a small addition since the
+      infrastructure (Needs Review tab, admin-only sections) already
+      exists from this session.
+    - This alone converts "silent wrong number" into "visible, obviously-a-
+      bug number," which is the single highest-leverage change available.
+
+5.2 — Replace byo_fix / Harvest-Chicken-style exclusions with a real table
+    Proposed table: analytics.item_name_alias
+      raw_name         TEXT PRIMARY KEY   -- Toast's literal canonical_name
+      canonical_name   TEXT NOT NULL      -- the PMIX display name
+      applies_to       TEXT               -- optional: 'all' | 'ih' | 'online'
+                                             (most rows are 'all' today, but
+                                             this column future-proofs the
+                                             rare cases like Harvest Chicken
+                                             Bowl where a raw name should
+                                             ONLY resolve in one channel)
+      notes            TEXT               -- freeform, e.g. why this alias
+                                             exists / when it was added
+      created_at       TIMESTAMPTZ DEFAULT NOW()
+    Migration: one-time script reads the UNION of all 4 current byo_fix
+    literal lists (dedup by raw_name, flag any raw_name whose `clean`
+    value DIFFERS between copies for manual review before insert — this
+    is exactly how the earlier Harvest Chicken Bowl drift would have been
+    caught automatically instead of by chance).
+    Query change: every `WITH byo_fix(raw, clean) AS (VALUES ...)` becomes
+    `LEFT JOIN analytics.item_name_alias bf ON bf.raw_name = fol.canonical_name`
+    — a mechanical, low-risk find/replace once the table is seeded, since
+    the join shape (bf.raw / bf.clean vs bf.raw_name / bf.canonical_name)
+    is nearly identical to today's.
+    For the Harvest-Chicken-style item_name/item_name_updated collision
+    problem specifically: this is really an R365 EXPORT data quality issue,
+    not something a name-alias table alone fixes. Recommend a SEPARATE
+    small table, analytics.item_cost_key_override, that lets an admin
+    explicitly say "for raw item_name X, use item_name Y's cost row
+    instead" — a generalized, admin-editable version of today's hand-coded
+    harvest_chicken_ih CTE, so the NEXT collision (there will be one) is a
+    2-minute admin-UI entry instead of a new SQL CTE + a session's worth of
+    debugging.
+
+5.3 — Replace the 4-copy category/sub-category taxonomy with 2 real tables
+    Proposed tables:
+      analytics.category_map
+        menu_group   TEXT PRIMARY KEY
+        category     TEXT NOT NULL        -- 'Entrees','Sides',...
+        sub_category TEXT
+      analytics.item_category_override     -- ALREADY EXISTS as of this
+                                             session (created ad-hoc by
+                                             app/api/review/categorize-item)
+                                             — extend it to be the ONE
+                                             place canonical_name-level
+                                             overrides live (folding in the
+                                             'That Fire Hot Sauce'/'Harvest
+                                             Chicken Bowl' hardcoded
+                                             exceptions from CAT1 too)
+    Query change: NORM_CAT1_SQL/NORM_CAT2_SQL/GRP_TO_CAT_SQL/ITEM_SUBCAT_SQL/
+    GRP_TO_SUBCAT_SQL's giant CASE statements all collapse into a single
+    JOIN against category_map (by menu_group) with item_category_override
+    taking priority (by canonical_name) — same override-priority ORDER that
+    already exists conceptually (item-level override beats menu_group
+    default), just data-driven instead of code-driven.
+    This ALSO deletes the client-side GRP_TO_CAT_MAP/ITEM_SUBCAT_MAP/
+    GRP_TO_SUBCAT_MAP TS duplicates entirely — once the DB is the source of
+    truth, whatever needs client-side classification can just read the
+    category/sub_category columns already returned by the queries, instead
+    of re-deriving them in JS from a hardcoded mirror.
+    NeedsReview.tsx's CATEGORIES/MENU_GROUPS constants become a simple
+    `SELECT DISTINCT category, sub_category FROM category_map` dropdown
+    population instead of a hardcoded list — meaning a brand-new category
+    doesn't need a code change AT ALL, just a new category_map row (which,
+    per the admin-tool pattern from this session, could even get its own
+    tiny admin form).
+
+5.4 — Config-driven business-rule constants
+    Proposed table: analytics.dashboard_config (simple key/value + type)
+      config_key    TEXT PRIMARY KEY   -- 'rate_3pd_cost_uplift',
+                                          'rate_3pd_price_markup',
+                                          'mix_threshold_multiplier'
+      config_value  NUMERIC NOT NULL
+      updated_at    TIMESTAMPTZ DEFAULT NOW()
+      updated_by    TEXT               -- admin email, reuse existing auth
+    loadDashboardData() fetches this alongside everything else (one extra
+    cheap query) and every one of the 9 (1.18) / 5 (0.7) hardcoded literal
+    sites gets replaced with a reference to the fetched config object,
+    THREADED THROUGH the existing prop-drilling pattern already used for
+    everything else in this codebase (DashboardData already carries dozens
+    of fields down to every tab — one more is not an architectural change).
+    This turns "edit 9 files, hope you found them all" into "edit one DB
+    row," and — combined with the admin infrastructure already built this
+    session — could literally be a 3rd tab in the existing admin-only Needs
+    Review cost-entry pattern ("Dashboard Settings").
+
+5.5 — Auth hardening (independent of the DB-migration work, do ASAP)
+    - JWT_SECRET: remove the `?? 'dev-secret-change-me'` fallback entirely;
+      throw at module load time if the env var is missing. Fail loud, not
+      quiet.
+    - USERS_JSON: migrate to a real Postgres users table (email, bcrypt
+      hash, role, created_at, last_login_at) — removes the $-escaping
+      footgun entirely (a real column value has no dotenv-expand exposure),
+      enables password reset / last-login auditing "for free" via normal
+      SQL, and makes adding/removing a user a plain INSERT/DELETE instead of
+      a hand-run Node script against a JSON blob in an env var.
+    - Role model: if more than 2 tiers are ever needed, add a
+      analytics.role_permissions table (role, tab_id, can_view, can_edit)
+      instead of hardcoding a new `role === 'x'` branch per tier.
+
+5.6 — Infrastructure cleanup (low priority, do opportunistically)
+    - Delete the unused lib/db.ts (or actually adopt it and delete the 4
+      duplicated pool() functions in its favor — either resolves the
+      dead-code confusion, adopting it is the better long-term choice since
+      neon()'s HTTP driver is the more serverless-appropriate pattern vs a
+      per-request WebSocket Pool).
+    - Delete the dead FISCAL_PERIODS constant (Section 3.5) — zero
+      functional risk, pure cleanup.
+    - Confirm intent of BLOB_READ_WRITE_TOKEN; remove from .env if truly
+      unused, or document what it's reserved for.
+    - Add a location_display table (location_code, display_name, color,
+      sort_order) so LOCATION_COLORS (3.4.N) becomes DB-driven alongside
+      the location list itself (which is already DB-driven) — a 6th
+      location then needs zero code changes, just a table INSERT.
+
+
+6. PHASED MIGRATION PLAN (SUGGESTED ORDER, NOT A COMMITMENT)
+================================================================================
+Phase 0 (hours, do independent of everything else):
+  - Fix CHANNEL_FROM_MENU_SQL's ELSE branch (5.1)
+  - Remove JWT_SECRET's silent fallback (5.5)
+  - Delete dead FISCAL_PERIODS constant, confirm/remove BLOB_READ_WRITE_TOKEN
+
+Phase 1 (1-2 sessions): Name/alias data migration
+  - Create analytics.item_name_alias, backfill from the 4 byo_fix copies
+    with automatic diff-detection between copies before insert
+  - Create analytics.item_cost_key_override, migrate the Harvest Chicken
+    Bowl special case into it as the first row
+  - Repoint all 4 byo_fix call sites at the new table
+
+Phase 2 (1-2 sessions): Category taxonomy migration
+  - Create/extend category_map + item_category_override
+  - Backfill from NORM_CAT1_SQL/GRP_TO_CAT_SQL/etc.
+  - Repoint SQL CASE blocks to JOINs; delete client-side TS mirror maps
+  - Repoint NeedsReview.tsx's hardcoded CATEGORIES/MENU_GROUPS to a live
+    DISTINCT query
+
+Phase 3 (0.5-1 session): Rate/threshold config table
+  - Create dashboard_config, seed with today's 1.18 / 1.22 / 0.7 values
+  - Repoint all 9+5 literal sites
+
+Phase 4 (1 session): Users table migration
+  - Create users table, migrate USERS_JSON entries in
+  - Repoint lib/auth.ts's getUsers/getUserRole
+  - Remove USERS_JSON env var entirely once verified
+
+Phase 5 (opportunistic, no rush): infra cleanup (5.6), vendor-roster table
+  for the catering exclusion lists (3.2.J), location_display table.
+
+Each phase is independently shippable and independently revertible — none
+of them require touching the actual business-logic math (weighted averages,
+period fallback, quadrant classification), which stays exactly as-is.
+
+
+7. APPENDIX — FLAT LOOKUP TABLE
+================================================================================
+Legend: Risk = How soon + how bad if it breaks. HIGHEST/HIGH/MEDIUM/LOW.
+
+ID  WHAT                                  WHERE (file:line)                 RISK
+--  ------------------------------------  --------------------------------  -------
+K   CHANNEL_FROM_MENU_SQL ELSE→OFFSITE    lib/constants.ts:5-16             HIGHEST
+Q   JWT_SECRET silent fallback            lib/auth.ts:3                     HIGHEST
+A   byo_fix (4 divergent copies)          lib/queries.ts:120,659,1180,1571  HIGHEST
+B   Harvest Chicken Bowl 26x exclusion    lib/queries.ts (26 occurrences)   HIGH
+D   category/sub-category (4-9 copies)   constants.ts + queries.ts:42      HIGH
+    + NeedsReview.tsx
+P   USERS_JSON $-escaping footgun         .env / lib/auth.ts                HIGH (DX)
+L   3 independent channel-bucket defs     queries.ts / Dashboard.tsx        MEDIUM
+G   ×1.18 3PD cost uplift (9+ copies)     queries.ts, Dashboard.tsx,        MEDIUM
+                                          MEOverall.tsx, PinkSheets.tsx
+I   ×0.7 mix threshold (5 copies)         queries.ts, Dashboard.tsx,        MEDIUM
+                                          MEOverall.tsx
+N   LOCATION_COLORS (no auto-add)         lib/constants.ts:45-51            MEDIUM
+J   catering vendor rosters (2 lists)     queries.ts (~698, ~2132, ~2152)   LOW-MED
+C   zero-base item list (2 copies)        queries.ts:1421, pinkSheetCost.ts LOW
+M   BUCKET_MENUS (2 copies, flagged)      api/costs/route.ts,               LOW
+                                          NeedsReview.tsx
+U   pool() duplicated 4x, lib/db.ts dead  queries.ts + 3 api routes         LOW→MED
+R   2-tier role model only                lib/auth.ts                       LOW
+S   TABS/TAB_FILTERS hardcoded config     Dashboard.tsx:20-56               LOW
+T   EntreeMix GROUP_THEME/ORDER/LABEL     EntreeMix.tsx:80-161              LOW
+E   modifier alias map (already good)     modifierCost.ts                  LOW
+F   spicy mango chutney = $0.1777         modifierCost.ts (2 occurrences)   LOW
+O   FISCAL_PERIODS — CONFIRMED DEAD CODE  lib/constants.ts:239-248          NONE
+V   BLOB_READ_WRITE_TOKEN — unused        .env                              NONE
+H   ×1.22 3PD price — VERIFIED NOT CODE   queries.ts:1022 is a plain avg,   NONE
+    (upstream Toast data fact, not a       no multiplier applied anywhere
+    computed multiplier)                                                    (no action)
+
+
+END OF DOCUMENT
+================================================================================

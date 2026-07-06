@@ -19,6 +19,24 @@ export const CHANNEL_FROM_MENU_SQL = `
 // Same expression for a named alias — use in SELECT as: ${CHANNEL_SQL} AS channel
 export const CHANNEL_SQL = CHANNEL_FROM_MENU_SQL.trim();
 
+// ─── Channel overrides (Needs Review "wrong channel" fixes) ──────────────────
+// analytics.channel_overrides (selection_guid PK, order_guid, correct_channel)
+// lets an admin permanently reassign a SPECIFIC LINE's channel from the Needs
+// Review tab — keyed on selection_guid (the per-line id), NOT order_guid, so
+// fixing one mistracked line in an otherwise-correct order never touches that
+// order's other, already-correct lines. EVERY query that derives channel from
+// menu_name and cares about accurate per-channel revenue/qty MUST join this
+// table (alias `co`, on selection_guid) and use CHANNEL_SQL_WITH_OVERRIDE
+// instead of CHANNEL_SQL — single shared expression so a correction is honored
+// identically everywhere, rather than hand-copied into each query (the exact
+// drift problem byo_fix already had). Queries that intentionally want the RAW,
+// un-overridden derivation (e.g. getNeedsReview's own "what does Toast
+// currently think this is" column) should keep using CHANNEL_SQL as-is.
+export const CHANNEL_OVERRIDE_JOIN_SQL = (selectionGuidExpr: string) =>
+  `LEFT JOIN analytics.channel_overrides co ON co.selection_guid = ${selectionGuidExpr}`;
+
+export const CHANNEL_SQL_WITH_OVERRIDE = `COALESCE(co.correct_channel, (${CHANNEL_FROM_MENU_SQL}))`.trim();
+
 // Channel metadata for UI
 export const CHANNELS = [
   { code: 'IN_HOUSE',    label: 'In-House',      color: '#9f7cef' },
@@ -40,6 +58,15 @@ export const CHANNEL_LABEL: Record<string, string> = Object.fromEntries(
 export const CHANNEL_COLOR: Record<string, string> = Object.fromEntries(
   CHANNELS.map(c => [c.code, c.color])
 );
+
+// Kids Meal is folded into Entrees everywhere in the UI — it is not a
+// separately-selectable category anywhere (the global category filter
+// dropdown, NeedsReview's categorize-item tool, etc. never offer "Kids
+// Meal" as an option). Single shared implementation — every tab that
+// groups/filters by category must use this instead of its own copy, so a
+// Kids Meal item's revenue always lands under Entrees, everywhere.
+export const normalizeCategory = (c: string | null | undefined): string =>
+  c === 'Kids Meal' ? 'Entrees' : (c || 'Other');
 
 // Location colors (ordered alphabetically by location code: BALLPARK, MOSAIC, MVT, NL, ROCKVILLE)
 export const LOCATION_COLORS: Record<string, string> = {

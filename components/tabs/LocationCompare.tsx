@@ -4,6 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
 } from 'recharts';
 import type { DashboardData } from '@/lib/types';
+import { normalizeCategory } from '@/lib/constants';
 
 const fmt$ = (v: number) =>
   `$${Math.round(v).toLocaleString('en-US')}`;
@@ -84,7 +85,7 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
 
   const locCatData = useMemo(() => {
     const meta: Record<string, string> = {};
-    items.forEach(i => { if (!meta[i.canonical_name]) meta[i.canonical_name] = i.category; });
+    items.forEach(i => { if (!meta[i.canonical_name]) meta[i.canonical_name] = normalizeCategory(i.category); });
     const map: Record<string, Record<string, { revenue: number; qty: number }>> = {};
     locationItems.forEach(r => {
       const cat = meta[r.canonical_name] ?? 'Other';

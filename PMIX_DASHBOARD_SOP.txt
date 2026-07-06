@@ -1,0 +1,614 @@
+================================================================================
+PMIX DASHBOARD — STANDARD OPERATING PROCEDURE (SOP)
+Generated: 2026-07-06
+Companion document: V2_HARDCODING_AUDIT.txt (technical hardcoding/fragility
+audit — read that one if you're a developer; read THIS one if you're using
+the dashboard day to day, training someone else on it, or need to explain a
+number to someone).
+================================================================================
+
+
+1. EXECUTIVE SUMMARY
+================================================================================
+
+The PMIX Dashboard is RASA's Product Mix & Menu Engineering analytics tool.
+It replaces a legacy Google Apps Script (PMIX_AppScript.txt) that produced
+"Pink Sheets" (per-item cost breakdowns) and Menu Engineering reports by
+hand, and re-implements the same math against a live Neon Postgres database
+fed by Toast POS exports (fact_order_lines, fact_modifiers) and R365
+accounting cost exports (r365_item_cost, r365_modifier_cost).
+
+At a glance, the dashboard answers five kinds of questions:
+  1. How much did we sell, to whom, through which channel, at which
+     location, over what date range? (Overview, Item Mix, Location Compare,
+     Channels)
+  2. What does each item actually cost us, including its modifiers, and is
+     that cost different by channel? (Pink Sheets, Entree Mix)
+  3. Which items are profitable AND popular vs. which need attention?
+     (Menu Engineering — the Star/Plow Horse/Puzzle/Dog quadrant system)
+  4. How are guests paying, and which items bring them back? (Payment
+     Source, Customer Retention)
+  5. What data-quality issues need a human to fix, and (for admins) how do
+     you fix a missing R365 cost directly from the dashboard? (Needs
+     Review, Open Items, Renames Audit)
+
+Two tabs (BYO Breakdown, Pink Sheets) plus one tool inside Needs Review
+(Missing R365 Costs entry) are ADMIN-ONLY as of 2026-07-04. Everything else
+is visible to any logged-in user.
+
+IMPORTANT CURRENT-STATE CAVEAT: the Location filter dropdown is intentionally
+DISABLED (hidden) on 4 tabs — Entree Mix, BYO Breakdown, Menu Engineering,
+and Pink Sheets — pending further validation of the location-scaling math
+(v2 item). On every other tab, Location genuinely re-filters/re-scales the
+numbers.
+
+
+2. DATA SOURCES & REFRESH CADENCE
+================================================================================
+- Sales/order data: Toast POS, landed in Postgres tables public.
+  fact_order_lines and public.fact_modifiers.
+- Cost data: R365 accounting exports, landed in analytics.r365_item_cost
+  and analytics.r365_modifier_cost, keyed by fiscal period (e.g. "P05-2026").
+- Fiscal calendar: public.dim_fiscal_period (the dashboard's period
+  dropdown, quarter buttons, and "P5 2026"-style labels all come from this
+  table — it is NOT a hardcoded list, it reflects whatever periods exist in
+  the database).
+- Locations: public.dim_location (5 as of this writing: BALLPARK, MOSAIC,
+  MVT, NL, ROCKVILLE) — also DB-driven, so a new location appears in every
+  location dropdown automatically without a code change.
+- The dashboard itself does not ingest data — it only reads. Whatever
+  refresh cadence feeds the Toast/R365 exports into these tables (outside
+  the scope of this app) determines how current the numbers are.
+- Page-level caching: the dashboard uses Next.js's Cache Components
+  feature with a short (~seconds) cache life, so a manual page refresh
+  will nearly always show the latest data in the underlying tables — you
+  do not need to "clear cache" for normal use. If numbers look stuck, a
+  hard refresh (Cmd/Ctrl+Shift+R) rules out browser-level caching.
+
+
+3. LOGGING IN & USER ROLES
+================================================================================
+- Login screen requires an email + password (no self-service signup).
+- Two roles: ADMIN and USER (regular). Role is baked into your session
+  token at login and lasts 8 hours before you need to log in again.
+- Regular users see 11 of the 13 tabs — everything except BYO Breakdown and
+  Pink Sheets.
+- Admins see all 13 tabs, PLUS an extra "Missing R365 Costs" section inside
+  the Needs Review tab that regular users don't see at all (not even a
+  grayed-out placeholder — it's fully hidden).
+- Credentials are managed by whoever administers the app's environment
+  variables (not self-service) — see V2_HARDCODING_AUDIT.txt Section 3.6
+  for how this works technically and its known rough edges.
+- "Sign out" button lives in the top-right of the header at all times.
+
+
+4. GLOBAL CONTROLS (the bar above the tabs — applies across most tabs)
+================================================================================
+
+4.1 Date Range picker (top-left, calendar icon)
+    - Quick select: Last 7 Days, Last 14 Days, Last 4 Weeks, This Month, YTD
+      (all relative to the latest date with data, not today's calendar date)
+    - Quarter buttons for the current year (Q1 Jan–Mar, Q2 Apr–Jun, Q3
+      Jul–Sep, Q4 Oct–Dec)
+    - Fiscal Period buttons (P1, P2, P3...) grouped by fiscal year — these
+      come straight from the accounting calendar in the database
+    - Custom range via an embedded calendar picker (pick any start/end date
+      within the data's actual min/max range)
+    - "Reset to default" link at the bottom returns to the app's default
+      view
+    - While a new range loads, a loading overlay briefly covers the screen
+
+4.2 Channel filter (multi-select checkboxes)
+    Options: In-House, Loyalty, 3PD, 3PD Markup, Catering, Catering 3PD,
+    Offsite, Open Items. "All Channels" is the default (nothing filtered).
+    Selecting one or more channels narrows every applicable chart/table to
+    just those channels' activity.
+
+4.3 Category filter (single-select dropdown)
+    Options are generated from whatever categories exist in the currently
+    selected channel(s) — typically Entrees, Sides, NA Drinks, Alc Drinks,
+    Sweets, Retail, Other (Kids Meal is always folded into Entrees). Vendor-
+    style channels (Catering/Catering 3PD/3PD Markup) collapse to "Other"
+    here to keep the list short — their real vendor breakdown lives inside
+    the Channels tab instead.
+
+4.4 Location filter (multi-select checkboxes)
+    Only shown if there is more than one location in the data. "All
+    Locations" is default. AS NOTED IN SECTION 1, this control is hidden
+    entirely on Entree Mix / BYO Breakdown / Menu Engineering / Pink Sheets
+    right now — those 4 tabs always show all-location, blended numbers
+    regardless of what you pick elsewhere.
+
+4.5 How the filters combine
+    - Channel, Category, and Location filters all combine with AND logic
+      (e.g. "In-House" + "Entrees" + "Rockville" = only in-house entree
+      sales at Rockville).
+    - Most tabs GENUINELY re-aggregate the underlying order-line data when
+      you filter (real recomputed dollars/quantities), not just hide rows.
+    - Cost figures (Pink Sheet-derived avg costs, R365 item costs) do NOT
+      change by location — R365 doesn't track cost per location at all, so
+      filtering to one location changes WHICH items appear and their
+      quantities/dollars, but never the underlying $/unit cost figure for
+      an item that still shows.
+    - "vs prev period" comparison deltas (seen throughout Overview) respect
+      whatever channel/category/location filter is currently active, so
+      you're always comparing filtered-to-filtered, not filtered-to-total.
+
+
+5. TAB-BY-TAB GUIDE
+================================================================================
+
+--------------------------------------------------------------------------
+5.1 OVERVIEW  (all users)
+--------------------------------------------------------------------------
+Purpose: The default landing tab — a top-line summary of the whole business
+for the selected date range/filters.
+
+Layout, top to bottom:
+  - 5 KPI cards: Items Sold, Net Revenue, Avg Margin, Unique Items, Top Item
+    (each with a "vs prior period" delta arrow/percentage when a comparable
+    prior period exists)
+  - "Sales trend" chart (weekly/daily revenue+qty line/bar chart) next to a
+    "Revenue by channel" donut chart
+  - "Top 8 items by revenue" bar chart (with a Top/Bottom toggle) next to a
+    "Revenue by category" (or sub-category, once a category is selected)
+    bar chart
+  - "Channel breakdown" table: Channel, Revenue, Revenue Mix (%), Items Sold
+
+Key definitions:
+  - Avg Margin = (Net Revenue − Total Cost) ÷ Net Revenue across all items
+    (blended across channels unless filtered)
+  - Unique Items = count of distinct real menu items (excludes "Open Items"
+    with no menu assignment)
+  - Top Item = highest-revenue single item for the current filter combo
+
+--------------------------------------------------------------------------
+5.2 ITEM MIX  (all users)
+--------------------------------------------------------------------------
+Purpose: A drillable item-level table — every item's qty/price/mix/cost,
+organized as a collapsible tree (Channel → Category → Sub-category → Item).
+
+Layout:
+  - Controls row: search box, menu-group dropdown, sort dropdown + direction
+    toggle, item count
+  - Collapsible tree table. Each header row (channel/category/sub-category)
+    shows a running total: "$X gross · $Y net · Z% of total." Click any
+    header to expand/collapse it.
+  - Item rows show: Item, Menu Group, QTY, Mix % (Qty), Gross Sales, Mix %
+    (Gross), Net Sales, Avg Price, Avg Cost
+
+Key definitions:
+  - Gross Sales = pre-discount revenue (ties to Toast's own reports)
+  - Net Sales = line_total, i.e. after discounts (used for most other tabs'
+    "revenue")
+  - Avg Cost cascade: tries Pink Sheet's "FINAL AVG COST WITH MODIFIER"
+    first (same number Pink Sheets itself displays), falls back to R365
+    Item Cost Lookup only if no Pink Sheet cost exists. Catering/Catering
+    3PD/Offsite/Open Items costs come ONLY from their own R365 menu — never
+    borrowed from another channel — and show "—" if genuinely missing
+    rather than guessing.
+
+GOTCHA: Item Mix does NOT apply the 3PD packaging cost uplift — Loyalty and
+3PD show the identical underlying "online" cost. If you compare an item's
+3PD cost here against its cost in Menu Engineering or Pink Sheets, Menu
+Engineering/Pink Sheets will show a HIGHER 3PD number (×1.18) — this is
+expected, not a bug (see Section 6, "3PD cost uplift").
+
+--------------------------------------------------------------------------
+5.3 ENTREE MIX  (all users — location filter currently disabled, see 1)
+--------------------------------------------------------------------------
+Purpose: A focused cost/modifier breakdown for entree items specifically —
+built for spotting which modifiers are driving an entree's cost up.
+
+Layout:
+  - "Select a category" quick-select dropdown to bulk-select a group of
+    entrees (e.g. all Bowls at once)
+  - Menu-group cards, color-themed by group (BYO Bowls, Bowls, Classic
+    Indian Plates, Plates, Burritos, Specialty Items, Kids, Drinks, Sides,
+    Retail — in that fixed display order)
+  - Per-item detail: In-House vs Online (LO+3PD) side-by-side section
+    breakdown, showing each modifier section (Base, Main, Sauce, Veggie,
+    Topping, Chutney + Dressing, Make It Meal, etc.) with a %/# toggle for
+    quantity display and a "weighted avg cost/unit" figure per section
+  - A "Cost %" column (in % mode) shows each section's share of the item's
+    total modifier cost
+  - COGS% health dot next to each item: green < 28% (good), yellow 28-35%
+    (ok), red > 35% (high) — this measures modifier cost as a % of price
+
+Key definitions:
+  - "Weighted avg cost/unit" = that section's total modifier cost ÷ total
+    modifier quantity in that section, for the selected channel
+  - "1/2 and 1/2" composite rows (half-and-half bowls) are re-priced as the
+    weighted average of the real halves in that section, not shown as a
+    separate flat price
+  - Zero-base items (Sides, Homemade Juice, Handcrafted Juice) show the
+    SAME cost for In-House and Online — this is a deliberate rule (these
+    items have no in-house-specific cost data at all), with an explanatory
+    note displayed under the In-House header for those items
+
+--------------------------------------------------------------------------
+5.4 LOCATION COMPARE  (all users — has its own internal location picker,
+                       separate from the global one)
+--------------------------------------------------------------------------
+Purpose: Side-by-side comparison of 2+ (or all) locations at once.
+
+Layout:
+  - Controls: location multi-select + Metric dropdown (Revenue / Qty Sold /
+    % Mix)
+  - Per-location KPI cards (color-coded), each showing the selected metric,
+    "X items sold," a "% of category [metric]" share, and that location's
+    top-selling item (★)
+  - "[Metric] by location" bar chart + "Category mix by location" table
+    (with a %/$ toggle; bolds the max value per category row)
+  - "Top/Bottom items by location" cards (Top/Bottom toggle, %/# toggle),
+    up to 10 items per location
+  - "Item comparison" table: search, row-limit (10/20/50/100/All), sort-by
+    (Avg or any specific location), sort direction — one column per active
+    location plus an "Avg" column, max value per row bolded
+
+GOTCHA: the "% of category" share on the KPI cards and the "Avg" column in
+the comparison table are both computed only among the CURRENTLY SELECTED
+locations, not all 5 — so narrowing from 5 locations to 2 will make
+percentages jump (they resum to 100% across just the 2 you picked). This is
+by design (comparing 2 locations to each other, not to the whole company),
+but is worth knowing before you assume something changed.
+
+--------------------------------------------------------------------------
+5.5 CHANNELS  (all users)
+--------------------------------------------------------------------------
+Purpose: Compares revenue and item/vendor mix across ordering channels.
+
+Layout:
+  - Per-channel KPI cards (revenue, % of total, items sold)
+  - "Revenue by channel" bar chart + "Channel summary" table (Channel,
+    Revenue, Mix)
+  - "Breakdown by channel" cards — one per channel, each a bar chart of
+    that channel's category (or, for Loyalty/Catering/Catering 3PD/
+    Offsite, VENDOR/menu-group) mix
+  - "Top/Bottom items by channel" cards (Top/Bottom toggle, %/# toggle)
+  - "Item channel split" table: Item, Total, then one $ column per channel
+    (sortable by clicking any column header)
+
+Note: Loyalty, Catering, Catering 3PD, and Offsite are treated as "vendor
+channels" throughout this tab — their breakdowns group by vendor/menu-group
+rather than by menu category, since those channels are mostly third-party
+marketplace or event-based volume rather than typical dine-in/pickup mix.
+
+--------------------------------------------------------------------------
+5.6 BYO BREAKDOWN  (ADMIN ONLY, location filter disabled)
+--------------------------------------------------------------------------
+Purpose: Modifier-level breakdown specifically for Build-Your-Own bowl
+items — bases, mains, sauces, veggies, toppings — aggregated across all BYO
+items rather than one item at a time (contrast with Entree Mix, which is
+per-item).
+
+Admin-only as of 2026-07-04. Not visible to regular users at all.
+
+--------------------------------------------------------------------------
+5.7 PAYMENT SOURCE  (all users)
+--------------------------------------------------------------------------
+Purpose: How guests are paying — card processors vs. alternative/loyalty
+payment types — and how that splits by location.
+
+Layout:
+  - 4 KPI cards: Total Payments, Card, Alt Payments, Avg Ticket
+  - "Card vs Alt Payment split" donut + "Top 10 sources by revenue" bar
+  - "Revenue by location" stacked bar (Card + Alt stacked per location) —
+    only shown when relevant
+  - Searchable table: Source, Type (Card/Alt Payment badge), Transactions,
+    Revenue, Avg Ticket, Revenue Mix (%)
+
+GOTCHA: when you apply a Location filter here, the table doesn't just hide
+rows — it re-aggregates from per-location granular data and recomputes
+Revenue Mix % from scratch for the filtered subset, so percentages will
+resum to 100% of whatever location(s) you picked, not the whole company.
+
+--------------------------------------------------------------------------
+5.8 MENU ENGINEERING  (all users — location filter disabled, see 1)
+--------------------------------------------------------------------------
+Purpose: THE core "which items should I promote / re-price / cut" tool.
+Classifies every item into one of 4 quadrants based on profitability (margin
+%) and popularity (menu mix %):
+
+    STAR        High margin + High mix  → popular AND profitable, keep
+                                           promoting
+    PLOW HORSE  Low margin  + High mix  → popular but low-profit, consider
+                                           a price increase or cost reduction
+    PUZZLE      High margin + Low mix   → profitable but underordered,
+                                           needs marketing/menu placement
+    DOG         Low margin  + Low mix   → low-profit and unpopular,
+                                           candidate for rework/re-price/
+                                           removal
+
+Layout:
+  - Cost view dropdown: Overall (one row per item×channel), Blended
+    (IH+LO+3PD combined), In House, Loyalty/APP, 3rd Party Delivery
+  - View toggle: Table / Scatter / Bar Chart
+  - Quadrant cards (click to filter the table to just that quadrant) —
+    each shows item count and net sales; hovering the label shows the full
+    definition
+  - In Scatter/Bar view only: a Top 5 / Bottom 5 toggle plus 4 dedicated bar
+    charts (one per quadrant, always exactly 5 items each) so you can
+    immediately see your best Stars and worst Dogs by net sales
+  - Scatter chart: Menu Mix % (x-axis) vs Margin % (y-axis), with reference
+    lines at the portfolio-wide thresholds
+  - Export-to-CSV buttons for whichever table view is active
+
+Key definitions:
+  - Margin threshold = portfolio-wide (Net Sales − Total Cost) ÷ Net Sales
+  - Mix threshold = (1 ÷ number of items) × 0.7 — an item needs MORE than
+    70% of an "equal share" of total quantity to count as "High mix"
+  - "Overall" view shows one row PER ITEM PER CHANNEL (so a 3-channel item
+    appears 3 times) — this is intentional and matches the quadrant counts/
+    charts, which count channel-rows, not unique items, when in Overall view
+  - Cost figures use the SAME Pink Sheet cascade as Item Mix (Pink Sheet →
+    R365 fallback), but 3PD ALWAYS gets the ×1.18 packaging uplift here
+    (unlike Item Mix)
+
+--------------------------------------------------------------------------
+5.9 PINK SHEETS  (ADMIN ONLY, location filter disabled)
+--------------------------------------------------------------------------
+Purpose: The single source of truth for "what does this exact item cost,
+including every modifier, per channel" — the modern equivalent of the
+legacy Google Sheets "pink sheet" cost worksheets.
+
+Layout: pick an item, see two side-by-side channel views (In-House / Online
+= Loyalty+3PD combined), each broken into modifier sections in a fixed
+display order: Base, 1/2 Base, Main, 1/2 Main, Extra Main, Sauce, Veggie,
+Extra Veggie, Topping, Chutney + Dressing, Make It Meal. Each section shows
+its modifiers' quantities, unit costs, and a section subtotal, rolling up to
+a "FINAL AVG COST WITH MODIFIER" per channel, plus a computed "FINAL AVG
+COST — 3PD (×1.18)" figure.
+
+Special rules baked into this number (worth knowing when a number looks
+"off" vs. a spreadsheet you remember):
+  - "1/2 Main" rows are ALWAYS excluded from the total cost
+  - "1/2 Base" rows are excluded UNLESS the item has no real Base section at
+    all (in which case 1/2 Base IS the cost basis)
+  - "1/2 and 1/2" composite modifier rows are re-priced using the weighted
+    average of the real half-modifiers actually ordered in that section,
+    not a flat assumed split
+  - Zero-base items (Sides, Homemade Juice, Handcrafted Juice) show an
+    explanatory note and mirror their Online cost exactly for In-House,
+    since they have no in-house-specific modifier data of their own
+  - Costs always use the LATEST fiscal period overlapping your selected
+    date range (never blended across periods), even though quantities
+    shown are range-wide
+
+Every other tab that shows an "avg cost" (Item Mix, Menu Engineering,
+Entree Mix) pulls this EXACT computed number, not a separately-computed
+approximation — so if Pink Sheets and another tab ever disagree for the
+same item/channel, that is a bug, not expected behavior.
+
+--------------------------------------------------------------------------
+5.10 CUSTOMER RETENTION  (all users)
+--------------------------------------------------------------------------
+Purpose: Uses Bikky guest-level loyalty data to show which items bring
+guests back (return rate) and which get reordered (reorder rate).
+
+Layout:
+  - Info banner explaining the period and metrics
+  - Filters: Source (In-Store vs. 3PD + Loyalty), Category, Sub-Category,
+    Quadrant (Menu Engineering quadrant, cross-referenced)
+  - 4 KPI cards: Avg Return Rate, Avg Reorder Rate, Highest Reorder Item,
+    Highest Return Item
+  - Scatter chart (Return Rate vs Reorder Rate) with average reference lines
+  - Top 10 / Bottom 10 toggle + two ranked cards (by Reorder Rate, by
+    Return Rate) with period-over-period point-change arrows
+  - Searchable, sortable item-level table: Item, Period, Quadrant (badge),
+    Return Rate, Reorder Rate (both color-coded: green ≥25%, yellow ≥15%,
+    red below), Guests
+
+Key definitions:
+  - Return Rate = % of guests who returned within 90 days after ordering
+    this item
+  - Reorder Rate = % of guests who ordered this exact item again
+
+GOTCHA: Bikky reports item names in an OLDER, pre-cleanup naming convention
+(e.g. "Grain Bowl," "Kids BYO," "Burrito") that differs from the names used
+everywhere else in the dashboard (e.g. "BYO Grain Bowl," "Kids Meal," "BYO
+Indian Burrito"). The dashboard translates between the two automatically so
+quadrant/category lookups still work — you don't need to do anything, but
+if you're ever cross-referencing raw Bikky exports directly, expect the
+names to look different from what you see here.
+
+--------------------------------------------------------------------------
+5.11 RENAMES AUDIT  (all users)
+--------------------------------------------------------------------------
+Purpose: A data-hygiene check — flags items that Toast has recorded under
+more than one display name over time (same item, renamed at some point),
+so you can confirm the dashboard is still correctly treating them as one
+item.
+
+Layout: a single searchable table — Canonical name (current), Historical
+names (shown as strikethrough badges), Lifetime Qty, Lifetime $, Locations,
+First seen. If nothing has ever been renamed, shows a clean "all items have
+a single consistent name" message.
+
+--------------------------------------------------------------------------
+5.12 NEEDS REVIEW  (all users, PLUS an admin-only tool inside it)
+--------------------------------------------------------------------------
+Purpose: Two (regular users) or three (admins) review/cleanup workflows in
+one tab, chosen via a dropdown at the top:
+
+  A) Wrong Channel Orders (all users)
+     Orders that were assigned to the wrong channel in Toast (e.g. tagged
+     Offsite when they were really In-House) are listed individually. For
+     each: pick the correct channel from a dropdown (pre-filled with a
+     suggested channel) and click "Confirm" to write the fix directly to
+     the database. A running "X of Y orders updated" count tracks progress.
+     NOTE: confirming a fix here triggers a full page reload so the
+     corrected order is reflected everywhere immediately.
+
+  B) Uncategorized Items — present in the code but currently disabled/
+     hidden from the dropdown (not an active workflow right now).
+
+  C) Missing R365 Costs — ADMIN ONLY, added 2026-07-06
+     Lists every item × sales-channel combination that has real sales but
+     NO matching cost in R365 (broader than Open Items' "no cost" flag —
+     this catches items that DO have a normal channel but are still
+     missing a cost row for it). For each row: Item, Category, Menu Group,
+     Bucket (In-House / Online / Catering / Catering 3PD / Offsite), Qty,
+     Net Sales, plus editable Menu (which exact R365 menu value to write
+     to), Period (fiscal period), and Avg Cost fields. Clicking "Save"
+     writes the new cost directly into analytics.r365_item_cost — no need
+     to go find a spreadsheet or wait for the next R365 export.
+     This is a genuinely powerful admin tool: it closes the loop between
+     "the dashboard shows a missing cost" and "the cost is now fixed,"
+     entirely inside the dashboard, with no separate system to touch.
+
+--------------------------------------------------------------------------
+5.13 OPEN ITEMS  (all users)
+--------------------------------------------------------------------------
+Purpose: A narrower, related data-quality tab — specifically items sold
+with NO menu_name at all in Toast (couldn't be assigned to any channel).
+
+Layout:
+  - Warning banner explaining these appear as "Open Items" in channel
+    metrics but may need Toast menu configuration fixed
+  - 4 KPI cards: Open Items (count), Revenue Affected, Missing Cost,
+    Uncategorized
+  - Filters: search + issue-type dropdown (NO COST / UNCATEGORIZED /
+    MISSING MENU GROUP, color-coded badges)
+  - Table: Item Name, Issues (badges), Sales Category, Menu Group, Dining
+    Option, Qty, Net Sales, Last Seen, Suggested Fix (plain-text hint)
+
+Relationship to Needs Review's Missing R365 Costs tool: Open Items' "NO
+COST" flag is a NARROWER check (only items with zero menu assignment at
+all); the admin Missing R365 Costs tool in Needs Review is BROADER (checks
+every properly-channeled item too). An item can appear as "missing cost" in
+one and not the other.
+
+
+6. GLOSSARY OF TERMS & KEY FORMULAS
+================================================================================
+Channel codes used throughout:
+  IH / In-House     — dine-in/pickup ordered via Toast's in-house menus
+  LO / Loyalty      — Toast app + loyalty ordering
+  3PD               — DoorDash/UberEats/etc. delivery marketplace orders
+  3PD Markup        — the separate markup line item some 3rd-party orders
+                       carry
+  Catering / Catering 3PD — catering orders, direct or via a 3rd-party
+                       catering marketplace
+  Offsite           — pop-up/event sales
+  Open Items        — sales with no channel assignment at all (data-quality
+                       issue, see Section 5.13)
+
+Cost/margin formulas:
+  Avg Cost (Pink Sheet)  = (total modifier cost + base cost × qty) ÷ qty,
+                           computed separately for In-House and Online,
+                           following the section-exclusion and half-and-half
+                           rules described in Section 5.9
+  3PD cost uplift ×1.18  = the Online cost × 1.18, representing extra
+                           packaging/delivery cost for 3rd-party orders.
+                           Applied in Menu Engineering and Pink Sheets;
+                           NOT applied in Item Mix (see 5.2's gotcha)
+  COGS %                 = Total Cost ÷ Net Sales for an item (Cost of
+                           Goods Sold as a % of revenue) — thresholds:
+                           < 28% good, 28-35% ok, > 35% high
+  Margin %               = (Avg Price − Avg Cost) ÷ Avg Price
+  Menu Mix %             = an item's quantity ÷ total portfolio quantity
+  Quadrant thresholds     = margin threshold is the whole-portfolio blended
+                           margin %; mix threshold is (1 ÷ item count) × 0.7
+                           — see Section 5.8 for the 4 quadrant definitions
+
+Data-freshness rule: any dollar cost figure (Pink Sheets, Menu Engineering,
+Item Mix, Entree Mix) always uses R365 data from the LATEST fiscal period
+that overlaps your selected date range — never a blend across multiple
+periods — even when your date range spans more than one period. Quantities
+and revenue, by contrast, are always range-wide (true totals for whatever
+dates you picked).
+
+
+7. ADMIN-ONLY CAPABILITIES — QUICK RECAP
+================================================================================
+  - BYO Breakdown tab (full tab, hidden from regular users)
+  - Pink Sheets tab (full tab, hidden from regular users)
+  - "Missing R365 Costs" section inside Needs Review (only the dropdown
+    option and its content are hidden from regular users — the rest of
+    Needs Review is normal for everyone)
+Everything else (Overview, Item Mix, Entree Mix, Location Compare, Channels,
+Payment Source, Menu Engineering, Customer Retention, Renames Audit, Wrong
+Channel Orders, Open Items) is available to any logged-in user regardless
+of role.
+
+
+8. COMMON WORKFLOWS
+================================================================================
+
+8.1 "A guest/manager asked why item X's cost looks different in two tabs"
+    1. Open Pink Sheets (admin) and look up the item's "FINAL AVG COST WITH
+       MODIFIER" for the relevant channel — this is the ground-truth number.
+    2. If Item Mix shows a different 3PD number than Menu Engineering for
+       the same item, that's expected — Item Mix never applies the ×1.18
+       uplift, Menu Engineering always does (Section 5.2/5.8/6).
+    3. If Pink Sheets itself disagrees with what Item Mix/Menu Engineering
+       show for the SAME channel, that is a real bug — they're supposed to
+       be identical (Section 5.9).
+
+8.2 "An order was tagged to the wrong channel"
+    1. Go to Needs Review → Wrong Channel Orders.
+    2. Find the order, confirm/adjust the suggested correct channel.
+    3. Click Confirm — the page reloads with the fix applied everywhere.
+
+8.3 "An item is missing its R365 cost" (admin)
+    1. Go to Needs Review → Missing R365 Costs (dropdown at the top).
+    2. Find the item/bucket combination.
+    3. Confirm or change the Menu and Period fields, enter the Avg Cost.
+    4. Click Save — the cost is written to R365 immediately; the item
+       should stop appearing in this list on the next dashboard load.
+
+8.4 "I need to compare 2 specific locations for the same period"
+    1. Go to Location Compare (has its own location picker, independent of
+       the global one).
+    2. Select just the 2 locations you want.
+    3. Remember: KPI "% of category" shares and the item table's "Avg"
+       column recompute across only your 2 selected locations, not all 5
+       (Section 5.4 gotcha).
+
+8.5 "I want to see which items to promote vs. cut"
+    1. Go to Menu Engineering, leave Cost view on "Blended" or "Overall."
+    2. Switch to Scatter or Bar view to see the Top 5/Bottom 5 quadrant
+       charts.
+    3. Stars = promote, Dogs = candidates to cut/re-price, Puzzles = push
+       harder in marketing, Plow Horses = consider a price increase.
+
+
+9. TROUBLESHOOTING / "WHY DID THE NUMBER CHANGE"
+================================================================================
+  - Numbers differ after a filter change: check whether you're on a tab
+    where percentages RE-BASE to the filtered subset (Location Compare,
+    Payment Source both do this — see their gotcha notes) vs. a tab that
+    just hides rows without re-basing percentages.
+  - A number looks stale: hard-refresh the browser (Cmd/Ctrl+Shift+R) — the
+    app's own server-side cache lifetime is only a few seconds, so this is
+    almost always a browser-level cache, not the dashboard.
+  - An item's cost shows "—": it genuinely has no matching R365 cost row
+    for that channel — this is not a bug, it's exactly what "missing cost"
+    means, and (for admins) is fixable via Needs Review → Missing R365
+    Costs.
+  - Location filter seems to do nothing: confirm you're not on Entree Mix,
+    BYO Breakdown, Menu Engineering, or Pink Sheets — the location control
+    is deliberately hidden/disabled on those 4 right now (Section 1).
+  - A brand-new Toast menu/revenue center's sales look like they vanished
+    into "Offsite": this is a known current limitation — see
+    V2_HARDCODING_AUDIT.txt Section 4.1 for the technical explanation and
+    planned fix.
+
+
+10. RELATED DOCUMENTATION
+================================================================================
+  - V2_HARDCODING_AUDIT.txt — full technical inventory of every hardcoded
+    value/mapping in the codebase, ranked by how likely/soon each is to
+    cause a real problem, plus a phased plan for making the system fully
+    data-driven ("v2"). Read this if you're a developer, or if you hit a
+    "why does this break" question this SOP doesn't answer.
+  - PMIX_AppScript.txt (repo root) — the original Google Apps Script this
+    dashboard's business logic was ported from; still the reference for
+    "why does the formula work this way."
+  - MODIFIER_COST_FIX_SPEC.md / MODIFIER_COST_RCA.md (repo root) — deep-dive
+    specs on the modifier cost lookup rules referenced in Section 6.
+
+
+END OF DOCUMENT
+================================================================================

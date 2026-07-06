@@ -1,7 +1,7 @@
 'use client';
 import { useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { CHANNEL_LABEL, CHANNEL_COLOR } from '@/lib/constants';
+import { CHANNEL_LABEL, CHANNEL_COLOR, normalizeCategory } from '@/lib/constants';
 import type { DashboardData } from '@/lib/types';
 
 const WeeklyChart = dynamic(() => import('../charts/WeeklyChart'), { ssr: false });
@@ -39,7 +39,7 @@ function DeltaBadge({
   );
 }
 
-const mapCat = (cat: string) => cat === 'Kids Meal' ? 'Entrees' : cat;
+const mapCat = normalizeCategory;
 
 export default function Overview({ data, selectedChannels, categoryFilter, selectedLocations }: Props) {
   const { summary, prevSummary, prevLabel, weekly, daily, periods, items, avgMargin,

@@ -241,6 +241,20 @@ export interface RenameRow {
 }
 
 // ─── Needs Review ────────────────────────────────────────────────────────────
+export interface NeedsReviewLineItem {
+  selection_guid: string;          // matches a NeedsReviewFlaggedLine.selection_guid if this line is the flagged one
+  canonical_name: string;
+  menu_name:      string | null;  // raw Toast menu_name for this specific line — can differ within one order_guid
+  channel:        string;         // this line's own derived channel (CHANNEL_SQL) — can differ line-to-line
+  quantity:       number;
+  line_total:     number;
+}
+
+export interface NeedsReviewFlaggedLine {
+  selection_guid: string;  // the specific line an override applies to — NOT the whole order
+  canonical_name: string;
+}
+
 export interface NeedsReviewRow {
   order_guid:       string;
   location:         string;
@@ -249,9 +263,12 @@ export interface NeedsReviewRow {
   item_count:       number;
   issue_type:       string;
   current_channel:  string;
+  override_channel: string | null;  // set once an admin has confirmed a channel fix; persists across reloads
+  flagged_lines:    NeedsReviewFlaggedLine[];  // the specific mistracked line(s) — Confirm/Undo only ever touch these
   dining_option:    string;
   alt_payment_name: string;
   suggested_channel: string;
+  line_items:       NeedsReviewLineItem[];
 }
 
 // ─── Open Items ───────────────────────────────────────────────────────────────

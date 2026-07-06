@@ -2,7 +2,7 @@
 import { useState, useMemo } from 'react';
 import Image from 'next/image';
 import type { DashboardData, ItemRow, MERow, ChannelRow, ChannelItemRow, ChannelCategoryRow } from '@/lib/types';
-import { CHANNELS, CHANNEL_LABEL } from '@/lib/constants';
+import { CHANNELS, CHANNEL_LABEL, normalizeCategory } from '@/lib/constants';
 import DatePicker from './DatePicker';
 import Overview from './tabs/Overview';
 import ItemMix from './tabs/ItemMix';
@@ -108,8 +108,7 @@ export default function Dashboard({ data, isAdmin }: { data: DashboardData; isAd
       ? (data.locations.find(l => l.location_code === selectedLocations[0])?.display_name ?? selectedLocations[0])
       : `${selectedLocations.length} Locations`;
 
-  // Kids Meal is treated as Entrees everywhere in the UI
-  const normCat = (c: string | null | undefined) => (c === 'Kids Meal' ? 'Entrees' : c || 'Other');
+  const normCat = normalizeCategory;
 
   // Category options: vendor channels (catering/offsite/markup) collapse to 'Other'
   // to keep the dropdown short. Only IH/Loyalty/3PD show real categories.
@@ -489,7 +488,7 @@ export default function Dashboard({ data, isAdmin }: { data: DashboardData; isAd
     const margin_threshold = totalSalesAll > 0 ? totalMarginAll / totalSalesAll : 0;
 
     const catRev = new Map<string, number>();
-    allItems.forEach(i => catRev.set(i.category, (catRev.get(i.category) ?? 0) + i.net_sales));
+    allItems.forEach(i => { const cat = normCat(i.category); catRev.set(cat, (catRev.get(cat) ?? 0) + i.net_sales); });
 
     const display = categoryFilter === 'all'
       ? allItems : allItems.filter(i => normCat(i.category) === categoryFilter);
@@ -503,10 +502,11 @@ export default function Dashboard({ data, isAdmin }: { data: DashboardData; isAd
         margin_flag === 'High' && mix_flag === 'Low'  ? 'Puzzle'     :
         margin_flag === 'Low'  && mix_flag === 'High' ? 'Plow Horse' : 'Dog'
       ) as MERow['quadrant'];
+      const cat = normCat(i.category);
       return {
         ...i, mix_pct,
-        sls_pct_category: (catRev.get(i.category) ?? 0) > 0
-          ? i.net_sales / catRev.get(i.category)! : 0,
+        sls_pct_category: (catRev.get(cat) ?? 0) > 0
+          ? i.net_sales / catRev.get(cat)! : 0,
         quadrant, margin_flag, mix_flag, margin_threshold, mix_threshold,
       };
     });
