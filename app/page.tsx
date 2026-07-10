@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 import { loadDashboardData } from '@/lib/queries';
-import { verifyToken, COOKIE } from '@/lib/auth';
+import { verifyToken, hasAdminAccess, COOKIE } from '@/lib/auth';
 import Dashboard from '@/components/Dashboard';
 
 
@@ -17,6 +17,6 @@ export default async function Home({ searchParams }: Props) {
   ]);
   const token   = cookieStore.get(COOKIE)?.value;
   const payload = token ? await verifyToken(token) : null;
-  const isAdmin = payload?.role === 'admin';
-  return <Dashboard data={data} isAdmin={isAdmin} />;
+  const isAdmin = hasAdminAccess(payload?.role);
+  return <Dashboard data={data} isAdmin={isAdmin} currentEmail={payload?.email ?? null} />;
 }

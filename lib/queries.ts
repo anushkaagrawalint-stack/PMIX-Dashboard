@@ -16,6 +16,8 @@ import type {
   UncategorizedItemRow,
   FiscalPeriodRow, VendorRow, PinkSheetRow, PinkSheetDetailRow,
   ItemCostRow, MissingCostRow,
+  AttachmentOverallRow, AttachmentLocationRow, AttachmentChannelRow,
+  AttachmentCompanionRow, AttachmentData,
 } from './types';
 
 function pool() {
@@ -2901,4 +2903,320 @@ export async function loadDashboardData(
     cateringVendors, offsiteVendors,
     itemCosts, missingCosts,
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ATTACHMENT RATE (admin/tester-only, fetched separately via /api/attachment-
+// rate — NOT part of loadDashboardData / the main page load for all users).
+//
+// Logic follows attachment_rate_build_logic.md exactly (owner request
+// 2026-07-08), NOT the rest of the dashboard's CHANNEL_SQL/CAT1 conventions:
+//   - Channel = menu_name-derived, narrower than CHANNEL_SQL: only
+//     FOOD/DRINKS - IN HOUSE → IN_HOUSE, APP → APP, DELIVERY → TPD. No
+//     FOOD - TOAST ONLINE ORDERING, no channel_overrides join.
+//   - Main Item = menu_group IN (BOWLS, BUILD YOUR OWN BOWL, BURRITOS, BYO,
+//     CHEF CURATED BOWLS, CLASSIC INDIAN PLATES, PLATES, KIDS) — Kids Meal
+//     counts as a Main here, unlike the rest of the dashboard's category taxonomy.
+//   - Companion Item = menu_group IN (SIDES, DRINKS, Drinks, Cold Drinks,
+//     SWEETS, Beer, Wine, WINE, Liquor) — note Gameday is NOT a companion here
+//     (excluded entirely), unlike lib/constants.ts's GRP_TO_CAT_MAP which
+//     files it under Alc Drinks elsewhere in the dashboard.
+//   - Only is_voided is filtered; is_deferred rows are NOT excluded (per doc,
+//     unlike BASE_WHERE elsewhere in this file).
+//   - Modifier attach = option_group_name = 'Make it a Meal' AND depth = 1
+//     (excludes sub-modifiers nested under a build step).
+//
+// Item-level companion pairing is EXACT per Entree (not the doc's check-level
+// method) via Toast's own selection timestamps in raw.toast_orders — a real
+// improvement the doc's author didn't have access to, kept deliberately;
+// see conversation history for the full reasoning and P5 validation.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// 'INDIAN BURRITOS' added beyond the .md doc's literal list (owner-confirmed
+// 2026-07-08) — the reference P5 xlsx's own Butter Chicken Burrito/Tandoori
+// Paneer Burrito/BYO Indian Burrito totals only reconcile once this menu_group
+// variant is included as Main too; the doc's list was missing it.
+const ATTACHMENT_MAIN_GROUPS = `'BOWLS','BUILD YOUR OWN BOWL','BURRITOS','INDIAN BURRITOS','BYO','CHEF CURATED BOWLS','CLASSIC INDIAN PLATES','PLATES','KIDS'`;
+const ATTACHMENT_COMPANION_GROUPS = `'SIDES','DRINKS','Drinks','Cold Drinks','SWEETS','Beer','Wine','WINE','Liquor'`;
+
+const ATTACHMENT_BASE_CTES = `
+  WITH scoped AS (
+    SELECT fol.check_guid, fol.selection_guid, fol.canonical_name, fol.location_code, fol.menu_group,
+      CASE
+        WHEN fol.menu_name IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') THEN 'IN_HOUSE'
+        WHEN fol.menu_name = 'APP' THEN 'APP'
+        WHEN fol.menu_name = 'DELIVERY' THEN 'TPD'
+        ELSE NULL
+      END AS channel,
+      CASE
+        WHEN fol.menu_group IN (${ATTACHMENT_MAIN_GROUPS}) THEN 'Main'
+        WHEN fol.menu_group IN (${ATTACHMENT_COMPANION_GROUPS}) THEN 'Companion'
+        ELSE 'Other'
+      END AS bucket
+    FROM public.fact_order_lines fol
+    WHERE NOT fol.is_voided
+      AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+  ),
+  scoped_ch AS (
+    SELECT * FROM scoped
+    WHERE channel IS NOT NULL
+      AND ($3::TEXT[] IS NULL OR channel = ANY($3))
+      AND ($4::TEXT[] IS NULL OR location_code = ANY($4))
+  ),
+  mains AS (
+    SELECT check_guid, selection_guid, canonical_name AS main_item, location_code, channel
+    FROM scoped_ch WHERE bucket = 'Main'
+  ),
+  -- ── Exact item-companion pairing via Toast's own selection timestamps ──────
+  -- fact_order_lines has no sequence/ordering column, so we read the real
+  -- entry order straight from raw.toast_orders (read-only, no schema changes)
+  -- and replicate exactly what the original Apps Script used row order for:
+  -- each Main opens a group; every companion selection immediately after it
+  -- (before the next Main) belongs to that specific Main.
+  seq AS (
+    SELECT (s->>'guid') AS selection_guid, (s->>'createdDate')::TIMESTAMPTZ AS created
+    FROM raw.toast_orders o
+    CROSS JOIN LATERAL jsonb_array_elements(o.payload->'checks') AS c
+    CROSS JOIN LATERAL jsonb_array_elements(c->'selections') AS s
+    WHERE o.business_date BETWEEN TO_CHAR($1::DATE, 'YYYYMMDD')::INT AND TO_CHAR($2::DATE, 'YYYYMMDD')::INT
+  ),
+  grp_raw AS (
+    SELECT sc.check_guid, sc.selection_guid, sc.bucket,
+      SUM(CASE WHEN sc.bucket = 'Main' THEN 1 ELSE 0 END)
+        OVER (PARTITION BY sc.check_guid ORDER BY sq.created ROWS UNBOUNDED PRECEDING) AS grp_id
+    FROM scoped_ch sc
+    JOIN seq sq ON sq.selection_guid = sc.selection_guid
+  ),
+  main_of_group AS (
+    SELECT check_guid, grp_id, selection_guid AS main_selection_guid
+    FROM grp_raw WHERE bucket = 'Main'
+  ),
+  item_pair_exact AS (
+    SELECT gr.check_guid, gr.selection_guid AS companion_selection_guid, mog.main_selection_guid
+    FROM grp_raw gr
+    JOIN main_of_group mog ON mog.check_guid = gr.check_guid AND mog.grp_id = gr.grp_id
+    WHERE gr.bucket = 'Companion' AND gr.grp_id > 0
+  ),
+  mod_checks AS (
+    SELECT DISTINCT ml.check_guid, ml.main_item
+    FROM mains ml
+    JOIN public.fact_modifiers fm
+      ON fm.parent_selection = ml.selection_guid AND NOT fm.is_voided AND fm.depth = 1
+    WHERE fm.option_group_name = 'Make it a Meal'
+  ),
+  per_check_main AS (
+    SELECT DISTINCT
+      ml.check_guid, ml.main_item, ml.location_code, ml.channel,
+      EXISTS (SELECT 1 FROM item_pair_exact ipe WHERE ipe.main_selection_guid = ml.selection_guid) AS has_item,
+      (mc.check_guid IS NOT NULL) AS has_mod
+    FROM mains ml
+    LEFT JOIN mod_checks mc ON mc.check_guid = ml.check_guid AND mc.main_item = ml.main_item
+  )
+`;
+
+function withAttachmentDerived(rows: {
+  main_item: string; total_checks: string | number; checks_with_item: string | number;
+  checks_with_mod: string | number; totals: string | number;
+  avg_check_attached?: string | number | null; avg_check_unattached?: string | number | null;
+}[]): AttachmentOverallRow[] {
+  return rows.map(r => {
+    const total_checks     = Number(r.total_checks);
+    const totals           = Number(r.totals);
+    const avg_attached     = r.avg_check_attached   != null ? Number(r.avg_check_attached)   : null;
+    const avg_unattached   = r.avg_check_unattached != null ? Number(r.avg_check_unattached) : null;
+    const uplift           = avg_attached != null && avg_unattached != null ? avg_attached - avg_unattached : null;
+    const missed_checks    = total_checks - totals;
+    return {
+      main_item:            r.main_item,
+      total_checks,
+      checks_with_item:     Number(r.checks_with_item),
+      checks_with_mod:      Number(r.checks_with_mod),
+      totals,
+      attachment_rate:      total_checks > 0 ? totals / total_checks : 0,
+      avg_check_attached:   avg_attached,
+      avg_check_unattached: avg_unattached,
+      uplift_per_check:     uplift,
+      missed_opportunity:   uplift != null ? missed_checks * uplift : null,
+    };
+  });
+}
+
+export async function getAttachmentOverall(
+  dr: DateRange, channels?: string[], locations?: string[],
+): Promise<AttachmentOverallRow[]> {
+  const db = pool();
+  const { rows } = await db.query(`
+    ${ATTACHMENT_BASE_CTES}
+    SELECT
+      pcm.main_item,
+      COUNT(DISTINCT pcm.check_guid)                                            AS total_checks,
+      COUNT(DISTINCT pcm.check_guid) FILTER (WHERE pcm.has_item)                AS checks_with_item,
+      COUNT(DISTINCT pcm.check_guid) FILTER (WHERE pcm.has_mod)                 AS checks_with_mod,
+      COUNT(DISTINCT pcm.check_guid) FILTER (WHERE pcm.has_item OR pcm.has_mod) AS totals,
+      ROUND(AVG(fc.total_amount) FILTER (WHERE pcm.has_item OR pcm.has_mod)::NUMERIC, 2)       AS avg_check_attached,
+      ROUND(AVG(fc.total_amount) FILTER (WHERE NOT (pcm.has_item OR pcm.has_mod))::NUMERIC, 2) AS avg_check_unattached
+    FROM per_check_main pcm
+    JOIN public.fact_checks fc ON fc.check_guid = pcm.check_guid AND NOT fc.is_voided
+    GROUP BY pcm.main_item
+    ORDER BY total_checks DESC
+  `, [dr.start, dr.end, channels ?? null, locations ?? null]);
+  await db.end();
+  return withAttachmentDerived(rows);
+}
+
+export async function getAttachmentByLocation(
+  dr: DateRange, channels?: string[], locations?: string[],
+): Promise<AttachmentLocationRow[]> {
+  const db = pool();
+  const { rows } = await db.query(`
+    ${ATTACHMENT_BASE_CTES}
+    SELECT
+      pcm.main_item, pcm.location_code AS location,
+      COUNT(DISTINCT pcm.check_guid)                                            AS total_checks,
+      COUNT(DISTINCT pcm.check_guid) FILTER (WHERE pcm.has_item)                AS checks_with_item,
+      COUNT(DISTINCT pcm.check_guid) FILTER (WHERE pcm.has_mod)                 AS checks_with_mod,
+      COUNT(DISTINCT pcm.check_guid) FILTER (WHERE pcm.has_item OR pcm.has_mod) AS totals
+    FROM per_check_main pcm
+    GROUP BY pcm.main_item, pcm.location_code
+    ORDER BY pcm.location_code, total_checks DESC
+  `, [dr.start, dr.end, channels ?? null, locations ?? null]);
+  await db.end();
+  return rows.map(r => {
+    const total_checks = Number(r.total_checks);
+    const totals        = Number(r.totals);
+    return {
+      main_item:        r.main_item as string,
+      location:         r.location as string,
+      total_checks,
+      checks_with_item: Number(r.checks_with_item),
+      checks_with_mod:  Number(r.checks_with_mod),
+      totals,
+      attachment_rate:  total_checks > 0 ? totals / total_checks : 0,
+    };
+  });
+}
+
+export async function getAttachmentByChannel(
+  dr: DateRange, channels?: string[], locations?: string[],
+): Promise<AttachmentChannelRow[]> {
+  const db = pool();
+  const { rows } = await db.query(`
+    ${ATTACHMENT_BASE_CTES}
+    SELECT
+      pcm.main_item, pcm.channel,
+      COUNT(DISTINCT pcm.check_guid)                                            AS total_checks,
+      COUNT(DISTINCT pcm.check_guid) FILTER (WHERE pcm.has_item)                AS checks_with_item,
+      COUNT(DISTINCT pcm.check_guid) FILTER (WHERE pcm.has_mod)                 AS checks_with_mod,
+      COUNT(DISTINCT pcm.check_guid) FILTER (WHERE pcm.has_item OR pcm.has_mod) AS totals
+    FROM per_check_main pcm
+    GROUP BY pcm.main_item, pcm.channel
+    ORDER BY pcm.channel, total_checks DESC
+  `, [dr.start, dr.end, channels ?? null, locations ?? null]);
+  await db.end();
+  return rows.map(r => {
+    const total_checks = Number(r.total_checks);
+    const totals        = Number(r.totals);
+    return {
+      main_item:        r.main_item as string,
+      channel:          r.channel as string,
+      total_checks,
+      checks_with_item: Number(r.checks_with_item),
+      checks_with_mod:  Number(r.checks_with_mod),
+      totals,
+      attachment_rate:  total_checks > 0 ? totals / total_checks : 0,
+    };
+  });
+}
+
+// Per specific companion item (not just its category) — which side/sweet/drink/
+// Make-it-a-Meal item rides along most, and which Entree it pairs with most.
+// Both modifier-companion (parent_selection link) and item-companion (exact
+// sequence-based link, see ATTACHMENT_BASE_CTES) pairing are now EXACT.
+export async function getAttachmentCompanions(
+  dr: DateRange, channels?: string[], locations?: string[],
+): Promise<AttachmentCompanionRow[]> {
+  const db = pool();
+  const { rows } = await db.query(`
+    ${ATTACHMENT_BASE_CTES},
+    item_companion_detail AS (
+      SELECT DISTINCT sc.check_guid, sc.selection_guid, sc.canonical_name AS companion_name, sc.menu_group AS companion_category
+      FROM scoped_ch sc
+      WHERE sc.bucket = 'Companion'
+    ),
+    item_pairs AS (
+      SELECT icd.companion_name, icd.companion_category, ml.main_item,
+             COUNT(DISTINCT icd.check_guid) AS pair_checks
+      FROM item_companion_detail icd
+      JOIN item_pair_exact ipe ON ipe.companion_selection_guid = icd.selection_guid
+      JOIN mains ml ON ml.selection_guid = ipe.main_selection_guid
+      GROUP BY icd.companion_name, icd.companion_category, ml.main_item
+    ),
+    item_totals AS (
+      SELECT companion_name, companion_category, COUNT(DISTINCT check_guid) AS total_attach_checks
+      FROM item_companion_detail
+      GROUP BY companion_name, companion_category
+    ),
+    mod_companion_detail AS (
+      SELECT DISTINCT ml.check_guid, fm.canonical_name AS companion_name, ml.main_item
+      FROM mains ml
+      JOIN public.fact_modifiers fm ON fm.parent_selection = ml.selection_guid AND NOT fm.is_voided
+      WHERE fm.option_group_name = 'Make it a Meal'
+    ),
+    mod_pairs AS (
+      SELECT companion_name, main_item, COUNT(DISTINCT check_guid) AS pair_checks
+      FROM mod_companion_detail
+      GROUP BY companion_name, main_item
+    ),
+    mod_totals AS (
+      SELECT companion_name, COUNT(DISTINCT check_guid) AS total_attach_checks
+      FROM mod_companion_detail
+      GROUP BY companion_name
+    )
+    SELECT it.companion_name, it.companion_category, it.total_attach_checks,
+           ip.main_item, ip.pair_checks, 'exact' AS pairing_precision
+    FROM item_totals it
+    JOIN item_pairs ip ON ip.companion_name = it.companion_name AND ip.companion_category = it.companion_category
+    UNION ALL
+    SELECT mt.companion_name, 'Make it a Meal' AS companion_category, mt.total_attach_checks,
+           mp.main_item, mp.pair_checks, 'exact' AS pairing_precision
+    FROM mod_totals mt
+    JOIN mod_pairs mp ON mp.companion_name = mt.companion_name
+    ORDER BY total_attach_checks DESC, pair_checks DESC
+  `, [dr.start, dr.end, channels ?? null, locations ?? null]);
+  await db.end();
+
+  // Group flat (companion, main_item, pair_checks) rows into one entry per
+  // companion with a sorted pairs[] list — the UI shows every pairing, not
+  // just the single most common one.
+  const grouped = new Map<string, AttachmentCompanionRow>();
+  for (const r of rows) {
+    const key = `${r.companion_category}||${r.companion_name}`;
+    let entry = grouped.get(key);
+    if (!entry) {
+      entry = {
+        companion_name:      r.companion_name as string,
+        companion_category:  r.companion_category as string,
+        total_attach_checks: Number(r.total_attach_checks),
+        pairs:               [],
+        pairing_precision:   r.pairing_precision as 'exact' | 'approx',
+      };
+      grouped.set(key, entry);
+    }
+    entry.pairs.push({ main_item: r.main_item as string, checks: Number(r.pair_checks) });
+  }
+  const result = [...grouped.values()];
+  result.forEach(e => e.pairs.sort((a, b) => b.checks - a.checks));
+  return result.sort((a, b) => b.total_attach_checks - a.total_attach_checks);
+}
+
+export async function getAttachmentData(
+  dr: DateRange, channels?: string[], locations?: string[],
+): Promise<AttachmentData> {
+  const [overall, byLocation, byChannel, companions] = await Promise.all([
+    getAttachmentOverall(dr, channels, locations),
+    getAttachmentByLocation(dr, channels, locations),
+    getAttachmentByChannel(dr, channels, locations),
+    getAttachmentCompanions(dr, channels, locations),
+  ]);
+  return { overall, byLocation, byChannel, companions };
 }

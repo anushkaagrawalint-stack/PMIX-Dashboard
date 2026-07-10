@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
-import { signToken, getUsers, getUserRole, COOKIE } from '@/lib/auth';
+import { signToken, getUserByEmail, COOKIE } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
   const { email, password } = await req.json().catch(() => ({}));
@@ -8,19 +8,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Email and password required' }, { status: 400 });
   }
 
-  const users = getUsers();
   const normalized = String(email).toLowerCase().trim();
-  const hash = users[normalized];
-  if (!hash) {
+  const user = await getUserByEmail(normalized);
+  if (!user) {
     return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
   }
 
-  const valid = await bcrypt.compare(password, hash);
+  const valid = await bcrypt.compare(password, user.hash);
   if (!valid) {
     return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
   }
 
-  const role = getUserRole(normalized);
+  const role = user.role;
   const token = await signToken(normalized, role);
   const res = NextResponse.json({ ok: true, user: { email: normalized, role } });
   res.cookies.set(COOKIE, token, {

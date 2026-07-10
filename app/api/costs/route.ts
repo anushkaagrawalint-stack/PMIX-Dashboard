@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Pool } from '@neondatabase/serverless';
-import { verifyToken, COOKIE } from '@/lib/auth';
+import { verifyToken, hasAdminAccess, COOKIE } from '@/lib/auth';
 
 function pool() { return new Pool({ connectionString: process.env.DATABASE_URL! }); }
 
@@ -21,7 +21,7 @@ const PERIOD_RE = /^P\d{2}-\d{4}$/;
 export async function POST(req: NextRequest) {
   const token   = req.cookies.get(COOKIE)?.value;
   const payload = token ? await verifyToken(token) : null;
-  if (payload?.role !== 'admin') {
+  if (!hasAdminAccess(payload?.role)) {
     return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
   }
 

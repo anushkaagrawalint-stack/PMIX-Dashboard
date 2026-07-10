@@ -17,6 +17,8 @@ import OpenItems from './tabs/OpenItems';
 import MEOverall from './tabs/MEOverall';
 import PinkSheets from './tabs/PinkSheets';
 import EntreeMix from './tabs/EntreeMix';
+import AdminPanel from './tabs/AdminPanel';
+import AttachmentRate from './tabs/AttachmentRate';
 
 // BYO Breakdown + Pink Sheets are admin-only (owner request 2026-07-04) — every
 // other tab stays visible to all logged-in users.
@@ -34,6 +36,8 @@ const TABS = [
   { id: 'renames',    label: 'Renames Audit',       icon: 'ti-refresh',         adminOnly: false },
   { id: 'needs',      label: 'Needs Review',        icon: 'ti-alert-triangle',  adminOnly: false },
   { id: 'openitems',  label: 'Open Items',          icon: 'ti-package',         adminOnly: false },
+  { id: 'attachment', label: 'Attachment Rate',     icon: 'ti-link',            adminOnly: true  },
+  { id: 'admin',      label: 'Admin Panel',         icon: 'ti-settings',        adminOnly: true  },
 ] as const;
 
 type TabId = typeof TABS[number]['id'];
@@ -62,11 +66,13 @@ const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location
   renames:    { channel: false, category: false, location: false },
   needs:      { channel: false, category: false, location: false },
   openitems:  { channel: false, category: false, location: false },
+  attachment: { channel: true,  category: false, location: true  },
+  admin:      { channel: false, category: false, location: false },
 };
 
 const fmt$ = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 
-export default function Dashboard({ data, isAdmin }: { data: DashboardData; isAdmin: boolean }) {
+export default function Dashboard({ data, isAdmin, currentEmail }: { data: DashboardData; isAdmin: boolean; currentEmail: string | null }) {
   const [tab, setTab]                       = useState<TabId>('overview');
   const [selectedChannels, setChannels]     = useState<string[]>([]);
   const [chOpen, setChOpen]                 = useState(false);
@@ -804,6 +810,8 @@ export default function Dashboard({ data, isAdmin }: { data: DashboardData; isAd
       {tab === 'renames'    && <RenamesAudit     renames={data.renames} />}
       {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}
+      {tab === 'attachment' && isAdmin && <AttachmentRate dr={dr} selectedChannels={selectedChannels} selectedLocations={selectedLocations} />}
+      {tab === 'admin'      && isAdmin && <AdminPanel currentEmail={currentEmail} />}
     </div>
   );
 }

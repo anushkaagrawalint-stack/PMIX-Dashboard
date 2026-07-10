@@ -8,6 +8,7 @@ export default function LoginPage() {
   const emailRef  = useRef<HTMLInputElement>(null);
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
+  const [showPw,   setShowPw]   = useState(false);
   const [error,    setError]    = useState('');
   const [loading,  setLoading]  = useState(false);
 
@@ -60,15 +61,30 @@ export default function LoginPage() {
         />
 
         <label className="login-label" htmlFor="login-password">Password</label>
-        <input
-          id="login-password"
-          type="password"
-          className="login-input"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          required
-          autoComplete="current-password"
-        />
+        <div style={{ position: 'relative' }}>
+          <input
+            id="login-password"
+            type={showPw ? 'text' : 'password'}
+            className="login-input"
+            style={{ width: '100%', boxSizing: 'border-box', paddingRight: 40 }}
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            required
+            autoComplete="current-password"
+          />
+          <button
+            type="button"
+            onClick={() => setShowPw(s => !s)}
+            aria-label={showPw ? 'Hide password' : 'Show password'}
+            style={{
+              position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+              background: 'none', border: 'none', cursor: 'pointer', padding: 4,
+              color: 'var(--muted)', display: 'flex', alignItems: 'center',
+            }}
+          >
+            <i className={`ti ${showPw ? 'ti-eye-off' : 'ti-eye'}`} style={{ fontSize: 16 }} aria-hidden="true" />
+          </button>
+        </div>
 
         {error && <div className="login-error">{error}</div>}
 

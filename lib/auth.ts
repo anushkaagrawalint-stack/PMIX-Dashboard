@@ -1,4 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose';
+import { Pool } from '@neondatabase/serverless';
 
 const SECRET = new TextEncoder().encode(process.env.JWT_SECRET ?? 'dev-secret-change-me');
 const COOKIE = 'pmix_token';
@@ -6,7 +7,19 @@ const EXPIRY = '8h';
 
 export { COOKIE };
 
-export type Role = 'admin' | 'user';
+export type Role = 'admin' | 'tester' | 'user';
+
+const VALID_ROLES = new Set<Role>(['admin', 'tester', 'user']);
+function normalizeRole(role: unknown): Role {
+  return VALID_ROLES.has(role as Role) ? (role as Role) : 'user';
+}
+
+// tester currently has full admin-level access (owner request 2026-07-08) — kept as
+// a separate role (not just an alias) so it can be scoped down later without
+// touching every call site again, just this one function.
+export function hasAdminAccess(role: Role | undefined | null): boolean {
+  return role === 'admin' || role === 'tester';
+}
 
 export async function signToken(email: string, role: Role): Promise<string> {
   return new SignJWT({ email, role })
@@ -19,37 +32,24 @@ export async function verifyToken(token: string): Promise<{ email: string; role:
   try {
     const { payload } = await jwtVerify(token, SECRET);
     const p = payload as { email: string; role?: Role };
-    return { email: p.email, role: p.role === 'admin' ? 'admin' : 'user' };
+    return { email: p.email, role: normalizeRole(p.role) };
   } catch {
     return null;
   }
 }
 
-// Returns { email → bcrypt_hash }
-// Handles both plain-string values and { hash, role } objects
-export function getUsers(): Record<string, string> {
+// Users live in analytics.users (managed via the Admin Panel), not an env var —
+// account changes (add/edit/delete) take effect immediately, no redeploy.
+export async function getUserByEmail(email: string): Promise<{ email: string; hash: string; role: Role } | null> {
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL! });
   try {
-    const raw = JSON.parse(process.env.USERS_JSON ?? '{}');
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(raw)) {
-      if (typeof v === 'string') out[k] = v;
-      else if (v && typeof (v as Record<string,unknown>).hash === 'string')
-        out[k] = (v as { hash: string }).hash;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-// Returns { email → role }. Plain-string entries (no explicit role) default to 'user'.
-export function getUserRole(email: string): Role {
-  try {
-    const raw = JSON.parse(process.env.USERS_JSON ?? '{}');
-    const v = raw[email];
-    if (v && typeof v === 'object' && (v as Record<string, unknown>).role === 'admin') return 'admin';
-    return 'user';
-  } catch {
-    return 'user';
+    const { rows } = await pool.query(
+      `SELECT email, password_hash, role FROM analytics.users WHERE email = $1`,
+      [email],
+    );
+    if (rows.length === 0) return null;
+    return { email: rows[0].email, hash: rows[0].password_hash, role: normalizeRole(rows[0].role) };
+  } finally {
+    await pool.end();
   }
 }
