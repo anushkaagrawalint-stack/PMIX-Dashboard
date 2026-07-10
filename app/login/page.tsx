@@ -45,7 +45,7 @@ export default function LoginPage() {
         <div className="login-title">Product Mix Dashboard</div>
         <div className="login-sub" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
           Sign in to continue · Powered by
-          <Image src="/kutlerri-logo.png" alt="Kutlerri" width={160} height={54} style={{ height: 13, width: 'auto', filter: 'invert(1)' }} />
+          <Image src="/BlackTextLogo.webp" alt="Kutlerri" width={160} height={54} style={{ height: 13, width: 'auto' }} />
         </div>
 
         <label className="login-label" htmlFor="login-email">Email</label>

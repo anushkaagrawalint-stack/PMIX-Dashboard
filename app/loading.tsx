@@ -24,7 +24,7 @@ export default function Loading() {
             Querying database…
           </div>
           <span className="klogo">
-            <Image src="/kutlerri-logo.png" alt="Kutlerri" width={120} height={39} style={{ height: 16, width: 'auto', display: 'block' }} priority />
+            <Image src="/WhiteLogo.webp" alt="Kutlerri" width={120} height={39} style={{ height: 16, width: 'auto', display: 'block' }} priority />
           </span>
         </div>
       </div>

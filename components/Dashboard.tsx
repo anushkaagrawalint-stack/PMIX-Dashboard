@@ -3,6 +3,8 @@ import { useState, useMemo } from 'react';
 import Image from 'next/image';
 import type { DashboardData, ItemRow, MERow, ChannelRow, ChannelItemRow, ChannelCategoryRow } from '@/lib/types';
 import { CHANNELS, CHANNEL_LABEL, normalizeCategory } from '@/lib/constants';
+import { TAB_META } from '@/lib/tabsMeta';
+import type { Role } from '@/lib/auth';
 import DatePicker from './DatePicker';
 import Overview from './tabs/Overview';
 import ItemMix from './tabs/ItemMix';
@@ -20,25 +22,13 @@ import EntreeMix from './tabs/EntreeMix';
 import AdminPanel from './tabs/AdminPanel';
 import AttachmentRate from './tabs/AttachmentRate';
 
-// BYO Breakdown + Pink Sheets are admin-only (owner request 2026-07-04) — every
-// other tab stays visible to all logged-in users.
-const TABS = [
-  { id: 'overview',   label: 'Overview',           icon: 'ti-layout-dashboard', adminOnly: false },
-  { id: 'itemmix',    label: 'Item Mix',            icon: 'ti-list',            adminOnly: false },
-  { id: 'entreemix',  label: 'Entree Mix',          icon: 'ti-bowl',            adminOnly: false },
-  { id: 'loccompare', label: 'Location Compare',    icon: 'ti-map-pin',         adminOnly: false },
-  { id: 'chanmenu',   label: 'Channels',             icon: 'ti-chart-pie',      adminOnly: false },
-  { id: 'byo',        label: 'BYO Breakdown',       icon: 'ti-salad',           adminOnly: true  },
-  { id: 'payment',    label: 'Payment Source',      icon: 'ti-credit-card',     adminOnly: false },
-  { id: 'meoverall',  label: 'Menu Engineering',    icon: 'ti-layout-grid',     adminOnly: false },
-  { id: 'pinksheets', label: 'Pink Sheets',         icon: 'ti-file-spreadsheet', adminOnly: true },
-  { id: 'bikky',      label: 'Customer Retention',  icon: 'ti-users',           adminOnly: false },
-  { id: 'renames',    label: 'Renames Audit',       icon: 'ti-refresh',         adminOnly: false },
-  { id: 'needs',      label: 'Needs Review',        icon: 'ti-alert-triangle',  adminOnly: false },
-  { id: 'openitems',  label: 'Open Items',          icon: 'ti-package',         adminOnly: false },
-  { id: 'attachment', label: 'Attachment Rate',     icon: 'ti-link',            adminOnly: true  },
-  { id: 'admin',      label: 'Admin Panel',         icon: 'ti-settings',        adminOnly: true  },
-] as const;
+// Which tabs each role can see now lives in analytics.tab_permissions (owner
+// request 2026-07-10) — configurable by tester (Admin + User tabs) and admin
+// (User tabs only) from the Admin Panel. Tester itself always sees every tab,
+// unconditionally. TAB_META (id/label/icon) is the shared nav metadata; the
+// actual visibility list for the current viewer arrives as the `visibleTabs`
+// prop, computed server-side in app/page.tsx.
+const TABS = TAB_META;
 
 type TabId = typeof TABS[number]['id'];
 
@@ -72,7 +62,7 @@ const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location
 
 const fmt$ = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 
-export default function Dashboard({ data, isAdmin, currentEmail }: { data: DashboardData; isAdmin: boolean; currentEmail: string | null }) {
+export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEmail }: { data: DashboardData; isAdmin: boolean; role: Role; visibleTabs: string[]; currentEmail: string | null }) {
   const [tab, setTab]                       = useState<TabId>('overview');
   const [selectedChannels, setChannels]     = useState<string[]>([]);
   const [chOpen, setChOpen]                 = useState(false);
@@ -663,7 +653,7 @@ export default function Dashboard({ data, isAdmin, currentEmail }: { data: Dashb
             <i className="ti ti-refresh" aria-hidden="true" /> Refresh
           </button>
           <span className="klogo">
-            <Image src="/kutlerri-logo.png" alt="Kutlerri" width={120} height={39} style={{ height: 16, width: 'auto', display: 'block' }} priority />
+            <Image src="/WhiteLogo.webp" alt="Kutlerri" width={120} height={39} style={{ height: 16, width: 'auto', display: 'block' }} priority />
           </span>
           <button
             className="logout-btn"
@@ -773,7 +763,7 @@ export default function Dashboard({ data, isAdmin, currentEmail }: { data: Dashb
       {/* ── TABS ── */}
       <div className="tabs-o">
         <div className="tabs-i">
-          {TABS.filter(t => !t.adminOnly || isAdmin).map(t => (
+          {TABS.filter(t => visibleTabs.includes(t.id)).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} className={`tb${tab === t.id ? ' on' : ''}`}>
               <i className={`ti ${t.icon}`} aria-hidden="true" />
               {t.label}
@@ -802,16 +792,16 @@ export default function Dashboard({ data, isAdmin, currentEmail }: { data: Dashb
       {tab === 'entreemix'  && <EntreeMix        pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} meItems={data.meItems} />}
       {tab === 'loccompare' && <LocationCompare  data={filteredData} />}
       {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} />}
-      {tab === 'byo'        && isAdmin && <BYOBreakdown modifiers={data.modifiers} items={data.items} pinkSheets={data.pinkSheets} meItems={data.meItems} selectedLocations={[]} />}
+      {tab === 'byo'        && visibleTabs.includes('byo')        && <BYOBreakdown modifiers={data.modifiers} items={data.items} pinkSheets={data.pinkSheets} meItems={data.meItems} selectedLocations={[]} />}
       {tab === 'payment'    && <PaymentSource    payments={data.payments} paymentsByLocation={data.paymentsByLocation} paymentSourcesByLocation={data.paymentSourcesByLocation} selectedLocations={selectedLocations} />}
       {tab === 'meoverall'  && <MEOverall meItems={data.meItems} pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} itemCosts={data.itemCosts} />}
-      {tab === 'pinksheets' && isAdmin && <PinkSheets pinkSheets={data.pinkSheets} details={data.pinkSheetDetails} />}
+      {tab === 'pinksheets' && visibleTabs.includes('pinksheets') && <PinkSheets pinkSheets={data.pinkSheets} details={data.pinkSheetDetails} />}
       {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} />}
       {tab === 'renames'    && <RenamesAudit     renames={data.renames} />}
       {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}
-      {tab === 'attachment' && isAdmin && <AttachmentRate dr={dr} selectedChannels={selectedChannels} selectedLocations={selectedLocations} />}
-      {tab === 'admin'      && isAdmin && <AdminPanel currentEmail={currentEmail} />}
+      {tab === 'attachment' && visibleTabs.includes('attachment') && <AttachmentRate dr={dr} selectedChannels={selectedChannels} selectedLocations={selectedLocations} />}
+      {tab === 'admin'      && visibleTabs.includes('admin')      && <AdminPanel currentEmail={currentEmail} currentRole={role} />}
     </div>
   );
 }

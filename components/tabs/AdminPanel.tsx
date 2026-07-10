@@ -1,7 +1,9 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { TAB_META } from '@/lib/tabsMeta';
 
 type UserRole = 'admin' | 'tester' | 'user';
+type GovernedRole = 'admin' | 'user';
 
 interface UserRow {
   email: string;
@@ -199,10 +201,77 @@ function UserModal({
   );
 }
 
-export default function AdminPanel({ currentEmail }: { currentEmail: string | null }) {
+// ── Tab access — which tabs each governed role (admin, user) can see ───────
+// Tester itself is never shown here: it always sees every tab, unconditionally.
+// Checking/unchecking a box only edits the local working copy — nothing is
+// sent to the server until "Confirm" is clicked, so a misclick doesn't
+// instantly change what a real admin/user account can see.
+function TabToggleGrid({
+  label, permissions, saved, onChange, onConfirm, onCancel, saving,
+}: {
+  label: string;
+  permissions: Record<string, boolean>;
+  saved: Record<string, boolean>;
+  onChange: (tabId: string, visible: boolean) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+  saving: boolean;
+}) {
+  const dirty = TAB_META.some(t => (permissions[t.id] !== false) !== (saved[t.id] !== false));
+  return (
+    <div style={card}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>
+          Tabs visible to {label}
+        </div>
+        {dirty && <span style={{ fontSize: 11, color: '#d97706', fontWeight: 600 }}>Unsaved changes</span>}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          {dirty && !saving && (
+            <button onClick={onCancel} style={{ ...btn('#e5e7eb', '#374151'), padding: '6px 16px', fontSize: 12 }}>
+              Cancel
+            </button>
+          )}
+          <button
+            onClick={onConfirm}
+            disabled={!dirty || saving}
+            style={{
+              ...btn('#059669'), padding: '6px 16px', fontSize: 12,
+              opacity: (!dirty || saving) ? 0.5 : 1,
+              cursor: (!dirty || saving) ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {saving ? 'Saving…' : 'Confirm'}
+          </button>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10 }}>
+        {TAB_META.map(t => {
+          const visible = permissions[t.id] !== false;
+          return (
+            <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={visible} onChange={e => onChange(t.id, e.target.checked)} />
+              <i className={`ti ${t.icon}`} style={{ fontSize: 14, color: 'var(--muted)' }} aria-hidden="true" />
+              {t.label}
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export default function AdminPanel({ currentEmail, currentRole }: { currentEmail: string | null; currentRole: UserRole }) {
   const [users, setUsers]       = useState<UserRow[] | null>(null);
   const [error, setError]       = useState('');
   const [modal, setModal]       = useState<{ email?: string; role?: UserRole; isEdit: boolean } | null>(null);
+
+  // `permissions` is the local working copy the checkboxes edit; `saved` is the
+  // last-confirmed-with-the-server snapshot, used to detect unsaved changes and
+  // to revert on Cancel or a rejected save.
+  const [permissions, setPermissions] = useState<Record<GovernedRole, Record<string, boolean>> | null>(null);
+  const [saved, setSaved]             = useState<Record<GovernedRole, Record<string, boolean>> | null>(null);
+  const [permError, setPermError]     = useState('');
+  const [saving, setSaving]           = useState<Record<GovernedRole, boolean>>({ admin: false, user: false });
 
   const load = () => {
     fetch('/api/admin/users')
@@ -211,7 +280,51 @@ export default function AdminPanel({ currentEmail }: { currentEmail: string | nu
       .catch(e => setError(e.message));
   };
 
+  const loadPermissions = () => {
+    fetch('/api/admin/tab-permissions')
+      .then(res => res.json())
+      .then(d => { if (d.error) throw new Error(d.error); setPermissions(d.permissions); setSaved(d.permissions); })
+      .catch(e => setPermError(e.message));
+  };
+
   useEffect(load, []);
+  useEffect(loadPermissions, []);
+
+  // Just edits the local working copy — nothing is sent to the server yet.
+  function editPermission(role: GovernedRole, tabId: string, visible: boolean) {
+    setPermissions(p => p ? { ...p, [role]: { ...p[role], [tabId]: visible } } : p);
+  }
+
+  function cancelPermission(role: GovernedRole) {
+    setPermissions(p => (p && saved) ? { ...p, [role]: saved[role] } : p);
+  }
+
+  // Sends only the tabs that actually changed since the last confirmed save.
+  async function confirmPermission(role: GovernedRole) {
+    if (!permissions || !saved) return;
+    const changed = TAB_META.filter(t => (permissions[role][t.id] !== false) !== (saved[role][t.id] !== false));
+    if (changed.length === 0) return;
+
+    setSaving(s => ({ ...s, [role]: true }));
+    try {
+      for (const t of changed) {
+        const visible = permissions[role][t.id] !== false;
+        const res = await fetch('/api/admin/tab-permissions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role, tab_id: t.id, visible }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to update');
+      }
+      setSaved(s => s ? { ...s, [role]: permissions[role] } : s);
+    } catch (err) {
+      alert('Error: ' + (err instanceof Error ? err.message : String(err)));
+      loadPermissions(); // out of sync with the server — refetch the real state
+    } finally {
+      setSaving(s => ({ ...s, [role]: false }));
+    }
+  }
 
   async function deleteUser(email: string) {
     if (!confirm(`Delete ${email}? This cannot be undone.`)) return;
@@ -309,6 +422,37 @@ export default function AdminPanel({ currentEmail }: { currentEmail: string | nu
           )}
         </div>
       )}
+
+      <div style={{ marginTop: 28 }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: 'var(--text)' }}>Tab Access</div>
+        {permError && <div style={{ color: '#dc2626', padding: 10, marginBottom: 10 }}>{permError}</div>}
+        {!permissions || !saved ? (
+          <div style={{ color: 'var(--muted)', padding: 20 }}>Loading tab permissions…</div>
+        ) : (
+          <div style={{ display: 'grid', gap: 16 }}>
+            {currentRole === 'tester' && (
+              <TabToggleGrid
+                label="Admin"
+                permissions={permissions.admin}
+                saved={saved.admin}
+                saving={saving.admin}
+                onChange={(tabId, visible) => editPermission('admin', tabId, visible)}
+                onConfirm={() => confirmPermission('admin')}
+                onCancel={() => cancelPermission('admin')}
+              />
+            )}
+            <TabToggleGrid
+              label="User"
+              permissions={permissions.user}
+              saved={saved.user}
+              saving={saving.user}
+              onChange={(tabId, visible) => editPermission('user', tabId, visible)}
+              onConfirm={() => confirmPermission('user')}
+              onCancel={() => cancelPermission('user')}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
