@@ -322,6 +322,7 @@ export interface ChannelCategoryRow {
 export interface FiscalPeriodRow {
   period:      number;
   fiscal_year: number;
+  quarter:     number;   // fiscal quarter (1-4) from dim_fiscal_period
   label:       string;   // 'P5 2026'
   start_date:  string;
   end_date:    string;

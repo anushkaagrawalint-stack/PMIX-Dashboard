@@ -20,12 +20,27 @@ function firstOfYear(dateStr: string): string {
   return `${dateStr.slice(0, 4)}-01-01`;
 }
 
-const QUARTERS = [
-  { label: 'Q1', months: 'Jan–Mar', start: '01-01', end: '03-31' },
-  { label: 'Q2', months: 'Apr–Jun', start: '04-01', end: '06-30' },
-  { label: 'Q3', months: 'Jul–Sep', start: '07-01', end: '09-30' },
-  { label: 'Q4', months: 'Oct–Dec', start: '10-01', end: '12-31' },
-];
+// Quarters follow the FISCAL calendar (dim_fiscal_period.quarter, groups of
+// 28-day periods), NOT calendar months — e.g. Q1 2026 = P1–P3 = Dec 29–Mar 29.
+function fiscalQuarters(periods: FiscalPeriodRow[], fiscalYear: number) {
+  const byQ = new Map<number, FiscalPeriodRow[]>();
+  periods.filter(p => p.fiscal_year === fiscalYear && p.quarter != null)
+    .forEach(p => {
+      if (!byQ.has(p.quarter)) byQ.set(p.quarter, []);
+      byQ.get(p.quarter)!.push(p);
+    });
+  return [...byQ.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([qn, rows]) => {
+      const sorted = rows.sort((a, b) => a.period - b.period);
+      return {
+        label: `Q${qn}`,
+        sub:   `P${sorted[0].period}–P${sorted[sorted.length - 1].period}`,
+        start: sorted[0].start_date,
+        end:   sorted[sorted.length - 1].end_date,
+      };
+    });
+}
 
 export default function DatePicker({ dr, periods }: Props) {
   const router = useRouter();
@@ -41,14 +56,18 @@ export default function DatePicker({ dr, periods }: Props) {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const year = Number(dr.dbMax.slice(0, 4));
+  // dbMax can sit in the future (advance catering orders land on their event
+  // date) — anchor presets at today so "Last N days" means what it says.
+  const today  = new Date().toISOString().slice(0, 10);
+  const anchor = dr.dbMax < today ? dr.dbMax : today;
+  const year   = Number(anchor.slice(0, 4));
 
   const presets = [
-    { label: 'Last 7 Days',  start: addDays(dr.dbMax, -6),  end: dr.dbMax },
-    { label: 'Last 14 Days', start: addDays(dr.dbMax, -13), end: dr.dbMax },
-    { label: 'Last 4 Weeks', start: addDays(dr.dbMax, -27), end: dr.dbMax },
-    { label: 'This Month',   start: firstOfMonth(dr.dbMax), end: dr.dbMax },
-    { label: 'YTD',          start: firstOfYear(dr.dbMax),  end: dr.dbMax },
+    { label: 'Last 7 Days',  start: addDays(anchor, -6),  end: anchor },
+    { label: 'Last 14 Days', start: addDays(anchor, -13), end: anchor },
+    { label: 'Last 4 Weeks', start: addDays(anchor, -27), end: anchor },
+    { label: 'This Month',   start: firstOfMonth(anchor), end: anchor },
+    { label: 'YTD',          start: firstOfYear(anchor),  end: anchor },
   ];
 
   const activePeriod = periods.find(p => dr.start === p.start_date && dr.end === p.end_date);
@@ -65,6 +84,10 @@ export default function DatePicker({ dr, periods }: Props) {
     .forEach(([yr, rows]) => {
       yearGroups.push({ year: yr, rows: rows.sort((a, b) => a.period - b.period) });
     });
+
+  // Fiscal year whose periods contain the anchor date (falls back to latest)
+  const fqYear = (periods.find(p => p.start_date <= anchor && anchor <= p.end_date)
+    ?? periods.reduce((a, b) => (b.fiscal_year > a.fiscal_year ? b : a), periods[0]))?.fiscal_year ?? year;
 
   function go(start: string, end: string, label: string) {
     setOpen(false);
@@ -119,16 +142,14 @@ export default function DatePicker({ dr, periods }: Props) {
 
         <div className="dr-div" />
 
-        {/* Quarter */}
-        <div className="dr-sec">Quarter {year}</div>
-        {QUARTERS.map(q => {
-          const qStart = `${year}-${q.start}`;
-          const qEnd   = `${year}-${q.end}`;
-          const active = dr.start === qStart && dr.end === qEnd;
+        {/* Quarter (fiscal) */}
+        <div className="dr-sec">Quarter FY {fqYear}</div>
+        {fiscalQuarters(periods, fqYear).map(q => {
+          const active = dr.start === q.start && dr.end === q.end;
           return (
-            <div key={q.label} className={`dr-it${active ? ' on' : ''}`} onClick={() => go(qStart, qEnd, `${q.label} ${year}`)}>
+            <div key={q.label} className={`dr-it${active ? ' on' : ''}`} onClick={() => go(q.start, q.end, `${q.label} FY${fqYear}`)}>
               {active && <i className="ti ti-check" style={{ fontSize: 10 }} />}
-              {q.label} {year} ({q.months})
+              {q.label} FY{fqYear} ({q.sub})
             </div>
           );
         })}

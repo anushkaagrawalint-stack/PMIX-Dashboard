@@ -201,9 +201,13 @@ export async function getDateRange(
     };
   }
 
-  // Default: last 28 days from latest data
-  const end   = new Date(dbMax);
-  const start = new Date(dbMax);
+  // Default: last 28 days of COMPLETED data. dbMax can sit in the future
+  // (advance catering orders are attributed to their event date), so anchor
+  // presets/defaults at today; future orders stay reachable via custom ranges.
+  const today  = new Date().toISOString().slice(0, 10);
+  const anchor = dbMax < today ? dbMax : today;
+  const end   = new Date(anchor);
+  const start = new Date(anchor);
   start.setDate(start.getDate() - 27);
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
   return { start: fmt(start), end: fmt(end), label: `${fmt(start)} → ${fmt(end)}`, dbMin, dbMax };
@@ -2171,7 +2175,7 @@ export async function getOpenItems(dr: DateRange): Promise<{ summary: OpenItemsS
 export async function getPeriods(): Promise<FiscalPeriodRow[]> {
   const db = pool();
   const { rows } = await db.query(`
-    SELECT period, fiscal_year, start_date::TEXT, end_date::TEXT
+    SELECT period, fiscal_year, quarter, start_date::TEXT, end_date::TEXT
     FROM public.dim_fiscal_period
     ORDER BY fiscal_year DESC, period DESC
     LIMIT 26
@@ -2180,6 +2184,7 @@ export async function getPeriods(): Promise<FiscalPeriodRow[]> {
   return rows.map(r => ({
     period:      Number(r.period),
     fiscal_year: Number(r.fiscal_year),
+    quarter:     Number(r.quarter),
     label:       `P${r.period} ${r.fiscal_year}`,
     start_date:  r.start_date as string,
     end_date:    r.end_date   as string,
