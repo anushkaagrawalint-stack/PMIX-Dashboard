@@ -4,7 +4,7 @@ import {
   CHANNEL_SQL, CHANNEL_SQL_WITH_OVERRIDE, CHANNEL_OVERRIDE_JOIN_SQL,
   GRP_TO_CAT_SQL, ITEM_SUBCAT_SQL, GRP_TO_SUBCAT_SQL,
 } from './constants';
-import { modifierAliasCaseSQL, modifierCostBatchSQL } from './modifierCost';
+import { modifierAliasCaseSQL } from './modifierCost';
 import type {
   DateRange, Summary, ChannelRow, WeekRow, DailyRow,
   WeeklyChannelRow, DailyChannelRow,
@@ -763,109 +763,41 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       FROM analytics.r365_item_cost
       WHERE item_name = 'Harvest Chicken Bowl - In House' AND avg_cost > 0
     ),
-    ${modifierCostBatchSQL()},
     -- Online modifier cost per item × period (LO+3PD orders only)
+    -- Reads the precomputed daily grain (analytics.pc_modifier_daily) instead of
+    -- joining fact_modifiers x fact_order_lines live — see lib/modifierCost.ts
+    -- and PMIX-Pipeline's sql/pc_refresh.sql for the rules baked into include_cmc.
     cmc AS (
       SELECT
-        COALESCE(bf.clean, fol.canonical_name)                                AS parent_item,
-        'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT            AS cost_period,
-        SUM(fm.quantity * COALESCE(mc.unit_cost, 0))                           AS total_mod_cost
-      FROM public.fact_modifiers fm
-      JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
-      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
-      LEFT JOIN public.dim_fiscal_period fp
-             ON fol.business_date >= fp.start_date::DATE
-            AND fol.business_date <= fp.end_date::DATE
-      LEFT JOIN mod_costs mc
-             ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
-            AND mc.pnum      = fp.fiscal_year * 100 + fp.period
-      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
-      WHERE NOT fol.is_voided
-        AND NOT fol.is_deferred
-        AND NOT fm.is_voided
-        AND (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
-        AND (
-          UPPER(fol.menu_group) IN (
-            'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
-            'PLATES','CLASSIC INDIAN PLATES',
-            'BURRITOS','INDIAN BURRITOS',
-            'KIDS','KIDS MEAL'
-          )
-          OR fol.canonical_name IN (
-            'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
-          )
-        )
-        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-        AND (
-          EXISTS (
-            SELECT 1 FROM analytics.modifier_type
-            WHERE modifier_name = fm.canonical_name
-              AND modifier_type NOT LIKE 'Catering%'
-              AND modifier_type NOT IN ('NA','ZeroCater','Plate - Main','Online')
-          )
-          OR NOT EXISTS (
-            SELECT 1 FROM analytics.modifier_type WHERE modifier_name = fm.canonical_name
-          )
-          OR fm.canonical_name = 'That Fire Hot Sauce'
-          OR fol.canonical_name IN (
-            'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
-          )
-        )
-      GROUP BY COALESCE(bf.clean, fol.canonical_name), cost_period
+        COALESCE(bf.clean, d.raw_parent)                                AS parent_item,
+        'P'||LPAD((d.pnum % 100)::TEXT,2,'0')||'-'||(d.pnum / 100)::TEXT AS cost_period,
+        SUM(d.qty * COALESCE(uc.unit_cost, 0))                          AS total_mod_cost
+      FROM analytics.pc_modifier_daily d
+      LEFT JOIN byo_fix bf ON bf.raw = d.raw_parent
+      LEFT JOIN analytics.pc_modifier_unit_cost uc
+             ON uc.norm_name = d.mod_norm AND uc.pnum = d.pnum
+      WHERE d.business_date BETWEEN $1::DATE AND $2::DATE
+        AND d.channel IN ('APP', 'TPD', 'TPD_MARKUP')
+        AND d.include_cmc
+        AND d.in_byo_scope
+      GROUP BY 1, 2
     ),
 
     -- IH modifier cost per item × period
     cmc_ih AS (
       SELECT
-        COALESCE(bf.clean, fol.canonical_name)                                AS parent_item,
-        'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT            AS cost_period,
-        SUM(fm.quantity * COALESCE(mc.unit_cost, 0))                           AS total_ih_mod_cost
-      FROM public.fact_modifiers fm
-      JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
-      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
-      LEFT JOIN public.dim_fiscal_period fp
-             ON fol.business_date >= fp.start_date::DATE
-            AND fol.business_date <= fp.end_date::DATE
-      LEFT JOIN mod_costs mc
-             ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
-            AND mc.pnum      = fp.fiscal_year * 100 + fp.period
-      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
-      WHERE NOT fol.is_voided
-        AND NOT fol.is_deferred
-        AND NOT fm.is_voided
-        AND (${CHO}) = 'IN_HOUSE'
-        AND (
-          UPPER(fol.menu_group) IN (
-            'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
-            'PLATES','CLASSIC INDIAN PLATES',
-            'BURRITOS','INDIAN BURRITOS',
-            'KIDS','KIDS MEAL'
-          )
-          OR fol.canonical_name IN (
-            'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
-          )
-        )
-        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-        AND (
-          EXISTS (
-            SELECT 1 FROM analytics.modifier_type
-            WHERE modifier_name = fm.canonical_name
-              AND modifier_type NOT LIKE 'Catering%'
-              AND modifier_type NOT IN ('NA','ZeroCater','Plate - Main','Online')
-          )
-          OR NOT EXISTS (
-            SELECT 1 FROM analytics.modifier_type WHERE modifier_name = fm.canonical_name
-          )
-          OR fm.canonical_name = 'That Fire Hot Sauce'
-          OR fol.canonical_name IN (
-            'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
-          )
-        )
-      GROUP BY COALESCE(bf.clean, fol.canonical_name), cost_period
+        COALESCE(bf.clean, d.raw_parent)                                AS parent_item,
+        'P'||LPAD((d.pnum % 100)::TEXT,2,'0')||'-'||(d.pnum / 100)::TEXT AS cost_period,
+        SUM(d.qty * COALESCE(uc.unit_cost, 0))                          AS total_ih_mod_cost
+      FROM analytics.pc_modifier_daily d
+      LEFT JOIN byo_fix bf ON bf.raw = d.raw_parent
+      LEFT JOIN analytics.pc_modifier_unit_cost uc
+             ON uc.norm_name = d.mod_norm AND uc.pnum = d.pnum
+      WHERE d.business_date BETWEEN $1::DATE AND $2::DATE
+        AND d.channel = 'IN_HOUSE'
+        AND d.include_cmc
+        AND d.in_byo_scope
+      GROUP BY 1, 2
     ),
 
     -- Online (LO+3PD) qty per item × period: denominator for pink-sheet avg cost
@@ -1340,102 +1272,45 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
         AND 'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT = sp.pkey
       GROUP BY COALESCE(bf.clean, fol.canonical_name)
     ),
-    ${modifierCostBatchSQL()},
-    -- Online modifier cost per item × period (LO+3PD orders only)
+    -- Online modifier cost, priced AND scoped at the selected period (§2.4 display rule):
+    -- reads analytics.pc_modifier_daily instead of the live fact_modifiers join.
+    -- d.pnum = sp.pnum restricts to orders whose OWN period is the selected period —
+    -- matches the original CTE's "GROUP BY cost_period" + outer join on cost_period=sp.pkey,
+    -- which discarded any other period's rows even when the date range spanned several.
     cmc AS (
       SELECT
-        COALESCE(bf.clean, fol.canonical_name)                               AS parent_item,
-        'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT         AS cost_period,
-        SUM(fm.quantity * COALESCE(mc.unit_cost, 0))                         AS total_mod_cost
-      FROM public.fact_modifiers fm
-      JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
-      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
-      LEFT JOIN public.dim_fiscal_period fp
-             ON fol.business_date >= fp.start_date::DATE
-            AND fol.business_date <= fp.end_date::DATE
-      LEFT JOIN mod_costs mc
-             ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
-            AND mc.pnum      = fp.fiscal_year * 100 + fp.period
-      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
-      WHERE NOT fol.is_voided AND NOT fol.is_deferred AND NOT fm.is_voided
-        AND (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
-        AND (
-          UPPER(fol.menu_group) IN (
-            'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
-            'PLATES','CLASSIC INDIAN PLATES','BURRITOS','INDIAN BURRITOS','KIDS','KIDS MEAL'
-          )
-          OR fol.canonical_name IN (
-            'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
-          )
-        )
-        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-        AND (
-          EXISTS (
-            SELECT 1 FROM analytics.modifier_type
-            WHERE modifier_name = fm.canonical_name
-              AND modifier_type NOT LIKE 'Catering%'
-              AND modifier_type NOT IN ('NA','ZeroCater','Plate - Main','Online')
-          )
-          OR NOT EXISTS (
-            SELECT 1 FROM analytics.modifier_type WHERE modifier_name = fm.canonical_name
-          )
-          OR fm.canonical_name = 'That Fire Hot Sauce'
-          OR fol.canonical_name IN (
-            'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
-          )
-        )
-      GROUP BY COALESCE(bf.clean, fol.canonical_name),
-               'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT
+        COALESCE(bf.clean, d.raw_parent) AS parent_item,
+        sp.pkey                          AS cost_period,
+        SUM(d.qty * COALESCE(uc.unit_cost, 0)) AS total_mod_cost
+      FROM analytics.pc_modifier_daily d
+      CROSS JOIN selected_period sp
+      LEFT JOIN byo_fix bf ON bf.raw = d.raw_parent
+      LEFT JOIN analytics.pc_modifier_unit_cost uc
+             ON uc.norm_name = d.mod_norm AND uc.pnum = sp.pnum
+      WHERE d.business_date BETWEEN $1::DATE AND $2::DATE
+        AND d.pnum = sp.pnum
+        AND d.channel IN ('APP', 'TPD', 'TPD_MARKUP')
+        AND d.include_cmc
+        AND d.in_byo_scope
+      GROUP BY 1, 2
     ),
-    -- IH modifier cost per item × period
+    -- IH modifier cost, priced AND scoped at the selected period
     cmc_ih AS (
       SELECT
-        COALESCE(bf.clean, fol.canonical_name)                               AS parent_item,
-        'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT         AS cost_period,
-        SUM(fm.quantity * COALESCE(mc.unit_cost, 0))                         AS total_ih_mod_cost
-      FROM public.fact_modifiers fm
-      JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
-      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
-      LEFT JOIN public.dim_fiscal_period fp
-             ON fol.business_date >= fp.start_date::DATE
-            AND fol.business_date <= fp.end_date::DATE
-      LEFT JOIN mod_costs mc
-             ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
-            AND mc.pnum      = fp.fiscal_year * 100 + fp.period
-      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
-      WHERE NOT fol.is_voided AND NOT fol.is_deferred AND NOT fm.is_voided
-        AND (${CHO}) = 'IN_HOUSE'
-        AND (
-          UPPER(fol.menu_group) IN (
-            'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
-            'PLATES','CLASSIC INDIAN PLATES','BURRITOS','INDIAN BURRITOS','KIDS','KIDS MEAL'
-          )
-          OR fol.canonical_name IN (
-            'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
-          )
-        )
-        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-        AND (
-          EXISTS (
-            SELECT 1 FROM analytics.modifier_type
-            WHERE modifier_name = fm.canonical_name
-              AND modifier_type NOT LIKE 'Catering%'
-              AND modifier_type NOT IN ('NA','ZeroCater','Plate - Main','Online')
-          )
-          OR NOT EXISTS (
-            SELECT 1 FROM analytics.modifier_type WHERE modifier_name = fm.canonical_name
-          )
-          OR fm.canonical_name = 'That Fire Hot Sauce'
-          OR fol.canonical_name IN (
-            'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
-          )
-        )
-      GROUP BY COALESCE(bf.clean, fol.canonical_name),
-               'P'||LPAD(fp.period::TEXT,2,'0')||'-'||fp.fiscal_year::TEXT
+        COALESCE(bf.clean, d.raw_parent) AS parent_item,
+        sp.pkey                          AS cost_period,
+        SUM(d.qty * COALESCE(uc.unit_cost, 0)) AS total_ih_mod_cost
+      FROM analytics.pc_modifier_daily d
+      CROSS JOIN selected_period sp
+      LEFT JOIN byo_fix bf ON bf.raw = d.raw_parent
+      LEFT JOIN analytics.pc_modifier_unit_cost uc
+             ON uc.norm_name = d.mod_norm AND uc.pnum = sp.pnum
+      WHERE d.business_date BETWEEN $1::DATE AND $2::DATE
+        AND d.pnum = sp.pnum
+        AND d.channel = 'IN_HOUSE'
+        AND d.include_cmc
+        AND d.in_byo_scope
+      GROUP BY 1, 2
     ),
     -- Range-wide IH modifier cost per item (fallback for items with no selected-period IH orders)
     cmc_ih_range AS (
@@ -1457,22 +1332,19 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
     -- 2026-07-03: same modifier cost for all 3 channels, 3PD still gets its usual
     -- ×1.18 uplift on top (applied in the final SELECT below).
     wavg_online AS (
-      SELECT COALESCE(bf.clean, fol.canonical_name) AS parent_item,
-             SUM(fm.quantity * mc.unit_cost) / NULLIF(SUM(fm.quantity), 0) AS wavg
-      FROM public.fact_modifiers fm
-      JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
-      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      SELECT COALESCE(bf.clean, d.raw_parent) AS parent_item,
+             SUM(d.qty * uc.unit_cost) / NULLIF(SUM(d.qty), 0) AS wavg
+      FROM analytics.pc_modifier_daily d
+      LEFT JOIN byo_fix bf ON bf.raw = d.raw_parent
       CROSS JOIN selected_period sp
-      JOIN mod_costs mc
-        ON mc.norm_name = LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', ''))
-       AND mc.pnum      = sp.pnum
-      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
-      WHERE NOT fol.is_voided AND NOT fol.is_deferred AND NOT fm.is_voided
-        AND (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
-        AND COALESCE(bf.clean, fol.canonical_name) IN (SELECT nm FROM zero_base)
-        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-        AND mc.unit_cost > 0
-      GROUP BY COALESCE(bf.clean, fol.canonical_name)
+      JOIN analytics.pc_modifier_unit_cost uc
+        ON uc.norm_name = d.mod_norm
+       AND uc.pnum      = sp.pnum
+      WHERE d.channel IN ('APP', 'TPD', 'TPD_MARKUP')
+        AND COALESCE(bf.clean, d.raw_parent) IN (SELECT nm FROM zero_base)
+        AND d.business_date BETWEEN $1::DATE AND $2::DATE
+        AND uc.unit_cost > 0
+      GROUP BY COALESCE(bf.clean, d.raw_parent)
     ),
     -- Base item costs, freshest row ≤ selected period (§2 RC1 display rule)
     ih_base AS (
@@ -1629,7 +1501,7 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
     ),
     -- Most recent fiscal period overlapping the date range (§2.4 display rule) —
     -- detail rows are costed at this period so they reconcile with the summary.
-    selected_period AS (
+    sp AS (
       SELECT fiscal_year * 100 + period AS pnum
       FROM public.dim_fiscal_period
       WHERE start_date::DATE <= $2::DATE
@@ -1637,105 +1509,38 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       ORDER BY fiscal_year DESC, period DESC
       LIMIT 1
     ),
-    ${modifierCostBatchSQL()}
+    -- Reads the precomputed daily grain (analytics.pc_modifier_daily) instead of the
+    -- live fact_modifiers x fact_order_lines join + per-row modifier_type resolution —
+    -- section_base/mod_norm/from_item_type/pit_item_type already bake in that logic.
+    rows_ AS (
+      SELECT
+        COALESCE(bf.clean, d.raw_parent) AS parent_item,
+        CASE WHEN d.from_item_type AND COALESCE(uc.unit_cost, 0) > 0
+                  AND d.pit_item_type ILIKE '%online%'
+             THEN CASE WHEN d.pit_item_type ILIKE 'kids meal%' THEN 'Drink' ELSE 'Topping' END
+             ELSE d.section_base
+        END AS section,
+        d.mod_display AS modifier_name,
+        CASE WHEN d.channel IN ('APP', 'TPD', 'TPD_MARKUP')
+             THEN 'online' ELSE 'ih' END AS channel,
+        d.qty,
+        d.qty * COALESCE(uc.unit_cost, 0) AS cost
+      FROM analytics.pc_modifier_daily d
+      CROSS JOIN sp
+      LEFT JOIN byo_fix bf ON bf.raw = d.raw_parent
+      LEFT JOIN analytics.pc_modifier_unit_cost uc
+             ON uc.norm_name = d.mod_norm AND uc.pnum = sp.pnum
+      WHERE d.business_date BETWEEN $1::DATE AND $2::DATE
+        AND d.channel IN ('IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP')
+        AND d.in_byo_scope
+    )
     SELECT
-      COALESCE(bf.clean, fol.canonical_name)   AS parent_item,
-      -- Modifiers unknown to modifier_type but with a real cost (e.g. Crispy Chickpea
-      -- Noodles) belong under Topping — Kids Meal drinks under Drink — instead of the
-      -- parent's '... - Online' item_type pseudo-section.
-      CASE WHEN mt.from_item_type AND COALESCE(mc.unit_cost, 0) > 0
-                AND pit.item_type ILIKE '%online%'
-           THEN CASE WHEN pit.item_type ILIKE 'kids meal%' THEN 'Drink' ELSE 'Topping' END
-           ELSE mt.modifier_type
-      END                                       AS section,
-      nm.base_name                              AS modifier_name,
-      CASE WHEN (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
-           THEN 'online' ELSE 'ih' END         AS channel,
-      SUM(fm.quantity)::BIGINT                  AS qty,
-      ROUND(SUM(fm.quantity * COALESCE(mc.unit_cost, 0))::NUMERIC, 4)
-                                                AS total_cost
-    FROM public.fact_modifiers fm
-    JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
-    LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
-    ${CH_OVERRIDE_JOIN('fol.selection_guid')}
-    -- Toast sometimes sends the already-canonical name directly (e.g. 'BYO Grain Bowl')
-    -- instead of the short form byo_fix expects ('Grain Bowl') — parent_item_type only
-    -- has the short form, so a plain equality join misses those rows entirely (and any
-    -- unmapped modifier on them, e.g. Crispy Chickpea Noodles, gets silently dropped by
-    -- the 'mt.modifier_type IS NOT NULL' filter below). Fall back to the byo_fix alias.
-    LEFT JOIN LATERAL (
-      SELECT p.item_type
-      FROM analytics.parent_item_type p
-      WHERE p.parent_item = fol.canonical_name
-         OR (
-           -- Alias fallback must ALSO match the order's actual channel — otherwise
-           -- (e.g. Spiced Cauli + Quinoa Bowl online, whose online alias isn't in
-           -- parent_item_type at all) we'd rather leave item_type NULL than mislabel
-           -- an online order with an '... - In House' item_type.
-           p.parent_item IN (SELECT raw FROM byo_fix WHERE clean = fol.canonical_name)
-           AND p.item_type ILIKE '%' || CASE WHEN (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
-                 THEN 'Online' ELSE 'In House' END
-         )
-      ORDER BY (p.parent_item = fol.canonical_name) DESC
-      LIMIT 1
-    ) pit ON true
-    -- Strip Toast auto-select suffix ' -*' so 'Spicy Chili Chicken -*' = 'Spicy Chili Chicken'
-    CROSS JOIN LATERAL (
-      SELECT CASE WHEN fm.canonical_name LIKE '% -*'
-                  THEN LEFT(fm.canonical_name, LENGTH(fm.canonical_name) - 3)
-                  ELSE fm.canonical_name END AS base_name
-    ) nm
-    CROSS JOIN LATERAL (
-      SELECT COALESCE(
-        known.t,
-        CASE WHEN LOWER(nm.base_name) = 'that fire hot sauce' THEN 'Chutney And Dressing' END,
-        CASE WHEN NOT EXISTS (
-          SELECT 1 FROM analytics.modifier_type WHERE modifier_name = nm.base_name
-        ) THEN pit.item_type END
-      ) AS modifier_type,
-      (known.t IS NULL
-       AND LOWER(nm.base_name) <> 'that fire hot sauce'
-       AND NOT EXISTS (
-         SELECT 1 FROM analytics.modifier_type WHERE modifier_name = nm.base_name
-       )) AS from_item_type
-      FROM (
-        SELECT (SELECT amt.modifier_type FROM analytics.modifier_type amt
-                WHERE amt.modifier_name = nm.base_name
-                  AND amt.modifier_type NOT LIKE 'Catering%'
-                  AND amt.modifier_type NOT IN ('NA','ZeroCater','Plate - Main','Online')
-                ORDER BY (amt.item_type = pit.item_type) DESC NULLS LAST
-                LIMIT 1) AS t
-      ) known
-    ) mt
-    CROSS JOIN selected_period sp
-    LEFT JOIN mod_costs mc
-           ON mc.norm_name = LOWER(nm.base_name)
-          AND mc.pnum      = sp.pnum
-    WHERE NOT fol.is_voided AND NOT fol.is_deferred AND NOT fm.is_voided
-      AND (${CHO}) IN ('IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP')
-      AND (
-        UPPER(fol.menu_group) IN (
-          'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
-          'PLATES','CLASSIC INDIAN PLATES','BURRITOS','INDIAN BURRITOS','KIDS','KIDS MEAL'
-        )
-        OR fol.canonical_name IN (
-          'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-          'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
-        )
-      )
-      AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-      AND mt.modifier_type IS NOT NULL
-      AND mt.modifier_type NOT IN ('Online', 'NA', 'ZeroCater')
-    GROUP BY
-      COALESCE(bf.clean, fol.canonical_name),
-      CASE WHEN mt.from_item_type AND COALESCE(mc.unit_cost, 0) > 0
-                AND pit.item_type ILIKE '%online%'
-           THEN CASE WHEN pit.item_type ILIKE 'kids meal%' THEN 'Drink' ELSE 'Topping' END
-           ELSE mt.modifier_type
-      END,
-      nm.base_name,
-      CASE WHEN (${CHO}) IN ('APP', 'TPD', 'TPD_MARKUP')
-           THEN 'online' ELSE 'ih' END
+      parent_item, section, modifier_name, channel,
+      SUM(qty)::BIGINT AS qty,
+      ROUND(SUM(cost)::NUMERIC, 4) AS total_cost
+    FROM rows_
+    WHERE section IS NOT NULL AND section NOT IN ('Online', 'NA', 'ZeroCater')
+    GROUP BY 1, 2, 3, 4
     ORDER BY parent_item, channel, section, modifier_name
   `, [dr.start, dr.end]);
   await db.end();
@@ -1758,25 +1563,14 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
     const { rows } = await db.query(`
       WITH raw_mods AS (
         SELECT
-          mt.modifier_type        AS raw_type,
-          fm.canonical_name       AS modifier_name,
-          fm.quantity             AS quantity,
-          fol.canonical_name      AS parent_item,
-          COALESCE(fol.location_code, '') AS location_code
-        FROM public.fact_modifiers fm
-        JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
-        JOIN (
-          SELECT DISTINCT ON (parent_item) parent_item, item_type
-          FROM analytics.parent_item_type
-          ORDER BY parent_item, item_type
-        ) pit ON pit.parent_item = fol.canonical_name
-        JOIN analytics.modifier_type mt
-          ON mt.modifier_name = fm.canonical_name
-         AND mt.item_type     = pit.item_type
-        WHERE ${BASE_WHERE}
-          AND NOT fm.is_voided
-          AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-          AND LOWER(mt.modifier_type) IN ('main','1/2 main','base','1/2 base','veggie','topping','sauce','chutney + dressing')
+          byo_type          AS raw_type,
+          mod_display        AS modifier_name,
+          qty                AS quantity,
+          raw_parent         AS parent_item,
+          COALESCE(location_code, '') AS location_code
+        FROM analytics.pc_modifier_daily
+        WHERE byo_type IS NOT NULL
+          AND business_date BETWEEN $1::DATE AND $2::DATE
       ),
       byo_mods AS (
         SELECT
@@ -1810,11 +1604,18 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
         ORDER BY item_name_updated, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
       ),
       -- Cost resolution: r365_modifier_cost MI rows primary (freshest, with aliases), r365_item_cost fallback (RC4)
+      -- Resolved once per DISTINCT modifier_name (not once per byo_mods row) — the CASE
+      -- below is a pure function of modifier_name, so deduping first avoids re-running
+      -- the same correlated subqueries against r365_modifier_cost for every
+      -- (parent_item, location_code) combination a name happens to appear in.
+      distinct_mod_names AS (
+        SELECT DISTINCT modifier_name FROM byo_mods
+      ),
       mod_costs_resolved AS (
-        SELECT DISTINCT ON (bm.modifier_name)
-          bm.modifier_name,
+        SELECT
+          mn.modifier_name,
           CASE
-            WHEN bm.modifier_name ILIKE 'Skip %' OR bm.modifier_name ILIKE 'No %'
+            WHEN mn.modifier_name ILIKE 'Skip %' OR mn.modifier_name ILIKE 'No %'
               THEN 0.0
             ELSE COALESCE(
               -- Primary: freshest MI row across {direct name, alias}; tie → direct name wins
@@ -1822,39 +1623,38 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
                FROM analytics.r365_modifier_cost r
                WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
                  AND LOWER(r.clean_name) IN (
-                   LOWER(bm.modifier_name),
-                   ${modifierAliasCaseSQL('LOWER(bm.modifier_name)')}
+                   LOWER(mn.modifier_name),
+                   ${modifierAliasCaseSQL('LOWER(mn.modifier_name)')}
                  )
                ORDER BY RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT DESC,
-                        (LOWER(r.clean_name) = LOWER(bm.modifier_name)) DESC
+                        (LOWER(r.clean_name) = LOWER(mn.modifier_name)) DESC
                LIMIT 1),
               -- '1/2 X' → half cost of 'X' from MI (native R365 1/2 rows resolve at primary above)
-              CASE WHEN bm.modifier_name ILIKE '1/2 %'
+              CASE WHEN mn.modifier_name ILIKE '1/2 %'
                 THEN (SELECT r.cost_per_portion / 2.0
                       FROM analytics.r365_modifier_cost r
                       WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
-                        AND LOWER(r.clean_name) = LOWER(REGEXP_REPLACE(bm.modifier_name, '^1/2 (and )?', '', 'i'))
+                        AND LOWER(r.clean_name) = LOWER(REGEXP_REPLACE(mn.modifier_name, '^1/2 (and )?', '', 'i'))
                       ORDER BY RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT DESC
                       LIMIT 1)
               END,
               -- 'Extra X' → cost of 'X' from MI
-              CASE WHEN bm.modifier_name ILIKE 'Extra %'
+              CASE WHEN mn.modifier_name ILIKE 'Extra %'
                 THEN (SELECT r.cost_per_portion
                       FROM analytics.r365_modifier_cost r
                       WHERE r.recipe_name LIKE 'MI %' AND r.cost_per_portion > 0
-                        AND LOWER(r.clean_name) = LOWER(SUBSTR(bm.modifier_name, 7))
+                        AND LOWER(r.clean_name) = LOWER(SUBSTR(mn.modifier_name, 7))
                       ORDER BY RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT DESC
                       LIMIT 1)
               END,
               -- Hardcode: Spicy Mango Chutney
-              CASE WHEN LOWER(bm.modifier_name) IN ('spicy mango chutney', 'spicy mango chutney - side') THEN 0.1777 END,
+              CASE WHEN LOWER(mn.modifier_name) IN ('spicy mango chutney', 'spicy mango chutney - side') THEN 0.1777 END,
               -- Fallback: r365_item_cost direct match
               ic_direct.avg_cost
             )
           END AS avg_cost
-        FROM byo_mods bm
-        LEFT JOIN item_cost_fallback ic_direct ON LOWER(ic_direct.item_name_updated) = LOWER(bm.modifier_name)
-        ORDER BY bm.modifier_name
+        FROM distinct_mod_names mn
+        LEFT JOIN item_cost_fallback ic_direct ON LOWER(ic_direct.item_name_updated) = LOWER(mn.modifier_name)
       ),
       -- AppScript subWeightedAvg: composite modifier cost = weighted avg of constituent halves
       -- "1/2 and 1/2 Mains"         → avg of half_main entries per parent_item
@@ -2817,7 +2617,7 @@ export async function loadDashboardData(
   override?: { start: string; end: string; label?: string }
 ) {
   'use cache';
-  cacheLife('seconds');
+  cacheLife('hours');
   // Get date range + periods first so we can compute prev range for comparison
   const [dr, periods] = await Promise.all([
     getDateRange(override),
