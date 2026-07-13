@@ -4,7 +4,6 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
 } from 'recharts';
 import type { DashboardData } from '@/lib/types';
-import type { Role } from '@/lib/auth';
 import { normalizeCategory } from '@/lib/constants';
 
 const fmt$ = (v: number) =>
@@ -21,7 +20,7 @@ const METRIC_LABELS: Record<Metric, string> = {
   mix_pct: '% Mix',
 };
 
-export default function LocationCompare({ data, role }: { data: DashboardData; role: Role }) {
+export default function LocationCompare({ data }: { data: DashboardData }) {
   const { locationItems, items, locations } = data;
 
   const locMeta = useMemo(
@@ -215,13 +214,11 @@ export default function LocationCompare({ data, role }: { data: DashboardData; r
                   <input type="checkbox" checked={selectedLocs.length === 0} onChange={() => setSelectedLocs([])} style={{ accentColor: 'var(--accent)' }} />
                   All Locations
                 </label>
-                {(role === 'tester' || role === 'admin') && (
-                  <label className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
-                    <input type="checkbox" checked={isOpenLocationsSelected}
-                      onChange={() => setSelectedLocs([...openLocationCodes])} style={{ accentColor: 'var(--accent)' }} />
-                    Open Locations
-                  </label>
-                )}
+                <label className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
+                  <input type="checkbox" checked={isOpenLocationsSelected}
+                    onChange={() => setSelectedLocs([...openLocationCodes])} style={{ accentColor: 'var(--accent)' }} />
+                  Open Locations
+                </label>
                 <div className="dr-div" />
                 {locMeta.map(l => (
                   <label key={l.location_code} className="dr-it" style={{ gap: 8, userSelect: 'none' }}>

@@ -20,7 +20,6 @@ import MEOverall from './tabs/MEOverall';
 import PinkSheets from './tabs/PinkSheets';
 import EntreeMix from './tabs/EntreeMix';
 import AdminPanel from './tabs/AdminPanel';
-import AttachmentRate from './tabs/AttachmentRate';
 
 // Which tabs each role can see now lives in analytics.tab_permissions (owner
 // request 2026-07-10) — configurable by tester (Admin + User tabs) and admin
@@ -56,7 +55,6 @@ const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location
   renames:    { channel: false, category: false, location: false },
   needs:      { channel: false, category: false, location: false },
   openitems:  { channel: false, category: false, location: false },
-  attachment: { channel: true,  category: false, location: true  },
   admin:      { channel: false, category: false, location: false },
 };
 
@@ -750,13 +748,11 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
                           onChange={() => setLocations([])} style={{ accentColor: 'var(--accent)' }} />
                         All Locations
                       </label>
-                      {isAdmin && (
-                        <label className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
-                          <input type="checkbox" checked={isOpenLocationsSelected}
-                            onChange={() => setLocations([...openLocationCodes])} style={{ accentColor: 'var(--accent)' }} />
-                          Open Locations
-                        </label>
-                      )}
+                      <label className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
+                        <input type="checkbox" checked={isOpenLocationsSelected}
+                          onChange={() => setLocations([...openLocationCodes])} style={{ accentColor: 'var(--accent)' }} />
+                        Open Locations
+                      </label>
                       <div className="dr-div" />
                       {data.locations.map(loc => (
                         <label key={loc.location_code} className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
@@ -806,7 +802,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
           validation — always pass blended, all-location data here regardless of the
           global location filter (the location-scaled memos stay wired for itemmix). */}
       {tab === 'entreemix'  && <EntreeMix        pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} meItems={data.meItems} />}
-      {tab === 'loccompare' && <LocationCompare  data={filteredData} role={role} />}
+      {tab === 'loccompare' && <LocationCompare  data={filteredData} />}
       {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} />}
       {tab === 'byo'        && visibleTabs.includes('byo')        && <BYOBreakdown modifiers={data.modifiers} items={data.items} pinkSheets={data.pinkSheets} meItems={data.meItems} selectedLocations={[]} />}
       {tab === 'payment'    && <PaymentSource    payments={data.payments} paymentsByLocation={data.paymentsByLocation} paymentSourcesByLocation={data.paymentSourcesByLocation} selectedLocations={selectedLocations} />}
@@ -816,7 +812,6 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       {tab === 'renames'    && <RenamesAudit     renames={data.renames} />}
       {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}
-      {tab === 'attachment' && visibleTabs.includes('attachment') && <AttachmentRate dr={dr} selectedChannels={selectedChannels} selectedLocations={selectedLocations} />}
       {tab === 'admin'      && visibleTabs.includes('admin')      && <AdminPanel currentEmail={currentEmail} currentRole={role} />}
     </div>
   );
