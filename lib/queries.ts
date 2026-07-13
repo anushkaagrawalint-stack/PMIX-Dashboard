@@ -528,9 +528,16 @@ export async function getLocations(): Promise<LocationRow[]> {
     ORDER BY display_name
   `);
   await db.end();
+  // is_open is always TRUE here — this function is only ever called from inside
+  // loadDashboardData, which is cached for hours (cacheLife('hours')). Real
+  // open/closed status must never be baked into that cache, or a tester's
+  // change can sit stale for up to an hour. The actual value is fetched fresh,
+  // uncached, via getLocationsWithStatus() in app/page.tsx, which overwrites
+  // data.locations before it ever reaches the client.
   return rows.map(r => ({
     location_code: r.location_code as string,
     display_name:  r.display_name  as string,
+    is_open:       true,
   }));
 }
 

@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 import { loadDashboardData } from '@/lib/queries';
 import { verifyToken, hasAdminAccess, COOKIE } from '@/lib/auth';
 import { getTabPermissions } from '@/lib/tabPermissions';
+import { getLocationsWithStatus } from '@/lib/locationStatus';
 import { TAB_META } from '@/lib/tabsMeta';
 import Dashboard from '@/components/Dashboard';
 
@@ -13,12 +14,16 @@ interface Props {
 export default async function Home({ searchParams }: Props) {
   const { start, end, label } = await searchParams;
   const override = start && end ? { start, end, label } : undefined;
-  // getTabPermissions() is a tiny ~15-row lookup — runs concurrently with the
-  // heavy loadDashboardData query, so it adds no measurable page-load time.
-  const [data, cookieStore, permissions] = await Promise.all([
+  // getTabPermissions() and getLocationsWithStatus() are both tiny lookups
+  // (~15 and ~5 rows) that run concurrently with the heavy loadDashboardData
+  // query, so neither adds measurable page-load time. Both must stay OUTSIDE
+  // loadDashboardData's cache (cacheLife('hours')) — otherwise a tester's
+  // tab/location change could sit stale for up to an hour.
+  const [data, cookieStore, permissions, freshLocations] = await Promise.all([
     loadDashboardData(override),
     cookies(),
     getTabPermissions(),
+    getLocationsWithStatus(),
   ]);
   const token   = cookieStore.get(COOKIE)?.value;
   const payload = token ? await verifyToken(token) : null;
@@ -32,9 +37,14 @@ export default async function Home({ searchParams }: Props) {
     ? TAB_META.map(t => t.id as string)
     : TAB_META.filter(t => permissions[role as 'admin' | 'user']?.[t.id] !== false).map(t => t.id as string);
 
+  // data.locations came from the cached loadDashboardData with is_open
+  // hardcoded true (see getLocations() in lib/queries.ts) — replace with the
+  // freshly-fetched, always-current status before it reaches the client.
+  const dataWithFreshLocations = { ...data, locations: freshLocations };
+
   return (
     <Dashboard
-      data={data}
+      data={dataWithFreshLocations}
       isAdmin={isAdmin}
       role={role}
       visibleTabs={visibleTabs}

@@ -96,6 +96,7 @@ export interface LocationItemRow {
 export interface LocationRow {
   location_code: string;
   display_name:  string;
+  is_open:       boolean; // tester-configurable, analytics.location_status — default true
 }
 
 // ─── Menu Engineering ─────────────────────────────────────────────────────────

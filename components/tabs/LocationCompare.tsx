@@ -4,6 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
 } from 'recharts';
 import type { DashboardData } from '@/lib/types';
+import type { Role } from '@/lib/auth';
 import { normalizeCategory } from '@/lib/constants';
 
 const fmt$ = (v: number) =>
@@ -20,11 +21,18 @@ const METRIC_LABELS: Record<Metric, string> = {
   mix_pct: '% Mix',
 };
 
-export default function LocationCompare({ data }: { data: DashboardData }) {
+export default function LocationCompare({ data, role }: { data: DashboardData; role: Role }) {
   const { locationItems, items, locations } = data;
 
   const locMeta = useMemo(
     () => locations.map((l, i) => ({ ...l, color: LOC_SHADES[i % LOC_SHADES.length] })),
+    [locations],
+  );
+
+  // Tester-only "Open Locations" quick-select — recomputed live from
+  // analytics.location_status, never hardcoded.
+  const openLocationCodes = useMemo(
+    () => locations.filter(l => l.is_open).map(l => l.location_code),
     [locations],
   );
 
@@ -46,6 +54,10 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
   function toggleLoc(code: string) {
     setSelectedLocs(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
   }
+
+  const isOpenLocationsSelected = selectedLocs.length > 0
+    && selectedLocs.length === openLocationCodes.length
+    && openLocationCodes.every(c => selectedLocs.includes(c));
 
   function handleColSort(col: string) {
     if (sortCol === col) setSortDir(d => d === 'desc' ? 'asc' : 'desc');
@@ -203,6 +215,13 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
                   <input type="checkbox" checked={selectedLocs.length === 0} onChange={() => setSelectedLocs([])} style={{ accentColor: 'var(--accent)' }} />
                   All Locations
                 </label>
+                {(role === 'tester' || role === 'admin') && (
+                  <label className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
+                    <input type="checkbox" checked={isOpenLocationsSelected}
+                      onChange={() => setSelectedLocs([...openLocationCodes])} style={{ accentColor: 'var(--accent)' }} />
+                    Open Locations
+                  </label>
+                )}
                 <div className="dr-div" />
                 {locMeta.map(l => (
                   <label key={l.location_code} className="dr-it" style={{ gap: 8, userSelect: 'none' }}>

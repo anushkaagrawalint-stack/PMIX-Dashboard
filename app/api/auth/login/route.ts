@@ -20,8 +20,8 @@ export async function POST(req: NextRequest) {
   }
 
   const role = user.role;
-  const token = await signToken(normalized, role);
-  const res = NextResponse.json({ ok: true, user: { email: normalized, role } });
+  const token = await signToken(normalized, role, user.name);
+  const res = NextResponse.json({ ok: true, user: { email: normalized, role, name: user.name } });
   res.cookies.set(COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',

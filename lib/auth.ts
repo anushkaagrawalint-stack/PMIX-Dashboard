@@ -21,18 +21,18 @@ export function hasAdminAccess(role: Role | undefined | null): boolean {
   return role === 'admin' || role === 'tester';
 }
 
-export async function signToken(email: string, role: Role): Promise<string> {
-  return new SignJWT({ email, role })
+export async function signToken(email: string, role: Role, name: string | null): Promise<string> {
+  return new SignJWT({ email, role, name })
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime(EXPIRY)
     .sign(SECRET);
 }
 
-export async function verifyToken(token: string): Promise<{ email: string; role: Role } | null> {
+export async function verifyToken(token: string): Promise<{ email: string; role: Role; name: string | null } | null> {
   try {
     const { payload } = await jwtVerify(token, SECRET);
-    const p = payload as { email: string; role?: Role };
-    return { email: p.email, role: normalizeRole(p.role) };
+    const p = payload as { email: string; role?: Role; name?: string | null };
+    return { email: p.email, role: normalizeRole(p.role), name: p.name ?? null };
   } catch {
     return null;
   }
@@ -40,15 +40,20 @@ export async function verifyToken(token: string): Promise<{ email: string; role:
 
 // Users live in analytics.users (managed via the Admin Panel), not an env var —
 // account changes (add/edit/delete) take effect immediately, no redeploy.
-export async function getUserByEmail(email: string): Promise<{ email: string; hash: string; role: Role } | null> {
+export async function getUserByEmail(email: string): Promise<{ email: string; hash: string; role: Role; name: string | null } | null> {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL! });
   try {
     const { rows } = await pool.query(
-      `SELECT email, password_hash, role FROM analytics.users WHERE email = $1`,
+      `SELECT email, password_hash, role, name FROM analytics.users WHERE email = $1`,
       [email],
     );
     if (rows.length === 0) return null;
-    return { email: rows[0].email, hash: rows[0].password_hash, role: normalizeRole(rows[0].role) };
+    return {
+      email: rows[0].email,
+      hash:  rows[0].password_hash,
+      role:  normalizeRole(rows[0].role),
+      name:  rows[0].name ?? null,
+    };
   } finally {
     await pool.end();
   }

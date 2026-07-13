@@ -60,8 +60,6 @@ const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location
   admin:      { channel: false, category: false, location: false },
 };
 
-const fmt$ = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
-
 export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEmail }: { data: DashboardData; isAdmin: boolean; role: Role; visibleTabs: string[]; currentEmail: string | null }) {
   const [tab, setTab]                       = useState<TabId>('overview');
   const [selectedChannels, setChannels]     = useState<string[]>([]);
@@ -103,6 +101,17 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
     : selectedLocations.length === 1
       ? (data.locations.find(l => l.location_code === selectedLocations[0])?.display_name ?? selectedLocations[0])
       : `${selectedLocations.length} Locations`;
+
+  // Tester-only "Open Locations" quick-select — always recomputed from the
+  // live open/closed status (analytics.location_status via data.locations),
+  // never a hardcoded list.
+  const openLocationCodes = useMemo(
+    () => data.locations.filter(l => l.is_open).map(l => l.location_code),
+    [data.locations],
+  );
+  const isOpenLocationsSelected = selectedLocations.length > 0
+    && selectedLocations.length === openLocationCodes.length
+    && openLocationCodes.every(c => selectedLocations.includes(c));
 
   const normCat = normalizeCategory;
 
@@ -655,6 +664,10 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
           <span className="klogo">
             <Image src="/WhiteLogo.webp" alt="Kutlerri" width={120} height={39} style={{ height: 16, width: 'auto', display: 'block' }} priority />
           </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5, color: '#fff', fontSize: 12, fontWeight: 600, borderLeft: '1px solid rgba(255,255,255,0.2)', paddingLeft: 10 }}>
+            <i className="ti ti-user-circle" style={{ fontSize: 14, opacity: 0.7 }} aria-hidden="true" />
+            {currentEmail}
+          </span>
           <button
             className="logout-btn"
             onClick={async () => {
@@ -737,6 +750,13 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
                           onChange={() => setLocations([])} style={{ accentColor: 'var(--accent)' }} />
                         All Locations
                       </label>
+                      {isAdmin && (
+                        <label className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
+                          <input type="checkbox" checked={isOpenLocationsSelected}
+                            onChange={() => setLocations([...openLocationCodes])} style={{ accentColor: 'var(--accent)' }} />
+                          Open Locations
+                        </label>
+                      )}
                       <div className="dr-div" />
                       {data.locations.map(loc => (
                         <label key={loc.location_code} className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
@@ -753,10 +773,6 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
             </>
           )}
 
-          <div className="fb-sep" />
-          <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>
-            Total revenue: <strong style={{ color: 'var(--text)' }}>{fmt$(summary.total_revenue)}</strong>
-          </span>
         </div>
       </div>
 
@@ -790,7 +806,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
           validation — always pass blended, all-location data here regardless of the
           global location filter (the location-scaled memos stay wired for itemmix). */}
       {tab === 'entreemix'  && <EntreeMix        pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} meItems={data.meItems} />}
-      {tab === 'loccompare' && <LocationCompare  data={filteredData} />}
+      {tab === 'loccompare' && <LocationCompare  data={filteredData} role={role} />}
       {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} />}
       {tab === 'byo'        && visibleTabs.includes('byo')        && <BYOBreakdown modifiers={data.modifiers} items={data.items} pinkSheets={data.pinkSheets} meItems={data.meItems} selectedLocations={[]} />}
       {tab === 'payment'    && <PaymentSource    payments={data.payments} paymentsByLocation={data.paymentsByLocation} paymentSourcesByLocation={data.paymentSourcesByLocation} selectedLocations={selectedLocations} />}

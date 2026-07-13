@@ -7,6 +7,7 @@ type GovernedRole = 'admin' | 'user';
 
 interface UserRow {
   email: string;
+  name: string | null;
   role: UserRole;
   created_at: string;
 }
@@ -100,12 +101,13 @@ function PasswordCell({ email }: { email: string }) {
 
 // ── Add / Edit user modal ──────────────────────────────────────────────────
 function UserModal({
-  prefillEmail, prefillRole, isEdit, onClose, onDone,
+  prefillEmail, prefillName, prefillRole, isEdit, onClose, onDone,
 }: {
-  prefillEmail?: string; prefillRole?: UserRole; isEdit: boolean;
+  prefillEmail?: string; prefillName?: string | null; prefillRole?: UserRole; isEdit: boolean;
   onClose: () => void; onDone: () => void;
 }) {
   const [email, setEmail]       = useState(prefillEmail ?? '');
+  const [name, setName]         = useState(prefillName ?? '');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw]     = useState(false);
   const [role, setRole]         = useState<UserRole>(prefillRole ?? 'user');
@@ -119,7 +121,7 @@ function UserModal({
       const res = await fetch('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), password: password || undefined, role }),
+        body: JSON.stringify({ email: email.trim(), password: password || undefined, role, name: name.trim() || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save user');
@@ -150,6 +152,14 @@ function UserModal({
               style={{ ...inp, opacity: isEdit ? 0.7 : 1 }}
               value={email} onChange={e => setEmail(e.target.value)}
               placeholder="user@example.com" readOnly={isEdit}
+            />
+          </div>
+          <div>
+            <label style={lbl}>Name</label>
+            <input
+              style={inp}
+              value={name} onChange={e => setName(e.target.value)}
+              placeholder="e.g. your name"
             />
           </div>
           <div>
@@ -260,10 +270,71 @@ function TabToggleGrid({
   );
 }
 
+// ── Location status — which locations are Open vs Closed ───────────────────
+// Tester-only feature (owner request 2026-07-13): not shown to admin or user at
+// all. Drives the "Open Locations" quick-select that appears in the location
+// dropdowns, tester-view-only, wherever they exist in the dashboard. Same
+// edit-locally-then-Confirm pattern as the tab-access grid above.
+interface LocationStatusRow { location_code: string; display_name: string }
+
+function LocationStatusGrid({
+  locations, statuses, saved, onChange, onConfirm, onCancel, saving,
+}: {
+  locations: LocationStatusRow[];
+  statuses: Record<string, boolean>;
+  saved: Record<string, boolean>;
+  onChange: (locationCode: string, isOpen: boolean) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+  saving: boolean;
+}) {
+  const dirty = locations.some(l => (statuses[l.location_code] !== false) !== (saved[l.location_code] !== false));
+  return (
+    <div style={card}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>Open / Closed Locations</div>
+        {dirty && <span style={{ fontSize: 11, color: '#d97706', fontWeight: 600 }}>Unsaved changes</span>}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          {dirty && !saving && (
+            <button onClick={onCancel} style={{ ...btn('#e5e7eb', '#374151'), padding: '6px 16px', fontSize: 12 }}>
+              Cancel
+            </button>
+          )}
+          <button
+            onClick={onConfirm}
+            disabled={!dirty || saving}
+            style={{
+              ...btn('#059669'), padding: '6px 16px', fontSize: 12,
+              opacity: (!dirty || saving) ? 0.5 : 1,
+              cursor: (!dirty || saving) ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {saving ? 'Saving…' : 'Confirm'}
+          </button>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10 }}>
+        {locations.map(l => {
+          const isOpen = statuses[l.location_code] !== false;
+          return (
+            <label key={l.location_code} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={isOpen} onChange={e => onChange(l.location_code, e.target.checked)} />
+              {l.display_name}
+              <span style={{ fontSize: 10, fontWeight: 700, color: isOpen ? '#16a34a' : '#dc2626' }}>
+                {isOpen ? 'OPEN' : 'CLOSED'}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function AdminPanel({ currentEmail, currentRole }: { currentEmail: string | null; currentRole: UserRole }) {
   const [users, setUsers]       = useState<UserRow[] | null>(null);
   const [error, setError]       = useState('');
-  const [modal, setModal]       = useState<{ email?: string; role?: UserRole; isEdit: boolean } | null>(null);
+  const [modal, setModal]       = useState<{ email?: string; name?: string | null; role?: UserRole; isEdit: boolean } | null>(null);
 
   // `permissions` is the local working copy the checkboxes edit; `saved` is the
   // last-confirmed-with-the-server snapshot, used to detect unsaved changes and
@@ -272,6 +343,14 @@ export default function AdminPanel({ currentEmail, currentRole }: { currentEmail
   const [saved, setSaved]             = useState<Record<GovernedRole, Record<string, boolean>> | null>(null);
   const [permError, setPermError]     = useState('');
   const [saving, setSaving]           = useState<Record<GovernedRole, boolean>>({ admin: false, user: false });
+
+  // Location status — tester-only, not fetched at all for admin/user (the API
+  // would 403 anyway, but there's no reason to even ask).
+  const [locations, setLocations]           = useState<LocationStatusRow[] | null>(null);
+  const [locStatuses, setLocStatuses]       = useState<Record<string, boolean> | null>(null);
+  const [locSaved, setLocSaved]             = useState<Record<string, boolean> | null>(null);
+  const [locError, setLocError]             = useState('');
+  const [locSaving, setLocSaving]           = useState(false);
 
   const load = () => {
     fetch('/api/admin/users')
@@ -287,8 +366,26 @@ export default function AdminPanel({ currentEmail, currentRole }: { currentEmail
       .catch(e => setPermError(e.message));
   };
 
+  const loadLocationStatus = () => {
+    fetch('/api/admin/location-status')
+      .then(res => res.json())
+      .then(d => {
+        if (d.error) throw new Error(d.error);
+        const locs: LocationStatusRow[] = d.locations.map((l: { location_code: string; display_name: string }) => ({
+          location_code: l.location_code, display_name: l.display_name,
+        }));
+        const statusMap: Record<string, boolean> = {};
+        for (const l of d.locations) statusMap[l.location_code] = l.is_open;
+        setLocations(locs);
+        setLocStatuses(statusMap);
+        setLocSaved(statusMap);
+      })
+      .catch(e => setLocError(e.message));
+  };
+
   useEffect(load, []);
   useEffect(loadPermissions, []);
+  useEffect(() => { if (currentRole === 'tester' || currentRole === 'admin') loadLocationStatus(); }, [currentRole]);
 
   // Just edits the local working copy — nothing is sent to the server yet.
   function editPermission(role: GovernedRole, tabId: string, visible: boolean) {
@@ -326,6 +423,40 @@ export default function AdminPanel({ currentEmail, currentRole }: { currentEmail
     }
   }
 
+  function editLocationStatus(locationCode: string, isOpen: boolean) {
+    setLocStatuses(s => s ? { ...s, [locationCode]: isOpen } : s);
+  }
+
+  function cancelLocationStatus() {
+    setLocStatuses(locSaved);
+  }
+
+  async function confirmLocationStatus() {
+    if (!locations || !locStatuses || !locSaved) return;
+    const changed = locations.filter(l => (locStatuses[l.location_code] !== false) !== (locSaved[l.location_code] !== false));
+    if (changed.length === 0) return;
+
+    setLocSaving(true);
+    try {
+      for (const l of changed) {
+        const is_open = locStatuses[l.location_code] !== false;
+        const res = await fetch('/api/admin/location-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ location_code: l.location_code, is_open }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to update');
+      }
+      setLocSaved(locStatuses);
+    } catch (err) {
+      alert('Error: ' + (err instanceof Error ? err.message : String(err)));
+      loadLocationStatus(); // out of sync with the server — refetch the real state
+    } finally {
+      setLocSaving(false);
+    }
+  }
+
   async function deleteUser(email: string) {
     if (!confirm(`Delete ${email}? This cannot be undone.`)) return;
     try {
@@ -347,6 +478,7 @@ export default function AdminPanel({ currentEmail, currentRole }: { currentEmail
       {modal && (
         <UserModal
           prefillEmail={modal.email}
+          prefillName={modal.name}
           prefillRole={modal.role}
           isEdit={modal.isEdit}
           onClose={() => setModal(null)}
@@ -377,7 +509,7 @@ export default function AdminPanel({ currentEmail, currentRole }: { currentEmail
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: '2px solid var(--border)' }}>
-                  {['Email', 'Role', 'Password', 'Actions'].map(h => (
+                  {['Email', 'Name', 'Role', 'Password', 'Actions'].map(h => (
                     <th key={h} style={{
                       textAlign: 'left', padding: '6px 10px', fontSize: 11, fontWeight: 700,
                       color: 'var(--muted)', textTransform: 'uppercase',
@@ -391,12 +523,15 @@ export default function AdminPanel({ currentEmail, currentRole }: { currentEmail
                 {users.map(u => (
                   <tr key={u.email} style={{ borderBottom: '1px solid var(--border)' }}>
                     <td style={{ padding: '10px 10px', fontWeight: 500, color: 'var(--text)' }}>{u.email}</td>
+                    <td style={{ padding: '10px 10px', color: u.name ? 'var(--text)' : 'var(--muted)', fontStyle: u.name ? 'normal' : 'italic' }}>
+                      {u.name ?? 'Not set'}
+                    </td>
                     <td style={{ padding: '10px 10px' }}><Badge role={u.role} /></td>
                     <td style={{ padding: '10px 10px' }}><PasswordCell email={u.email} /></td>
                     <td style={{ padding: '10px 10px' }}>
                       <div style={{ display: 'flex', gap: 6 }}>
                         <button
-                          onClick={() => setModal({ email: u.email, role: u.role, isEdit: true })}
+                          onClick={() => setModal({ email: u.email, name: u.name, role: u.role, isEdit: true })}
                           style={{ ...btn('#2563eb'), padding: '4px 12px', fontSize: 12, borderRadius: 6 }}
                         >
                           Edit
@@ -453,6 +588,29 @@ export default function AdminPanel({ currentEmail, currentRole }: { currentEmail
           </div>
         )}
       </div>
+
+      {(currentRole === 'tester' || currentRole === 'admin') && (
+        <div style={{ marginTop: 28 }}>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: 'var(--text)' }}>Location Status</div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 14 }}>
+            Available to admin and tester. Drives the &quot;Open Locations&quot; quick-select in the location dropdowns.
+          </div>
+          {locError && <div style={{ color: '#dc2626', padding: 10, marginBottom: 10 }}>{locError}</div>}
+          {!locations || !locStatuses || !locSaved ? (
+            <div style={{ color: 'var(--muted)', padding: 20 }}>Loading location status…</div>
+          ) : (
+            <LocationStatusGrid
+              locations={locations}
+              statuses={locStatuses}
+              saved={locSaved}
+              saving={locSaving}
+              onChange={editLocationStatus}
+              onConfirm={confirmLocationStatus}
+              onCancel={cancelLocationStatus}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }

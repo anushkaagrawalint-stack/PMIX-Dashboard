@@ -14,14 +14,14 @@ async function requireAdmin(req: NextRequest) {
 
 const VALID_ROLES = new Set<Role>(['admin', 'tester', 'user']);
 
-// GET /api/admin/users — list all users (emails + roles, no hashes).
+// GET /api/admin/users — list all users (emails + roles + names, no hashes).
 export async function GET(req: NextRequest) {
   const admin = await requireAdmin(req);
   if (!admin) return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
 
   const db = pool();
   try {
-    const { rows } = await db.query(`SELECT email, role, created_at FROM analytics.users ORDER BY email`);
+    const { rows } = await db.query(`SELECT email, name, role, created_at FROM analytics.users ORDER BY email`);
     await db.end();
     return NextResponse.json({ users: rows });
   } catch (err) {
@@ -32,13 +32,16 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/admin/users — add a new user or update an existing one.
-// Body: { email, password?, role } — password required for new users, optional
-// when updating an existing one (omit to keep the current password).
+// Body: { email, password?, role, name? } — password required for new users,
+// optional when updating an existing one (omit to keep the current password).
+// name is always optional and always set directly (not a sensitive field like
+// password, so no "omit to keep unchanged" — the edit form always sends the
+// current value, whether changed or not).
 export async function POST(req: NextRequest) {
   const admin = await requireAdmin(req);
   if (!admin) return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
 
-  const { email, password, role } = await req.json().catch(() => ({}));
+  const { email, password, role, name } = await req.json().catch(() => ({}));
   if (!email || typeof email !== 'string') {
     return NextResponse.json({ error: 'Email is required' }, { status: 400 });
   }
@@ -46,6 +49,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Role must be admin or user' }, { status: 400 });
   }
   const normalized = email.toLowerCase().trim();
+  const cleanName = typeof name === 'string' && name.trim() ? name.trim() : null;
 
   const db = pool();
   try {
@@ -66,17 +70,18 @@ export async function POST(req: NextRequest) {
     // omitted on a role-only edit, existing encrypted value (if any) stays untouched.
     const enc  = password ? encryptPassword(String(password)) : undefined;
     await db.query(`
-      INSERT INTO analytics.users (email, password_hash, password_enc, role, updated_at)
-      VALUES ($1, $2, $3, $4, NOW())
+      INSERT INTO analytics.users (email, password_hash, password_enc, role, name, updated_at)
+      VALUES ($1, $2, $3, $4, $5, NOW())
       ON CONFLICT (email) DO UPDATE
         SET password_hash = EXCLUDED.password_hash,
             password_enc  = COALESCE(EXCLUDED.password_enc, analytics.users.password_enc),
             role          = EXCLUDED.role,
+            name          = EXCLUDED.name,
             updated_at    = NOW()
-    `, [normalized, hash, enc ?? null, role]);
+    `, [normalized, hash, enc ?? null, role, cleanName]);
 
     await db.end();
-    return NextResponse.json({ ok: true, email: normalized, role });
+    return NextResponse.json({ ok: true, email: normalized, role, name: cleanName });
   } catch (err) {
     console.error('admin/users POST error:', err);
     await db.end().catch(() => {});
