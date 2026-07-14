@@ -40,7 +40,7 @@ export const CHANNEL_SQL_WITH_OVERRIDE = `COALESCE(co.correct_channel, (${CHANNE
 // Channel metadata for UI
 export const CHANNELS = [
   { code: 'IN_HOUSE',    label: 'In-House',      color: '#9f7cef' },
-  { code: 'APP',         label: 'Loyalty',       color: '#7cb9ef' },
+  { code: 'APP',         label: 'RASA Digital',  color: '#7cb9ef' },
   { code: 'TPD',         label: '3PD',           color: '#ef7ccf' },
   { code: 'TPD_MARKUP',  label: '3PD Markup',    color: '#f97316' },
   { code: 'CATERING',    label: 'Catering',      color: '#f5a623' },

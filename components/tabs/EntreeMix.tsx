@@ -318,7 +318,7 @@ function CogsBadge({ pct }: { pct: number | null }) {
   const color = pct > 0.35 ? '#991b1b' : pct > 0.28 ? '#92400e' : '#14532d';
   return (
     <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: bg, color }}>
-      {(pct * 100).toFixed(1)}%
+      {(pct * 100).toFixed(2)}%
     </span>
   );
 }
@@ -356,7 +356,7 @@ function SecBlock({ sec, accent, qtyMode }: { sec: SectionData; accent: string; 
 
       {/* Column headers — % mode shows both qty share and cost share; # mode shows raw count */}
       <div style={{
-        display: 'grid', gridTemplateColumns: qtyMode === '%' ? '1fr 46px 46px 68px' : '1fr 46px 68px',
+        display: 'grid', gridTemplateColumns: qtyMode === '%' ? '1fr 58px 58px 68px' : '1fr 46px 68px',
         gap: 6, padding: '0 4px 2px', marginBottom: 1,
       }}>
         <span style={{ fontSize: 8, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
@@ -383,7 +383,7 @@ function SecBlock({ sec, accent, qtyMode }: { sec: SectionData; accent: string; 
           const costPct = sec.sectionTotal > 0 ? m.total_cost / sec.sectionTotal : 0;
           return (
             <div key={m.modifier_name} style={{
-              display: 'grid', gridTemplateColumns: qtyMode === '%' ? '1fr 46px 46px 68px' : '1fr 46px 68px',
+              display: 'grid', gridTemplateColumns: qtyMode === '%' ? '1fr 58px 58px 68px' : '1fr 46px 68px',
               alignItems: 'center', gap: 6,
               padding: '2px 4px', borderRadius: 4,
               background: i % 2 === 0 ? 'transparent' : `${accent}08`,
@@ -394,12 +394,12 @@ function SecBlock({ sec, accent, qtyMode }: { sec: SectionData; accent: string; 
               </span>
               <span style={{ fontSize: 10, fontWeight: 700, textAlign: 'right',
                 color: pct >= 0.3 ? accent : 'var(--text)' }}>
-                {qtyMode === '%' ? `${(pct * 100).toFixed(0)}%` : m.qty.toLocaleString()}
+                {qtyMode === '%' ? `${(pct * 100).toFixed(2)}%` : m.qty.toLocaleString()}
               </span>
               {qtyMode === '%' && (
                 <span style={{ fontSize: 10, fontWeight: 700, textAlign: 'right',
                   color: costPct >= 0.3 ? accent : 'var(--text)' }}>
-                  {(costPct * 100).toFixed(0)}%
+                  {(costPct * 100).toFixed(2)}%
                 </span>
               )}
               <span style={{ fontSize: 9, textAlign: 'right',

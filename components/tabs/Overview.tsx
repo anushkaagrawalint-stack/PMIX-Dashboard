@@ -4,9 +4,10 @@ import dynamic from 'next/dynamic';
 import { CHANNEL_LABEL, CHANNEL_COLOR, normalizeCategory } from '@/lib/constants';
 import type { DashboardData } from '@/lib/types';
 
-const WeeklyChart = dynamic(() => import('../charts/WeeklyChart'), { ssr: false });
-const ChannelDonut = dynamic(() => import('../charts/ChannelDonut'), { ssr: false });
-const HBarChart    = dynamic(() => import('../charts/HBarChart'),    { ssr: false });
+const WeeklyChart   = dynamic(() => import('../charts/WeeklyChart'),   { ssr: false });
+const ChannelDonut  = dynamic(() => import('../charts/ChannelDonut'),  { ssr: false });
+const CategoryDonut = dynamic(() => import('../charts/CategoryDonut'), { ssr: false });
+const HBarChart     = dynamic(() => import('../charts/HBarChart'),     { ssr: false });
 
 const fmt$ = (v: number) =>
   `$${Math.round(v).toLocaleString('en-US')}`;
@@ -43,7 +44,7 @@ const mapCat = normalizeCategory;
 
 export default function Overview({ data, selectedChannels, categoryFilter, selectedLocations }: Props) {
   const { summary, prevSummary, prevLabel, weekly, daily, periods, items, avgMargin,
-          channelItems, channelCategories, weeklyByChannel, dailyByChannel,
+          channelItems, weeklyByChannel, dailyByChannel,
           prevChannelItems, prevMEItems } = data;
 
   const isFiltered = selectedChannels.length > 0 || categoryFilter !== 'all';
@@ -61,14 +62,18 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
     return m;
   }, [items]);
 
-  // Weekly trend filtered by selected channels AND/OR locations
+  // Weekly trend filtered by selected channels AND/OR locations AND/OR category —
+  // previously ignored the category dropdown entirely since weeklyByChannel had no
+  // category dimension (owner report 2026-07-14: "all charts should be dynamic wrt
+  // to the global dropdowns").
   const effectiveWeekly = useMemo(() => {
-    if (selectedChannels.length === 0 && selectedLocations.length === 0) return weekly;
+    if (selectedChannels.length === 0 && selectedLocations.length === 0 && categoryFilter === 'all') return weekly;
     const map = new Map<string, { revenue: number; qty: number }>();
     weeklyByChannel
       .filter(r =>
         (selectedChannels.length === 0 || selectedChannels.includes(r.channel)) &&
-        (selectedLocations.length === 0 || selectedLocations.includes(r.location_code)))
+        (selectedLocations.length === 0 || selectedLocations.includes(r.location_code)) &&
+        (categoryFilter === 'all' || mapCat(r.category) === categoryFilter))
       .forEach(r => {
         const e = map.get(r.week_start) ?? { revenue: 0, qty: 0 };
         e.revenue += r.revenue;
@@ -77,15 +82,16 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
       });
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
       .map(([week_start, { revenue, qty }]) => ({ week_start, revenue, qty }));
-  }, [weekly, weeklyByChannel, selectedChannels, selectedLocations]);
+  }, [weekly, weeklyByChannel, selectedChannels, selectedLocations, categoryFilter]);
 
   const effectiveDaily = useMemo(() => {
-    if (selectedChannels.length === 0 && selectedLocations.length === 0) return daily;
+    if (selectedChannels.length === 0 && selectedLocations.length === 0 && categoryFilter === 'all') return daily;
     const map = new Map<string, { revenue: number; qty: number }>();
     dailyByChannel
       .filter(r =>
         (selectedChannels.length === 0 || selectedChannels.includes(r.channel)) &&
-        (selectedLocations.length === 0 || selectedLocations.includes(r.location_code)))
+        (selectedLocations.length === 0 || selectedLocations.includes(r.location_code)) &&
+        (categoryFilter === 'all' || mapCat(r.category) === categoryFilter))
       .forEach(r => {
         const e = map.get(r.date) ?? { revenue: 0, qty: 0 };
         e.revenue += r.revenue;
@@ -94,17 +100,7 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
       });
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
       .map(([date, { revenue, qty }]) => ({ date, revenue, qty }));
-  }, [daily, dailyByChannel, selectedChannels, selectedLocations]);
-
-  // Category revenue map
-  const effectiveCatRevMap = useMemo(() => {
-    const map: Record<string, number> = {};
-    const source = selectedChannels.length === 0
-      ? channelCategories
-      : channelCategories.filter(cc => selectedChannels.includes(cc.channel));
-    source.forEach(cc => { const cat = mapCat(cc.category); map[cat] = (map[cat] ?? 0) + cc.revenue; });
-    return map;
-  }, [selectedChannels, channelCategories]);
+  }, [daily, dailyByChannel, selectedChannels, selectedLocations, categoryFilter]);
 
   // Top-8 items filtered by channel + category
   const effectiveItems = useMemo(() => {
@@ -130,37 +126,51 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
   }, [selectedChannels, items, channelItems]);
 
   const top8 = useMemo(() => {
-    const seen = new Map<string, { revenue: number; category: string }>();
+    const seen = new Map<string, { revenue: number; qty: number; category: string }>();
     for (const i of effectiveItems) {
       const e = seen.get(i.canonical_name);
-      if (e) e.revenue += i.revenue;
-      else seen.set(i.canonical_name, { revenue: i.revenue, category: mapCat(i.category ?? 'Other') });
+      if (e) { e.revenue += i.revenue; e.qty += i.qty; }
+      else seen.set(i.canonical_name, { revenue: i.revenue, qty: i.qty, category: mapCat(i.category ?? 'Other') });
     }
     let entries = [...seen.entries()];
     if (categoryFilter !== 'all') entries = entries.filter(([, v]) => v.category === categoryFilter);
+    // % denominator is all items in the current filter scope (not just the 8 shown),
+    // so it reads as "this item's share of everything", matching the chart's title.
+    const total = entries.reduce((s, [, v]) => s + v.revenue, 0);
     return entries
       .sort((a, b) => showBottom ? a[1].revenue - b[1].revenue : b[1].revenue - a[1].revenue)
       .slice(0, 8)
-      .map(([name, v]) => ({ name: name.slice(0, 24), value: v.revenue }));
+      .map(([name, v]) => ({ name: name.slice(0, 24), value: v.revenue, qty: v.qty, pct: total > 0 ? (v.revenue / total) * 100 : 0 }));
   }, [effectiveItems, categoryFilter, showBottom]);
 
   const catData = useMemo(() => {
-    let entries = Object.entries(effectiveCatRevMap).sort((a, b) => b[1] - a[1]);
+    const map: Record<string, { revenue: number; qty: number }> = {};
+    effectiveItems.forEach(i => {
+      const cat = mapCat(i.category ?? 'Other');
+      const e = map[cat] ?? { revenue: 0, qty: 0 };
+      e.revenue += i.revenue; e.qty += i.qty;
+      map[cat] = e;
+    });
+    let entries = Object.entries(map).sort((a, b) => b[1].revenue - a[1].revenue);
     if (categoryFilter !== 'all') entries = entries.filter(([cat]) => cat === categoryFilter);
-    return entries.map(([name, value]) => ({ name, value }));
-  }, [effectiveCatRevMap, categoryFilter]);
+    const total = entries.reduce((s, [, v]) => s + v.revenue, 0);
+    return entries.map(([name, v]) => ({ name, value: v.revenue, qty: v.qty, pct: total > 0 ? (v.revenue / total) * 100 : 0 }));
+  }, [effectiveItems, categoryFilter]);
 
   const subCatData = useMemo(() => {
     if (categoryFilter === 'all') return [];
-    const map: Record<string, number> = {};
+    const map: Record<string, { revenue: number; qty: number }> = {};
     effectiveItems.forEach(i => {
       if (mapCat(i.category ?? 'Other') === categoryFilter) {
         const sub = i.sub_category || categoryFilter;
-        map[sub] = (map[sub] ?? 0) + i.revenue;
+        const e = map[sub] ?? { revenue: 0, qty: 0 };
+        e.revenue += i.revenue; e.qty += i.qty;
+        map[sub] = e;
       }
     });
-    return Object.entries(map).filter(([, v]) => v > 0)
-      .sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value }));
+    const entries = Object.entries(map).filter(([, v]) => v.revenue > 0).sort((a, b) => b[1].revenue - a[1].revenue);
+    const total = entries.reduce((s, [, v]) => s + v.revenue, 0);
+    return entries.map(([name, v]) => ({ name, value: v.revenue, qty: v.qty, pct: total > 0 ? (v.revenue / total) * 100 : 0 }));
   }, [effectiveItems, categoryFilter]);
 
   // Derived from channelItems (already channel+category+location filtered by
@@ -174,8 +184,9 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
       e.revenue += ci.revenue;
       map.set(ci.channel, e);
     });
+    const total = [...map.values()].reduce((s, v) => s + v.revenue, 0);
     return [...map.entries()]
-      .map(([channel, { qty, revenue }]) => ({ channel, qty, revenue, pct: 0 }))
+      .map(([channel, { qty, revenue }]) => ({ channel, qty, revenue, pct: total > 0 ? Math.round((revenue / total) * 1000) / 10 : 0 }))
       .sort((a, b) => b.revenue - a.revenue);
   }, [channelItems]);
 
@@ -302,16 +313,24 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
         </div>
       </div>
 
-      {/* Charts row 1 */}
-      <div className="gr2">
-        <div className="cc">
-          <h3>Sales trend</h3>
-          <WeeklyChart weekly={effectiveWeekly} daily={effectiveDaily} periods={periods} />
-        </div>
+      {/* Trend chart — full width */}
+      <div className="cc" style={{ marginBottom: 10 }}>
+        <h3>Sales trend</h3>
+        <WeeklyChart weekly={effectiveWeekly} daily={effectiveDaily} periods={periods} />
+      </div>
+
+      {/* Charts row 1 — two pie charts */}
+      <div className="gr22">
         <div className="cc">
           <h3>Revenue by channel</h3>
           <div style={{ position: 'relative', height: 200 }}>
             <ChannelDonut data={effectiveChannels} />
+          </div>
+        </div>
+        <div className="cc">
+          <h3>Revenue by category</h3>
+          <div style={{ position: 'relative', height: 200 }}>
+            <CategoryDonut data={catData} />
           </div>
         </div>
       </div>

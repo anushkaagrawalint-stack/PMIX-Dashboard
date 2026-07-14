@@ -50,7 +50,7 @@ const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location
   chanmenu:   { channel: true,  category: true,  location: true  },
   byo:        { channel: false, category: false, location: false },
   payment:    { channel: false, category: false, location: true  },
-  meoverall:  { channel: true,  category: true,  location: false },
+  meoverall:  { channel: false, category: false, location: false },
   pinksheets: { channel: false, category: false, location: false },
   bikky:      { channel: false, category: false, location: false },
   renames:    { channel: false, category: false, location: false },
@@ -116,7 +116,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
   const normCat = normalizeCategory;
 
   // Category options: vendor channels (catering/offsite/markup) collapse to 'Other'
-  // to keep the dropdown short. Only IH/Loyalty/3PD show real categories.
+  // to keep the dropdown short. Only IH/RASA Digital/3PD show real categories.
   const VENDOR_CHANNELS = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE', 'TPD_MARKUP']);
   const categoryOptions = useMemo(() => {
     const cats = new Set<string>();
@@ -427,18 +427,21 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       : locationAdjustedChannelCategories.filter(cc => selectedChannels.includes(cc.channel)),
   [selectedChannels, locationAdjustedChannelCategories]);
 
-  // Channel-filtered location items
+  // Channel-filtered location items — must filter each row by its OWN channel field,
+  // not just whether the item sold in the selected channel(s) somewhere (that name-only
+  // check let an item's In-House-only rows through the "3PD" filter too, as long as it
+  // *also* sold via 3PD elsewhere — LocationCompare then summed every channel's revenue
+  // for it, not just the selected one).
   const filteredLocationItems = useMemo(() => {
     if (selectedChannels.length === 0 && categoryFilter === 'all') return data.locationItems;
-    const allowedNames = new Set(channelFilteredItems.map(i => i.canonical_name));
     return data.locationItems.filter(li => {
-      if (!allowedNames.has(li.canonical_name)) return false;
+      if (selectedChannels.length > 0 && !selectedChannels.includes(li.channel)) return false;
       if (categoryFilter !== 'all') {
         return normCat(itemMetaMap.get(li.canonical_name)?.category) === categoryFilter;
       }
       return true;
     });
-  }, [selectedChannels, categoryFilter, data.locationItems, channelFilteredItems, itemMetaMap]);
+  }, [selectedChannels, categoryFilter, data.locationItems, itemMetaMap]);
 
   // ME items — channel-specific recompute following SOP formula chain. Also runs
   // (with the full IH+LO+3PD channel set) whenever a location filter is active, so

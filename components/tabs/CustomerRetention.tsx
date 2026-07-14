@@ -28,7 +28,7 @@ type Source  = 'instore' | '3pd_loyalty';
 
 const SOURCE_LABELS: Record<Source, string> = {
   instore:       'In-Store',
-  '3pd_loyalty': '3PD + Loyalty',
+  '3pd_loyalty': '3PD + RASA Digital',
 };
 
 const QUADRANT_COLORS: Record<string, string> = {

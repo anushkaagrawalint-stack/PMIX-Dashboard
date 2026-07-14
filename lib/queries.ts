@@ -343,13 +343,14 @@ export async function getWeeklyByChannel(dr: DateRange): Promise<WeeklyChannelRo
       DATE_TRUNC('week', fol.business_date)::DATE::TEXT AS week_start,
       (${CHO})                                          AS channel,
       COALESCE(fol.location_code, '')                   AS location_code,
+      (${CAT1})                                         AS category,
       ROUND(SUM(fol.line_total)::NUMERIC, 0)            AS revenue,
       SUM(fol.quantity)::BIGINT                         AS qty
     FROM public.fact_order_lines fol
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-    GROUP BY 1, 2, 3
+    GROUP BY 1, 2, 3, 4
     ORDER BY 1, 2
   `, [dr.start, dr.end]);
   await db.end();
@@ -357,6 +358,7 @@ export async function getWeeklyByChannel(dr: DateRange): Promise<WeeklyChannelRo
     week_start:    r.week_start    as string,
     channel:       r.channel       as string,
     location_code: r.location_code as string,
+    category:      r.category      as string,
     revenue:       Number(r.revenue),
     qty:           Number(r.qty),
   }));
@@ -369,13 +371,14 @@ export async function getDailyByChannel(dr: DateRange): Promise<DailyChannelRow[
       fol.business_date::TEXT                          AS date,
       (${CHO})                                         AS channel,
       COALESCE(fol.location_code, '')                  AS location_code,
+      (${CAT1})                                        AS category,
       ROUND(SUM(fol.line_total)::NUMERIC, 0)          AS revenue,
       SUM(fol.quantity)::BIGINT                        AS qty
     FROM public.fact_order_lines fol
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-    GROUP BY 1, 2, 3
+    GROUP BY 1, 2, 3, 4
     ORDER BY 1, 2
   `, [dr.start, dr.end]);
   await db.end();
@@ -383,6 +386,7 @@ export async function getDailyByChannel(dr: DateRange): Promise<DailyChannelRow[
     date:          r.date          as string,
     channel:       r.channel       as string,
     location_code: r.location_code as string,
+    category:      r.category      as string,
     revenue:       Number(r.revenue),
     qty:           Number(r.qty),
   }));
@@ -941,48 +945,58 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
     ),
 
     -- Step 6→7: Pivot to one row per item; apply 3PD cost markup ×1.18
-    -- avg_price = pre_discount / qty (gross_sales / qty) — no price markup needed,
-    --   3PD OPEN MARKUP menu prices already include the 3PD premium
+    -- avg_price = pre_discount / qty (gross_sales / qty), 3PD ×1.22 price markup
+    --   applied on top (owner request 2026-07-14) — reflects the true 3PD menu
+    --   premium. net_sales/net_sales_3pd/net_sales_bl carry the SAME ×1.22 for
+    --   3PD, so avg_price × qty = net_sales stays true everywhere, and every
+    --   figure derived from net_sales below (total_margin, margin_threshold,
+    --   COGS% in the frontend) reflects the markup consistently.
     -- avg_cost 3PD = online_pink_cost × 1.18 (packaging/delivery cost uplift)
     pivoted AS (
       SELECT
         canonical_name,
         MIN(menu_group)   AS menu_group,
         SUM(qty)          AS qty,
-        -- blended net sales (gross_sales = pre-discount, matches AppScript ns = ap×qty)
-        SUM(gross_sales)                                                       AS net_sales,
+        -- blended net sales (gross_sales = pre-discount; 3PD ×1.22 price markup,
+        -- matching AppScript ns = ap×qty — now that avg_price includes the 3PD
+        -- markup, net_sales must too so avg_price × qty = net_sales stays true,
+        -- and COGS%/margin/thresholds below (all derived from net_sales) follow)
+        SUM(CASE WHEN channel='3PD' THEN gross_sales * 1.22 ELSE gross_sales END) AS net_sales,
         -- blended total cost: 3PD cost × 1.18
         SUM(CASE WHEN channel='3PD' THEN total_cost * 1.18 ELSE total_cost END) AS total_cost,
         -- per-channel quantities
         SUM(CASE WHEN channel='IH'  THEN qty  ELSE 0 END) AS qty_ih,
         SUM(CASE WHEN channel='LO'  THEN qty  ELSE 0 END) AS qty_lo,
         SUM(CASE WHEN channel='3PD' THEN qty  ELSE 0 END) AS qty_3pd,
-        -- per-channel revenues (pre-discount, no price markup)
+        -- per-channel revenues (pre-discount; 3PD ×1.22 price markup)
         SUM(CASE WHEN channel='IH'  THEN gross_sales ELSE 0 END) AS net_sales_ih,
         SUM(CASE WHEN channel='LO'  THEN gross_sales ELSE 0 END) AS net_sales_lo,
-        SUM(CASE WHEN channel='3PD' THEN gross_sales ELSE 0 END) AS net_sales_3pd,
+        SUM(CASE WHEN channel='3PD' THEN gross_sales * 1.22 ELSE 0 END) AS net_sales_3pd,
         -- per-channel total costs (3PD ×1.18)
         SUM(CASE WHEN channel='IH'  THEN total_cost        ELSE 0 END) AS total_cost_ih,
         SUM(CASE WHEN channel='LO'  THEN total_cost        ELSE 0 END) AS total_cost_lo,
         SUM(CASE WHEN channel='3PD' THEN total_cost * 1.18 ELSE 0 END) AS total_cost_3pd,
         -- BL (LO+3PD) combined
         SUM(CASE WHEN channel IN ('LO','3PD') THEN qty ELSE 0 END) AS qty_bl,
-        SUM(CASE WHEN channel IN ('LO','3PD') THEN gross_sales ELSE 0 END) AS net_sales_bl,
+        SUM(CASE WHEN channel='LO'  THEN gross_sales
+                 WHEN channel='3PD' THEN gross_sales * 1.22 ELSE 0 END) AS net_sales_bl,
         SUM(CASE WHEN channel='LO'  THEN total_cost
                  WHEN channel='3PD' THEN total_cost * 1.18 ELSE 0 END) AS total_cost_bl,
-        -- blended avg price: gross_sales / qty (qty-weighted)
-        SUM(gross_sales) / NULLIF(SUM(qty),0)                              AS avg_price,
+        -- blended avg price: gross_sales / qty (qty-weighted; 3PD ×1.22 price markup)
+        SUM(CASE WHEN channel='3PD' THEN gross_sales * 1.22 ELSE gross_sales END)
+          / NULLIF(SUM(qty),0)                                              AS avg_price,
         -- blended avg cost (qty-weighted; 3PD ×1.18)
         SUM(CASE WHEN channel='3PD' THEN total_cost * 1.18 ELSE total_cost END)
           / NULLIF(SUM(qty),0)                                             AS avg_cost,
-        -- per-channel avg price (gross_sales / qty)
+        -- per-channel avg price (gross_sales / qty; 3PD ×1.22)
         SUM(CASE WHEN channel='IH'  THEN gross_sales ELSE 0 END)
           / NULLIF(SUM(CASE WHEN channel='IH'  THEN qty ELSE 0 END),0)    AS avg_price_ih,
         SUM(CASE WHEN channel='LO'  THEN gross_sales ELSE 0 END)
           / NULLIF(SUM(CASE WHEN channel='LO'  THEN qty ELSE 0 END),0)    AS avg_price_lo,
-        SUM(CASE WHEN channel='3PD' THEN gross_sales ELSE 0 END)
+        SUM(CASE WHEN channel='3PD' THEN gross_sales * 1.22 ELSE 0 END)
           / NULLIF(SUM(CASE WHEN channel='3PD' THEN qty ELSE 0 END),0)    AS avg_price_3pd,
-        SUM(CASE WHEN channel IN ('LO','3PD') THEN gross_sales ELSE 0 END)
+        SUM(CASE WHEN channel='LO'  THEN gross_sales
+                 WHEN channel='3PD' THEN gross_sales * 1.22 ELSE 0 END)
           / NULLIF(SUM(CASE WHEN channel IN ('LO','3PD') THEN qty ELSE 0 END),0) AS avg_price_bl,
         -- per-channel avg cost (3PD ×1.18)
         SUM(CASE WHEN channel='IH'  THEN total_cost        ELSE 0 END)
@@ -1014,17 +1028,21 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       p.canonical_name,
       p.menu_group,
       p.qty::BIGINT                                                            AS qty,
-      ROUND(p.net_sales::NUMERIC,    2)                                        AS net_sales,
+      -- Net Sales = Avg Price × Qty, derived from the SAME rounded avg_price shown
+      -- below (owner request 2026-07-14) — guarantees the two displayed numbers
+      -- multiply out exactly instead of drifting apart via two independently-
+      -- rounded SUMs (which matters now that 3PD's avg_price carries a ×1.22 markup).
+      ROUND(ROUND(p.avg_price::NUMERIC, 2) * p.qty, 2)                          AS net_sales,
       ROUND(p.avg_price::NUMERIC,    2)                                        AS avg_price,
       ROUND(p.avg_cost::NUMERIC,     4)                                        AS avg_cost,
       ROUND(p.total_cost::NUMERIC,   2)                                        AS total_cost,
-      ROUND((p.net_sales - p.total_cost)::NUMERIC, 2)                          AS total_margin,
+      ROUND((ROUND(p.avg_price::NUMERIC, 2) * p.qty - p.total_cost)::NUMERIC, 2) AS total_margin,
       COALESCE(p.qty_ih,  0)::BIGINT                                           AS qty_ih,
       COALESCE(p.qty_lo,  0)::BIGINT                                           AS qty_lo,
       COALESCE(p.qty_3pd, 0)::BIGINT                                           AS qty_3pd,
-      ROUND(COALESCE(p.net_sales_ih,  0)::NUMERIC, 2)                          AS net_sales_ih,
-      ROUND(COALESCE(p.net_sales_lo,  0)::NUMERIC, 2)                          AS net_sales_lo,
-      ROUND(COALESCE(p.net_sales_3pd, 0)::NUMERIC, 2)                          AS net_sales_3pd,
+      ROUND(ROUND(COALESCE(p.avg_price_ih,  0)::NUMERIC, 2) * COALESCE(p.qty_ih,  0), 2) AS net_sales_ih,
+      ROUND(ROUND(COALESCE(p.avg_price_lo,  0)::NUMERIC, 2) * COALESCE(p.qty_lo,  0), 2) AS net_sales_lo,
+      ROUND(ROUND(COALESCE(p.avg_price_3pd, 0)::NUMERIC, 2) * COALESCE(p.qty_3pd, 0), 2) AS net_sales_3pd,
       ROUND(COALESCE(p.avg_price_ih,  0)::NUMERIC, 2)                          AS avg_price_ih,
       ROUND(COALESCE(p.avg_price_lo,  0)::NUMERIC, 2)                          AS avg_price_lo,
       ROUND(COALESCE(p.avg_price_3pd, 0)::NUMERIC, 2)                          AS avg_price_3pd,
@@ -1037,7 +1055,7 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
       ROUND(COALESCE(p.total_cost_lo,  0)::NUMERIC, 2)                         AS total_cost_lo,
       ROUND(COALESCE(p.total_cost_3pd, 0)::NUMERIC, 2)                         AS total_cost_3pd,
       COALESCE(p.qty_bl, 0)::BIGINT                                             AS qty_bl,
-      ROUND(COALESCE(p.net_sales_bl,  0)::NUMERIC, 2)                          AS net_sales_bl,
+      ROUND(ROUND(COALESCE(p.avg_price_bl,  0)::NUMERIC, 2) * COALESCE(p.qty_bl,  0), 2) AS net_sales_bl,
       ROUND(COALESCE(p.total_cost_bl, 0)::NUMERIC, 2)                          AS total_cost_bl,
       ROUND(((p.net_sales - p.total_cost) / NULLIF(p.net_sales,0))::NUMERIC, 4) AS margin_pct,
       ROUND((p.total_cost / NULLIF(p.net_sales,0))::NUMERIC, 4)                 AS cogs_pct,
@@ -1335,7 +1353,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
     ),
     -- Weighted avg modifier cost per zero-base item: qty weights are range-wide,
     -- unit costs from the selected period (§2.4 — never blend costs across periods).
-    -- One shared value for IN_HOUSE, LOYALTY(APP) and 3PD alike — computed from ALL
+    -- One shared value for IN_HOUSE, RASA DIGITAL(APP) and 3PD alike — computed from ALL
     -- online orders (APP+DELIVERY+3PD) combined, per AppScript's "single online pink
     -- sheet ... valid for all channels" rule. IH does NOT get its own separate
     -- weighted average even when it has modifier data of its own — owner-confirmed
@@ -1414,7 +1432,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
       ai.online_qty::BIGINT                                  AS online_qty,
       ai.ih_qty::BIGINT                                      AS ih_qty,
       -- Zero-base items (Sides, Homemade Juice): SAME weighted-avg modifier cost for
-      -- IN_HOUSE, LOYALTY(APP) and 3PD (owner-confirmed 2026-07-03) — IH does NOT get
+      -- IN_HOUSE, RASA DIGITAL(APP) and 3PD (owner-confirmed 2026-07-03) — IH does NOT get
       -- its own separate figure even when it has modifier data of its own.
       -- Other items — avg_cost_ih: period-specific when available; falls back to range-wide
       -- so items with no selected-period IH orders still show cost.

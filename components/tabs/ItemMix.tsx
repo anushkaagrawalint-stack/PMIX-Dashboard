@@ -23,7 +23,7 @@ interface FinalCost { online: number; ih: number }
 
 const CH_LABEL: Record<string, string> = {
   IN_HOUSE:    'In-House',
-  APP:         'Loyalty',
+  APP:         'RASA Digital',
   TPD:         '3PD',
   TPD_MARKUP:  '3PD Markup',
   CATERING:    'Catering',
@@ -119,19 +119,25 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
     return undefined;
   }
 
-  // Filtered items
+  // Scoped items — channel/category/menu-group filters only. Deliberately excludes
+  // the search box: mix %/totals must stay stable as you type a search, only the
+  // set of rows actually rendered should narrow. See matchesSearch() below.
   const filtered = useMemo(() => {
-    const q = search.toLowerCase();
     return items.filter(i => {
       if (selectedChannels.length > 0 && !selectedChannels.includes(i.channel)) return false;
       if (categoryFilter !== 'all') {
         if (itemCat(i) !== categoryFilter) return false;
       }
       if (menuGroupFilter !== '__ALL__' && (i.menu_group ?? '') !== menuGroupFilter) return false;
-      if (q && !i.canonical_name.toLowerCase().includes(q) && !i.menu_group.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [items, selectedChannels, categoryFilter, menuGroupFilter, search]);
+  }, [items, selectedChannels, categoryFilter, menuGroupFilter]);
+
+  function matchesSearch(i: ItemRow): boolean {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return i.canonical_name.toLowerCase().includes(q) || i.menu_group.toLowerCase().includes(q);
+  }
 
   // Merge rows that share canonical_name + channel + category + sub_category
   // (can arise when the same real item appears under two different raw menu names)
@@ -163,7 +169,6 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
     return Array.from(map.values());
   }, [filtered]);
 
-  const totalRevenue    = useMemo(() => dedupedFiltered.reduce((s, i) => s + i.revenue,    0), [dedupedFiltered]);
   const totalGrossSales = useMemo(() => dedupedFiltered.reduce((s, i) => s + i.gross_sales, 0), [dedupedFiltered]);
 
   // Category-level totals for category-wise mix %
@@ -224,13 +229,27 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
     return Object.values(cats).reduce((s, subs) => s + catGross(subs), 0);
   }
 
+  // Whether a ch/cat/sub node has at least one item matching the search box —
+  // used only to decide whether to render that section at all. Header totals
+  // (chTotal, cRev, sRev, etc.) always sum the FULL node regardless of search,
+  // so % figures never shift as you type — only which rows are visible does.
+  function nodeHasMatch(cats: Record<string, Record<string, ItemRow[]>>): boolean {
+    if (!search.trim()) return true;
+    return Object.values(cats).some(subs => Object.values(subs).some(rows => rows.some(matchesSearch)));
+  }
+  function catHasMatch(subs: Record<string, ItemRow[]>): boolean {
+    if (!search.trim()) return true;
+    return Object.values(subs).some(rows => rows.some(matchesSearch));
+  }
+
   const channelsToShow = CH_ORDER.filter(c => tree[c]);
-  const COL = 9; // total columns
+  const COL = 11; // total columns
 
   const tableRows: React.ReactNode[] = [];
 
   channelsToShow.forEach(ch => {
     const catMap        = tree[ch] ?? {};
+    if (!nodeHasMatch(catMap)) return;
     const chTotal       = chRev(catMap);
     const chTotalGross  = chGross(catMap);
     const chKey        = `ch:${ch}`;
@@ -264,6 +283,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
 
     cats.forEach(cat => {
       const subMap   = catMap[cat] ?? {};
+      if (!catHasMatch(subMap)) return;
       const cRev     = catRev(subMap);
       const cGross   = catGross(subMap);
       const cQty     = Object.values(subMap).reduce((s, r) => s + subQty(r), 0);
@@ -288,6 +308,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
 
       subs.forEach(sub => {
         const rows   = sortedItems(subMap[sub] ?? []);
+        if (search.trim() && !rows.some(matchesSearch)) return;
         const sRev   = subRev(rows);
         const sGross = subGross(rows);
         const sQty   = subQty(rows);
@@ -295,7 +316,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
 
         // No sub-category — render items directly under category
         if (!sub) {
-          rows.forEach(item => tableRows.push(renderItemRow(item, cat)));
+          rows.forEach(item => { if (matchesSearch(item)) tableRows.push(renderItemRow(item, cat)); });
           return;
         }
 
@@ -312,7 +333,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
         );
 
         if (!isOpen(subKey)) return;
-        rows.forEach(item => tableRows.push(renderItemRow(item, cat)));
+        rows.forEach(item => { if (matchesSearch(item)) tableRows.push(renderItemRow(item, cat)); });
       });
     });
   });
@@ -320,9 +341,15 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
   function renderItemRow(item: ItemRow, cat: string): React.ReactNode {
     const catQ     = catTotals.qty.get(cat)   ?? 0;
     const catG     = catTotals.gross.get(cat) ?? 0;
-    const qtyMix   = catQ > 0 ? (item.qty         / catQ * 100) : 0;
-    const grossMix = catG > 0 ? (item.gross_sales  / catG * 100) : 0;
+    const qtyMix     = catQ > 0 ? (item.qty         / catQ * 100) : 0;
+    const grossMix   = catG > 0 ? (item.gross_sales  / catG * 100) : 0;
+    const grossMixAll = totalGrossSales > 0 ? (item.gross_sales / totalGrossSales * 100) : 0;
     const avgCost  = getAvgCost(item);
+    // COGS% = (avg cost × qty) / (avg price × qty) — qty cancels out, but written
+    // this way to mirror the formula as specified rather than just avgCost/avgPrice.
+    const cogsPct  = (avgCost != null && item.avg_price > 0)
+      ? (avgCost * item.qty) / (item.avg_price * item.qty)
+      : null;
     return (
       <tr key={`${item.canonical_name}||${item.menu_name}||${item.menu_group}`}>
         <td style={{ paddingLeft: 60, fontWeight: 500 }}>{item.canonical_name}</td>
@@ -334,9 +361,13 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
         <td style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 11 }}>
           {fmt$(item.revenue)}
         </td>
+        <td style={{ fontSize: 10, textAlign: 'center', fontWeight: 600, color: 'var(--accent)' }}>{grossMixAll.toFixed(1)}%</td>
         <td style={{ textAlign: 'center' }}>{fmt$2(item.avg_price)}</td>
         <td style={{ textAlign: 'center', color: avgCost != null ? 'var(--text)' : 'var(--muted)' }}>
           {avgCost != null ? fmt$2(avgCost) : '—'}
+        </td>
+        <td style={{ textAlign: 'center', color: cogsPct != null && cogsPct > 0.35 ? '#ef4444' : 'inherit' }}>
+          {cogsPct != null ? `${(cogsPct * 100).toFixed(1)}%` : '—'}
         </td>
       </tr>
     );
@@ -344,12 +375,13 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
 
   const thBase: React.CSSProperties = { position: 'sticky', top: 0, zIndex: 2, background: 'var(--card)' };
 
-  function thSort(key: SortKey, label: string) {
+  function thSort(key: SortKey, label: string, formulaTitle?: string) {
     const active = sortKey === key;
     return (
       <th
         onClick={() => { setSortKey(key); setSortDir(d => active ? (d === 'desc' ? 'asc' : 'desc') : 'desc'); }}
         style={{ ...thBase, cursor: 'pointer', color: active ? 'var(--accent)' : undefined, whiteSpace: 'nowrap', textAlign: 'center' }}
+        title={formulaTitle}
       >
         {label}{active ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}
       </th>
@@ -392,23 +424,40 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
         >
           {sortDir === 'desc' ? '↓' : '↑'}
         </button>
-        <span style={{ fontSize: 10, color: 'var(--muted)' }}>{dedupedFiltered.length} items</span>
+        <span style={{ fontSize: 10, color: 'var(--muted)' }}>
+          {search.trim() ? dedupedFiltered.filter(matchesSearch).length : dedupedFiltered.length} items
+        </span>
       </div>
 
       <div className="tw">
         <div className="tscroll">
-          <table>
+          <table style={{ tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: '21%' }} />
+              <col style={{ width: '10%' }} />
+              <col style={{ width: '6%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '7%' }} />
+            </colgroup>
             <thead>
               <tr>
                 <th style={thBase}>Item</th>
                 <th style={thBase}>Menu Group</th>
-                {thSort('qty', 'QTY')}
+                {thSort('qty', 'QTY', 'Total quantity sold (SUM of order line quantity)')}
                 <th style={{ ...thBase, textAlign: 'center' }} title="Item qty ÷ category total qty">Mix % (Qty)</th>
-                {thSort('gross_sales', 'Gross Sales')}
-                <th style={{ ...thBase, textAlign: 'center' }} title="Item gross sales ÷ category gross sales (pre-discount, ties to Toast)">Mix % (Gross)</th>
+                {thSort('gross_sales', 'Gross Sales', 'SUM of pre-discount revenue (ties to Toast gross sales reports)')}
+                <th style={{ ...thBase, textAlign: 'center', whiteSpace: 'normal' }} title="Item gross sales ÷ category gross sales (pre-discount, ties to Toast)">Mix % Revenue by Category</th>
                 <th style={{ ...thBase, textAlign: 'center', fontSize: 10, color: 'var(--muted)' }} title="Net sales after discounts (line_total)">Net Sales</th>
-                {thSort('avg_price', 'Avg Price')}
-                {thSort('avg_cost', 'Avg Cost')}
+                <th style={{ ...thBase, textAlign: 'center', whiteSpace: 'normal' }} title="Item gross sales ÷ total gross sales across every filtered item, across all categories (not just its own category)">Mix % Revenue Overall</th>
+                {thSort('avg_price', 'Avg Price', 'Gross Sales ÷ Qty (pre-discount average selling price)')}
+                {thSort('avg_cost', 'Avg Cost', 'Pink Sheet "Final Avg Cost With Modifier" for this channel; falls back to r365 Item Cost Lookup when no Pink Sheet cost exists')}
+                <th style={{ ...thBase, textAlign: 'center' }} title="(Avg Cost × Qty) ÷ (Avg Price × Qty) — cost of goods sold as a % of price">COGS%</th>
               </tr>
             </thead>
             <tbody>

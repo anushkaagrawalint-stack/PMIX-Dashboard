@@ -45,6 +45,7 @@ export interface WeeklyChannelRow {
   week_start:    string;
   channel:       string;
   location_code: string;
+  category:      string;
   revenue:       number;
   qty:           number;
 }
@@ -53,6 +54,7 @@ export interface DailyChannelRow {
   date:          string;
   channel:       string;
   location_code: string;
+  category:      string;
   revenue:       number;
   qty:           number;
 }

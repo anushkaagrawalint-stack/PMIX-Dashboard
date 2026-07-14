@@ -1,16 +1,12 @@
 'use client';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { CHANNEL_LABEL, CHANNEL_COLOR } from '@/lib/constants';
-import type { ChannelRow } from '@/lib/types';
 
-export default function ChannelDonut({ data }: { data: ChannelRow[] }) {
-  const chartData = data.map(r => ({
-    name:  CHANNEL_LABEL[r.channel] ?? r.channel,
-    value: r.revenue,
-    qty:   r.qty,
-    pct:   r.pct,
-    fill:  CHANNEL_COLOR[r.channel] ?? '#9ca3af',
-  }));
+const PALETTE = ['#7c3aed', '#7cb9ef', '#f59e0b', '#16a34a', '#ef4444', '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'];
+
+interface CategoryDonutDatum { name: string; value: number; qty: number; pct: number }
+
+export default function CategoryDonut({ data }: { data: CategoryDonutDatum[] }) {
+  const chartData = data.map((r, i) => ({ ...r, fill: PALETTE[i % PALETTE.length] }));
   return (
     <ResponsiveContainer width="100%" height={160}>
       <PieChart>
@@ -28,7 +24,7 @@ export default function ChannelDonut({ data }: { data: ChannelRow[] }) {
                 <div style={{ fontWeight: 700, marginBottom: 3, color: p.fill }}>{p.name}</div>
                 <div>${Math.round(p.value).toLocaleString('en-US')}</div>
                 <div>{p.qty.toLocaleString('en-US')} qty</div>
-                <div style={{ color: 'var(--muted)' }}>{p.pct}% of total revenue</div>
+                <div style={{ color: 'var(--muted)' }}>{p.pct.toFixed(1)}% of total revenue</div>
               </div>
             );
           }}

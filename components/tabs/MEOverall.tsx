@@ -20,13 +20,13 @@ type QuadrantKey = 'Star' | 'Plow Horse' | 'Puzzle' | 'Dog';
 type ViewMode    = 'table' | 'scatter' | 'bar';
 
 const CH_LABELS: Record<ChannelTab, string> = {
-  ALL: 'Overall', BL: 'Blended (IH+LO+3PD)', IH: 'In House', LO: 'Loyalty / APP', '3PD': '3rd Party Delivery',
+  ALL: 'Overall', BL: 'Blended (IH+LO+3PD)', IH: 'In House', LO: 'RASA Digital / APP', '3PD': '3rd Party Delivery',
 };
 const RC_LABELS: Record<ChannelTab, string> = {
-  ALL: 'ALL', BL: 'BLENDED', IH: 'IN-HOUSE', LO: 'LOYALTY', '3PD': '3PD',
+  ALL: 'ALL', BL: 'BLENDED', IH: 'IN-HOUSE', LO: 'RASA DIGITAL', '3PD': '3PD',
 };
 const MENU_LABELS: Record<'IH' | 'LO' | '3PD', string> = {
-  IH: 'IN-HOUSE', LO: 'LOYALTY', '3PD': '3PD',
+  IH: 'IN-HOUSE', LO: 'RASA DIGITAL', '3PD': '3PD',
 };
 const QUAD: Record<QuadrantKey, { bg: string; color: string; fill: string; label: string }> = {
   Star:         { bg: '#dcfce7', color: '#14532d', fill: '#16a34a', label: 'Stars' },
@@ -49,7 +49,7 @@ const CH_BADGE: Record<'IH' | 'LO' | '3PD', { bg: string; color: string }> = {
 
 interface BaseRow {
   name: string; category: string; sub_category: string;
-  avg_price: number; avg_cost: number;
+  avg_price: number; avg_price_raw: number; avg_cost: number; avg_cost_raw: number;
   qty: number; net_sales: number; total_cost: number;
 }
 interface ChannelRow extends BaseRow {
@@ -59,11 +59,11 @@ interface ChannelRow extends BaseRow {
 // For Overall flat list: one row per item × channel
 interface FlatRow {
   name: string; category: string; sub_category: string;
-  avg_price: number; avg_cost: number; margin: number;
+  avg_price: number; avg_price_raw: number; avg_cost: number; avg_cost_raw: number; margin: number;
   qty: number; total_cost: number; net_sales: number; total_margin: number;
   cogs_pct: number; margin_pct: number; mix_pct: number;
   margin_flag: 'High' | 'Low'; mix_flag: 'High' | 'Low'; quadrant: QuadrantKey;
-  menu: string; // IN-HOUSE / LOYALTY / 3PD
+  menu: string; // IN-HOUSE / RASA DIGITAL / 3PD
   sls_pct: number; sls_cat_pct: number;
   ch: 'IH' | 'LO' | '3PD';
 }
@@ -84,11 +84,14 @@ interface FinalCost { online: number; ih: number }
 // (r365 via itemCosts) only when Pink Sheet has none. Two tiers, no third "meItems' own
 // embedded cost" — that doesn't exist in the source logic and only added ambiguity.
 // LO and 3PD both key off the SAME Pink Sheet "online" figure — there's no separate
-// Loyalty pink sheet — 3PD then applies the ×1.18 packaging uplift on top (AppScript
+// RASA Digital pink sheet — 3PD then applies the ×1.18 packaging uplift on top (AppScript
 // RATE_3PD_COST), whichever tier resolved the base cost.
-function getChCost(i: MERow, c: 'IH' | 'LO' | '3PD', fc: FinalCost | undefined, ic: ItemCostRow | undefined) {
+function getChBaseCost(i: MERow, c: 'IH' | 'LO' | '3PD', fc: FinalCost | undefined, ic: ItemCostRow | undefined) {
   const pinkBase = fc ? (c === 'IH' ? fc.ih : fc.online) : 0;
-  const base = pinkBase > 0 ? pinkBase : (ic ? (c === 'IH' ? ic.ih_cost : ic.online_cost) : 0);
+  return pinkBase > 0 ? pinkBase : (ic ? (c === 'IH' ? ic.ih_cost : ic.online_cost) : 0);
+}
+function getChCost(i: MERow, c: 'IH' | 'LO' | '3PD', fc: FinalCost | undefined, ic: ItemCostRow | undefined) {
+  const base = getChBaseCost(i, c, fc, ic);
   return c === '3PD' ? base * 1.18 : base;
 }
 
@@ -106,19 +109,31 @@ function buildBaseRows(
     if (!qty) return null;
     const fc = fcMap.get(i.canonical_name);
     const ic = icMap.get(i.canonical_name.toLowerCase());
-    let cost: number;
+    const tq = i.qty_ih + i.qty_lo + i.qty_3pd;
+    let cost: number, costRaw: number;
     if (ch === 'IH' || ch === 'LO' || ch === '3PD') {
-      cost = getChCost(i, ch, fc, ic);
+      cost    = getChCost(i, ch, fc, ic);
+      costRaw = getChBaseCost(i, ch, fc, ic);
     } else if (fc) {
-      const tq = i.qty_ih + i.qty_lo + i.qty_3pd;
       cost = tq > 0
         ? (fc.ih * i.qty_ih + fc.online * i.qty_lo + (fc.online * 1.18) * i.qty_3pd) / tq
         : fc.online;
+      costRaw = tq > 0
+        ? (fc.ih * i.qty_ih + fc.online * i.qty_lo + fc.online * i.qty_3pd) / tq
+        : fc.online;
     } else {
-      cost = i.avg_cost;
+      cost = costRaw = i.avg_cost;
     }
+    // Raw price = the same figure before the 3PD ×1.22 uplift (owner request
+    // 2026-07-14) — identical to avg_price for IH/LO since no markup applies there.
+    const priceRaw =
+      ch === 'IH' || ch === 'LO' ? price :
+      ch === '3PD'               ? price / 1.22 :
+      tq > 0 ? (i.avg_price_ih * i.qty_ih + i.avg_price_lo * i.qty_lo + (i.avg_price_3pd / 1.22) * i.qty_3pd) / tq
+             : price;
     return { name: i.canonical_name, category: normalizeCategory(i.category), sub_category: i.sub_category,
-             avg_price: price, avg_cost: cost, qty, net_sales: ns, total_cost: cost * qty };
+             avg_price: price, avg_price_raw: priceRaw, avg_cost: cost, avg_cost_raw: costRaw,
+             qty, net_sales: ns, total_cost: cost * qty };
   }).filter(Boolean) as BaseRow[];
 }
 
@@ -140,6 +155,64 @@ function addQuadrant(
       mxf === 'Low'  && mf === 'High' ? 'Puzzle' : 'Dog';
     return { ...r, margin_pct, mix_pct, cogs_pct, margin_flag: mf, mix_flag: mxf, quadrant };
   });
+}
+
+// Blended/Single-channel tables compute margin/total_margin/sls_% inline per-row
+// during render (recomputed on every render, not stored on ChannelRow). Materializing
+// them here instead lets every numeric column be sorted the same generic way the
+// Overall table's FlatRow already supports — same field names as FlatRow on purpose.
+interface DerivedRow extends ChannelRow {
+  margin: number; total_margin: number;
+  sls_pct: number; sls_cat_pct: number; sls_sub_pct: number;
+}
+function withDerived(
+  rowsIn: ChannelRow[], grandNS: number,
+  catSalesMap: Record<string, number>, subCatSalesMap: Record<string, number>,
+): DerivedRow[] {
+  return rowsIn.map(r => ({
+    ...r,
+    margin:       r.avg_price - r.avg_cost,
+    total_margin: r.net_sales - r.total_cost,
+    sls_pct:      grandNS > 0 ? r.net_sales / grandNS : 0,
+    sls_cat_pct:  (catSalesMap[r.category]         ?? 0) > 0 ? r.net_sales / catSalesMap[r.category]         : 0,
+    sls_sub_pct:  (subCatSalesMap[r.sub_category]  ?? 0) > 0 ? r.net_sales / subCatSalesMap[r.sub_category]  : 0,
+  }));
+}
+
+// Generic checkbox-dropdown filter for categorical columns (Margin Level, Menu Mix,
+// Menu Engineering - Final, Menu) — these don't get click-to-sort headers since
+// there's no meaningful order for a handful of fixed categories; filtering via a
+// toolbar dropdown is more useful. Reused identically in all three tables.
+function MultiCheckDropdown<T extends string>({
+  label, id, open, setOpen, options, selected, onToggle,
+}: {
+  label: string; id: string;
+  open: string | null; setOpen: (v: string | null) => void;
+  options: readonly T[]; selected: Set<T>; onToggle: (v: T) => void;
+}) {
+  const isOpen = open === id;
+  const btnLabel = selected.size === 0 ? label : `${label}: ${selected.size}`;
+  return (
+    <div className="drw" style={{ position: 'relative' }}>
+      <button className="drb" onClick={() => setOpen(isOpen ? null : id)} style={{ minWidth: 0 }}>
+        {btnLabel}
+        <i className="ti ti-chevron-down" style={{ fontSize: 11 }} />
+      </button>
+      {isOpen && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 199 }} onClick={() => setOpen(null)} />
+          <div className="drm open" style={{ minWidth: 160, zIndex: 200 }}>
+            {options.map(v => (
+              <label key={v} className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
+                <input type="checkbox" checked={selected.has(v)} onChange={() => onToggle(v)} style={{ accentColor: 'var(--accent)' }} />
+                {v}
+              </label>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 // Dedicated bar chart for one quadrant (Dogs / Puzzles) — always visible, independent
@@ -189,6 +262,42 @@ export default function MEOverall({
   const [view,       setView]       = useState<ViewMode>('table');
   const [quadChartMode, setQuadChartMode] = useState<'top' | 'bottom'>('top');
   const safeItems = meItems ?? [];
+
+  // ── Table sort — one shared sort state, since only one of the three tables
+  // (Overall / Blended / Single-channel) is ever visible at a time. Column keys
+  // are shared field names across the three row shapes (see withDerived below,
+  // which adds margin/total_margin/sls_* to Blended+Single so every numeric
+  // column is sortable the same way as the Overall table's FlatRow already is).
+  const [sortCol, setSortCol] = useState<string>('net_sales');
+  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
+  function handleSort(col: string) {
+    if (sortCol === col) setSortDir(d => d === 'desc' ? 'asc' : 'desc');
+    else { setSortCol(col); setSortDir('desc'); }
+  }
+  const sortArrow = (col: string) => sortCol === col ? (sortDir === 'desc' ? ' ↓' : ' ↑') : '';
+  function sortRows<T>(rowsIn: T[], col: string): T[] {
+    const mul = sortDir === 'asc' ? -1 : 1; // mul=1 (default) = desc for numbers, Z→A for text
+    return [...rowsIn].sort((a, b) => {
+      const av = (a as Record<string, unknown>)[col];
+      const bv = (b as Record<string, unknown>)[col];
+      if (typeof av === 'string' && typeof bv === 'string') return mul === 1 ? bv.localeCompare(av) : av.localeCompare(bv);
+      return mul * ((bv as number) - (av as number));
+    });
+  }
+
+  // ── Margin Level / Menu Mix are the High/Low flag columns — categorical, so a
+  // checkbox filter (like the quadrant cards above) is more useful than a sort.
+  // Empty set = no filter (show both), matching quadFilter's convention.
+  const [marginFlagFilter, setMarginFlagFilter] = useState<Set<'High' | 'Low'>>(new Set());
+  const [mixFlagFilter,    setMixFlagFilter]    = useState<Set<'High' | 'Low'>>(new Set());
+  const [flagDropOpen, setFlagDropOpen] = useState<string | null>(null);
+  function toggleFlagFilter(which: 'margin' | 'mix', v: 'High' | 'Low') {
+    const setter = which === 'margin' ? setMarginFlagFilter : setMixFlagFilter;
+    setter(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; });
+  }
+  const flagMatch = (r: { margin_flag: 'High' | 'Low'; mix_flag: 'High' | 'Low' }) =>
+    (marginFlagFilter.size === 0 || marginFlagFilter.has(r.margin_flag)) &&
+    (mixFlagFilter.size    === 0 || mixFlagFilter.has(r.mix_flag));
 
   // Pink Sheet's actual displayed cost per item — same computation PinkSheets.tsx uses,
   // not the backend's raw avg_cost_ih/avg_cost_online fields.
@@ -282,15 +391,24 @@ export default function MEOverall({
         const { qty, ns, price } = getChData(i, c);
         if (qty <= 0) return;
         const cost       = getChCost(i, c, fc, ic);
+        const costRaw    = getChBaseCost(i, c, fc, ic);
+        // Raw price = same figure before the 3PD ×1.22 uplift (owner request
+        // 2026-07-14) — identical to avg_price for IH/LO since no markup applies there.
+        const priceRaw   = c === '3PD' ? price / 1.22 : price;
         const margin     = price - cost;
         const tc         = cost * qty;
         const totMgn     = ns - tc;
         const cogs_pct   = ns > 0 ? tc / ns : 0;
         const margin_pct = price > 0 ? margin / price : 0;
         const thresh     = t[c];
-        const mix_pct    = thresh.totalQty > 0 ? qty / thresh.totalQty : 0;
+        // % Menu Mix is the item's share of TOTAL qty across every channel (owner
+        // request 2026-07-14), not just its share within its own channel — grandQty
+        // and mixThreshold already reflect the true blended (IH+LO+3PD) totals for
+        // ch==='ALL' (computed above from rawRows). Margin stays per-channel since
+        // channel-specific pricing/cost genuinely differs; only mix was the complaint.
+        const mix_pct    = grandQty > 0 ? qty / grandQty : 0;
         const mf:  'High' | 'Low' = margin_pct > thresh.mThresh  ? 'High' : 'Low';
-        const mxf: 'High' | 'Low' = mix_pct    > thresh.mmThresh ? 'High' : 'Low';
+        const mxf: 'High' | 'Low' = mix_pct    > mixThreshold    ? 'High' : 'Low';
         const quadrant: QuadrantKey =
           mxf === 'High' && mf === 'High' ? 'Star' :
           mxf === 'High' && mf === 'Low'  ? 'Plow Horse' :
@@ -298,7 +416,7 @@ export default function MEOverall({
         const cat = normalizeCategory(i.category);
         result.push({
           name: i.canonical_name, category: cat, sub_category: i.sub_category,
-          avg_price: price, avg_cost: cost, margin, qty, total_cost: tc,
+          avg_price: price, avg_price_raw: priceRaw, avg_cost: cost, avg_cost_raw: costRaw, margin, qty, total_cost: tc,
           net_sales: ns, total_margin: totMgn, cogs_pct, margin_pct, mix_pct,
           margin_flag: mf, mix_flag: mxf, quadrant,
           menu: MENU_LABELS[c],
@@ -309,7 +427,7 @@ export default function MEOverall({
       });
     });
     return result;
-  }, [safeItems, ch, fcMap, icMap, perChThresh]);
+  }, [safeItems, ch, fcMap, icMap, perChThresh, grandQty, mixThreshold]);
 
   // Source rows for quadrant counts/charts: for Overall, use the per-channel flat
   // rows (3 per item) so counts match what the Overall table actually shows; for
@@ -330,11 +448,13 @@ export default function MEOverall({
   const overallFlatRows = useMemo((): FlatRow[] => {
     if (ch !== 'ALL') return [];
     const q = search.toLowerCase();
-    const ORDER = { IH: 0, LO: 1, '3PD': 2 };
-    return overallFlatRowsAll
-      .filter(r => (!q || r.name.toLowerCase().includes(q)) && (quadFilter.size === 0 || quadFilter.has(r.quadrant)))
-      .sort((a, b) => a.name.localeCompare(b.name) || ORDER[a.ch] - ORDER[b.ch]);
-  }, [overallFlatRowsAll, ch, search, quadFilter]);
+    const base = overallFlatRowsAll.filter(r =>
+      (!q || r.name.toLowerCase().includes(q)) &&
+      (quadFilter.size === 0 || quadFilter.has(r.quadrant)) &&
+      flagMatch(r)
+    );
+    return sortRows(base, sortCol);
+  }, [overallFlatRowsAll, ch, search, quadFilter, marginFlagFilter, mixFlagFilter, sortCol, sortDir]);
 
   // ── Blended (BL) table rows: IH+LO+3PD aggregated (AppScript stepBuildBlendedMaster) ──
   // Quadrant comes from full-portfolio thresholds already in `rows` — don't recompute on filtered subset.
@@ -343,18 +463,20 @@ export default function MEOverall({
     const q = search.toLowerCase();
     return rows.filter(r =>
       (!q || r.name.toLowerCase().includes(q)) &&
-      (quadFilter.size === 0 || quadFilter.has(r.quadrant))
+      (quadFilter.size === 0 || quadFilter.has(r.quadrant)) &&
+      flagMatch(r)
     );
-  }, [ch, rows, search, quadFilter]);
+  }, [ch, rows, search, quadFilter, marginFlagFilter, mixFlagFilter]);
 
   // filtered set for single-channel table / scatter / bar
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     return rows.filter(r =>
       (!q || r.name.toLowerCase().includes(q)) &&
-      (quadFilter.size === 0 || quadFilter.has(r.quadrant))
+      (quadFilter.size === 0 || quadFilter.has(r.quadrant)) &&
+      flagMatch(r)
     );
-  }, [rows, search, quadFilter]);
+  }, [rows, search, quadFilter, marginFlagFilter, mixFlagFilter]);
 
   const scatterByQuad = useMemo(() => {
     const byQ: Record<QuadrantKey, Array<{ x: number; y: number; name: string; ns: number; quadrant: QuadrantKey }>> = {
@@ -427,16 +549,30 @@ export default function MEOverall({
     return m;
   }, [blendedTableRows]);
 
+  // Sortable, fully-materialized rows for the Blended and Single-channel tables
+  // (margin/total_margin/sls_% computed once here instead of inline per-render,
+  // so every column — not just the pre-computed ones — can be sorted the same
+  // generic way as the Overall table's FlatRow).
+  const blendedTableRowsD = useMemo(
+    () => sortRows(withDerived(blendedTableRows, blGrandNS, blCatSales, blSubCatSales), sortCol),
+    [blendedTableRows, blGrandNS, blCatSales, blSubCatSales, sortCol, sortDir],
+  );
+  const filteredD = useMemo(
+    () => sortRows(withDerived(filtered, grandSales, catSales, subCatSales), sortCol),
+    [filtered, grandSales, catSales, subCatSales, sortCol, sortDir],
+  );
+
   const mtPct  = Math.round(marginThreshold * 10000) / 100;
   const mxtPct = Math.round(mixThreshold    * 100000) / 1000;
 
   // ── Export helpers ──
   function exportOverallCSV() {
-    const hdr = 'Item Name,Avg Price,Avg Cost With Modifiers,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin 2,Menu Mix,Menu Engineering - Final,Menu,Category,Sub Category,Sls %,Sls % Category';
+    const hdr = 'Item Name,Uplifted Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Menu,Category,Sub Category,Sls %,Sls % Category';
     const csvRows = overallFlatRows.map(r => [
-      `"${r.name}"`, r.avg_price.toFixed(2), r.avg_cost > 0 ? r.avg_cost.toFixed(2) : '',
+      `"${r.name}"`, r.avg_price.toFixed(2), r.avg_price_raw.toFixed(2),
+      r.avg_cost > 0 ? r.avg_cost.toFixed(2) : '', r.avg_cost_raw > 0 ? r.avg_cost_raw.toFixed(2) : '',
       r.margin.toFixed(2), r.qty, r.total_cost.toFixed(2), r.net_sales.toFixed(2),
-      r.total_margin.toFixed(2), pct(r.cogs_pct), pct(r.margin_pct), pct(r.mix_pct, 3),
+      r.total_margin.toFixed(2), pct(r.cogs_pct), pct(r.margin_pct), pct(r.mix_pct, 1),
       r.margin_flag, r.mix_flag, r.quadrant, r.menu,
       `"${r.category}"`, `"${r.sub_category}"`, pct(r.sls_pct, 2), pct(r.sls_cat_pct, 2),
     ].join(','));
@@ -446,7 +582,7 @@ export default function MEOverall({
   }
 
   function exportBlendedCSV() {
-    const hdr = 'Item Name,Avg Price,Avg Cost With Modifiers,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin 2,Menu Mix,Menu Engineering - Final,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
+    const hdr = 'Item Name,Uplifted Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
     const csvRows = blendedTableRows.map(r => {
       const margin = r.avg_price - r.avg_cost;
       const totMgn = r.net_sales - r.total_cost;
@@ -454,9 +590,10 @@ export default function MEOverall({
       const slsCat = (blCatSales[r.category] ?? 0) > 0 ? r.net_sales / blCatSales[r.category] : 0;
       const slsSub = (blSubCatSales[r.sub_category] ?? 0) > 0 ? r.net_sales / blSubCatSales[r.sub_category] : 0;
       return [
-        `"${r.name}"`, r.avg_price.toFixed(2), r.avg_cost > 0 ? r.avg_cost.toFixed(2) : '',
+        `"${r.name}"`, r.avg_price.toFixed(2), r.avg_price_raw.toFixed(2),
+        r.avg_cost > 0 ? r.avg_cost.toFixed(2) : '', r.avg_cost_raw > 0 ? r.avg_cost_raw.toFixed(2) : '',
         margin.toFixed(2), r.qty, r.total_cost.toFixed(2), r.net_sales.toFixed(2),
-        totMgn.toFixed(2), pct(r.cogs_pct), pct(r.margin_pct), pct(r.mix_pct, 3),
+        totMgn.toFixed(2), pct(r.cogs_pct), pct(r.margin_pct), pct(r.mix_pct, 1),
         r.margin_flag, r.mix_flag, r.quadrant,
         `"${r.category}"`, `"${r.sub_category}"`, pct(slsPct, 2), pct(slsCat, 2), pct(slsSub, 2),
       ].join(',');
@@ -467,7 +604,7 @@ export default function MEOverall({
   }
 
   function exportSingleCSV() {
-    const hdr = 'Item Name,Avg Price,Avg Cost With Modifiers,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin 2,Menu Mix,Menu Engineering - Final,Revenue Center,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
+    const hdr = 'Item Name,Uplifted Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Revenue Center,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
     const csvRows = filtered.map(r => {
       const margin = r.avg_price - r.avg_cost;
       const totMgn = r.net_sales - r.total_cost;
@@ -475,9 +612,10 @@ export default function MEOverall({
       const slsCat = (catSales[r.category] ?? 0) > 0 ? r.net_sales / catSales[r.category] : 0;
       const slsSub = (subCatSales[r.sub_category] ?? 0) > 0 ? r.net_sales / subCatSales[r.sub_category] : 0;
       return [
-        `"${r.name}"`, r.avg_price.toFixed(2), r.avg_cost > 0 ? r.avg_cost.toFixed(2) : '',
+        `"${r.name}"`, r.avg_price.toFixed(2), r.avg_price_raw.toFixed(2),
+        r.avg_cost > 0 ? r.avg_cost.toFixed(2) : '', r.avg_cost_raw > 0 ? r.avg_cost_raw.toFixed(2) : '',
         margin.toFixed(2), r.qty, r.total_cost.toFixed(2), r.net_sales.toFixed(2),
-        totMgn.toFixed(2), pct(r.cogs_pct), pct(r.margin_pct), pct(r.mix_pct, 3),
+        totMgn.toFixed(2), pct(r.cogs_pct), pct(r.margin_pct), pct(r.mix_pct, 1),
         r.margin_flag, r.mix_flag, r.quadrant, RC_LABELS[ch],
         `"${r.category}"`, `"${r.sub_category}"`, pct(slsPct, 2), pct(slsCat, 2), pct(slsSub, 2),
       ].join(',');
@@ -507,7 +645,7 @@ export default function MEOverall({
     background: QUAD[q].bg, color: QUAD[q].color,
   });
   const menuBadge = (menu: string): React.CSSProperties => {
-    const c = menu === 'IN-HOUSE' ? CH_BADGE.IH : menu === 'LOYALTY' ? CH_BADGE.LO : CH_BADGE['3PD'];
+    const c = menu === 'IN-HOUSE' ? CH_BADGE.IH : menu === 'RASA DIGITAL' ? CH_BADGE.LO : CH_BADGE['3PD'];
     return { fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 4, background: c.bg, color: c.color };
   };
 
@@ -542,6 +680,18 @@ export default function MEOverall({
             ))}
           </div>
         </div>
+      </div>
+
+      {/* ── Note: all downstream calcs (margin, COGS%, quadrant, etc.) are based on
+          the uplifted figures (3PD ×1.22 price / ×1.18 cost), not the raw ones ── */}
+      <div style={{
+        fontSize: 10, color: 'var(--muted)', background: 'var(--card)',
+        border: '1px solid var(--border)', borderRadius: 8, padding: '6px 10px', marginBottom: 10,
+      }}>
+        <strong>Note:</strong> All calculations on this page (Margin, Total Margin, COGS%, % Margin,
+        quadrant classification, etc.) are based on <strong>Uplifted Price</strong> and{' '}
+        <strong>Uplifted Avg Cost With Modifiers</strong> — the raw <strong>Avg Price</strong> and{' '}
+        <strong>Avg Cost</strong> columns are shown for reference only.
       </div>
 
       {/* ── Quadrant cards ── */}
@@ -688,7 +838,7 @@ export default function MEOverall({
           Matches AppScript: stepBuildOverallMaster
           19 cols: Item Name | Avg Price | Avg Cost | Margin | Qty |
                    Total Cost | Net Sales | Total Margin | COGS% |
-                   % Margin | % Menu Mix | Margin 2 | Menu Mix |
+                   % Margin | % Menu Mix | Margin Level | Menu Mix |
                    ME Final | Menu | Category | Sub Category |
                    Sls % | Sls % Category
           ════════════════════════════════════════════════════════════ */}
@@ -696,38 +846,44 @@ export default function MEOverall({
         <>
           <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search items…" className="srch" />
+            <MultiCheckDropdown label="Margin Level" id="margin" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={marginFlagFilter} onToggle={v => toggleFlagFilter('margin', v)} />
+            <MultiCheckDropdown label="Menu Mix" id="mix" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={mixFlagFilter} onToggle={v => toggleFlagFilter('mix', v)} />
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{overallFlatRows.length} rows</span>
             <button onClick={exportOverallCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>
           </div>
           <div className="tw"><div className="tscroll">
             <table>
               <thead><tr>
-                <th style={{ minWidth: 160 }}>Item Name</th>
-                <th>Avg Price</th>
-                <th>Avg Cost With Modifiers</th>
-                <th>Margin</th>
-                <th>Quantity</th>
-                <th>Total Cost</th>
-                <th>Net Sales</th>
-                <th>Total Margin</th>
-                <th>COGS%</th>
-                <th>% Margin</th>
-                <th>% Menu Mix</th>
-                <th>Margin 2</th>
-                <th>Menu Mix</th>
-                <th>Menu Engineering - Final</th>
+                <th style={{ minWidth: 160, cursor: 'pointer' }} onClick={() => handleSort('name')}>Item Name{sortArrow('name')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price')} title="Gross sales ÷ qty for this channel; 3PD carries an additional ×1.22 price markup on top">Uplifted Price{sortArrow('avg_price')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price_raw')} title="Same as Uplifted Price, before the 3PD ×1.22 markup — identical to Uplifted Price for In-House/RASA Digital">Avg Price{sortArrow('avg_price_raw')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost')} title="Pink Sheet Final Avg Cost With Modifier (or r365 Item Cost Lookup fallback); 3PD carries an additional ×1.18 packaging markup on top">Uplifted Avg Cost With Modifiers{sortArrow('avg_cost')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost_raw')} title="Same as Uplifted Avg Cost With Modifiers, before the 3PD ×1.18 markup — identical to it for In-House/RASA Digital">Avg Cost{sortArrow('avg_cost_raw')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('qty')}>Quantity{sortArrow('qty')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_cost')} title="Uplifted Avg Cost With Modifiers × Quantity">Total Cost{sortArrow('total_cost')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Net Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Net Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Price">% Margin{sortArrow('margin_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('mix_pct')} title="Item qty ÷ total qty across this view">% Menu Mix{sortArrow('mix_pct')}</th>
+                <th title="High if % Margin is above the blended margin threshold ((total net sales − total cost) ÷ total net sales), else Low">Margin Level</th>
+                <th title="High if % Menu Mix is above the mix threshold ((1 ÷ item count) × 0.7), else Low">Menu Mix</th>
+                <th title="Star = High Margin Level + High Menu Mix · Plow Horse = Low Margin + High Mix · Puzzle = High Margin + Low Mix · Dog = Low Margin + Low Mix">Menu Engineering - Final</th>
                 <th>Menu</th>
-                <th>Category</th>
-                <th>Sub Category</th>
-                <th>Sls %</th>
-                <th>Sls % Category</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('category')}>Category{sortArrow('category')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sub_category')}>Sub Category{sortArrow('sub_category')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_pct')} title="Net Sales ÷ grand total Net Sales across every item in this view">Sls %{sortArrow('sls_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_cat_pct')} title="Net Sales ÷ total Net Sales for this item's Category">Sls % Category{sortArrow('sls_cat_pct')}</th>
               </tr></thead>
               <tbody>
                 {overallFlatRows.map((r, idx) => (
                   <tr key={r.name + r.ch + idx}>
                     <td style={{ fontWeight: 600 }}>{r.name}</td>
                     <td>{fmt$(r.avg_price)}</td>
+                    <td style={{ color: 'var(--muted)' }}>{fmt$(r.avg_price_raw)}</td>
                     <td>{r.avg_cost > 0 ? fmt$(r.avg_cost) : '—'}</td>
+                    <td style={{ color: 'var(--muted)' }}>{r.avg_cost_raw > 0 ? fmt$(r.avg_cost_raw) : '—'}</td>
                     <td>{fmt$(r.margin)}</td>
                     <td>{r.qty.toLocaleString()}</td>
                     <td>{fmt$(r.total_cost)}</td>
@@ -735,7 +891,7 @@ export default function MEOverall({
                     <td>{fmt$(r.total_margin)}</td>
                     <td style={{ color: r.cogs_pct > 0.35 ? '#ef4444' : 'inherit' }}>{pct(r.cogs_pct)}</td>
                     <td>{pct(r.margin_pct)}</td>
-                    <td>{pct(r.mix_pct, 3)}</td>
+                    <td>{pct(r.mix_pct, 1)}</td>
                     <td><span style={flagStyle(r.margin_flag)}>{r.margin_flag}</span></td>
                     <td><span style={flagStyle(r.mix_flag)}>{r.mix_flag}</span></td>
                     <td><span style={quadStyle(r.quadrant)}>{r.quadrant}</span></td>
@@ -749,7 +905,7 @@ export default function MEOverall({
               </tbody>
               <tfoot><tr style={{ fontWeight: 700, background: 'var(--border)' }}>
                 <td>Grand Total</td>
-                <td>—</td><td>—</td><td>—</td>
+                <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
                 <td>{ovGrandQty.toLocaleString()}</td>
                 <td>{fmt$(ovGrandCost)}</td>
                 <td>{fmt$(ovGrandNS)}</td>
@@ -769,7 +925,7 @@ export default function MEOverall({
           Matches AppScript: stepBuildBlendedMaster
           19 cols: Item Name | Avg Price | Avg Cost | Margin | Qty |
                    Total Cost | Net Sales | Total Margin | COGS% |
-                   % Margin | % Menu Mix | Margin 2 | Menu Mix |
+                   % Margin | % Menu Mix | Margin Level | Menu Mix |
                    ME Final | Category | Sub Category |
                    Sls % | Sls % Category | Sls % Sub Category
           ════════════════════════════════════════════════════════════ */}
@@ -777,67 +933,66 @@ export default function MEOverall({
         <>
           <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search items…" className="srch" />
+            <MultiCheckDropdown label="Margin Level" id="margin" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={marginFlagFilter} onToggle={v => toggleFlagFilter('margin', v)} />
+            <MultiCheckDropdown label="Menu Mix" id="mix" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={mixFlagFilter} onToggle={v => toggleFlagFilter('mix', v)} />
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{blendedTableRows.length} items</span>
             <button onClick={exportBlendedCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>
           </div>
           <div className="tw"><div className="tscroll">
             <table>
               <thead><tr>
-                <th style={{ minWidth: 160 }}>Item Name</th>
-                <th>Avg Price</th>
-                <th>Avg Cost With Modifiers</th>
-                <th>Margin</th>
-                <th>Quantity</th>
-                <th>Total Cost</th>
-                <th>Net Sales</th>
-                <th>Total Margin</th>
-                <th>COGS%</th>
-                <th>% Margin</th>
-                <th>% Menu Mix</th>
-                <th>Margin 2</th>
-                <th>Menu Mix</th>
-                <th>Menu Engineering - Final</th>
-                <th>Category</th>
-                <th>Sub Category</th>
-                <th>Sls %</th>
-                <th>Sls % Category</th>
-                <th>Sls % Sub Category</th>
+                <th style={{ minWidth: 160, cursor: 'pointer' }} onClick={() => handleSort('name')}>Item Name{sortArrow('name')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price')} title="Gross sales ÷ qty for this channel; 3PD carries an additional ×1.22 price markup on top">Uplifted Price{sortArrow('avg_price')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price_raw')} title="Same as Uplifted Price, before the 3PD ×1.22 markup — identical to Uplifted Price for In-House/RASA Digital">Avg Price{sortArrow('avg_price_raw')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost')} title="Pink Sheet Final Avg Cost With Modifier (or r365 Item Cost Lookup fallback); 3PD carries an additional ×1.18 packaging markup on top">Uplifted Avg Cost With Modifiers{sortArrow('avg_cost')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost_raw')} title="Same as Uplifted Avg Cost With Modifiers, before the 3PD ×1.18 markup — identical to it for In-House/RASA Digital">Avg Cost{sortArrow('avg_cost_raw')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('qty')}>Quantity{sortArrow('qty')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_cost')} title="Uplifted Avg Cost With Modifiers × Quantity">Total Cost{sortArrow('total_cost')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Net Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Net Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Price">% Margin{sortArrow('margin_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('mix_pct')} title="Item qty ÷ total qty across this view">% Menu Mix{sortArrow('mix_pct')}</th>
+                <th title="High if % Margin is above the blended margin threshold ((total net sales − total cost) ÷ total net sales), else Low">Margin Level</th>
+                <th title="High if % Menu Mix is above the mix threshold ((1 ÷ item count) × 0.7), else Low">Menu Mix</th>
+                <th title="Star = High Margin Level + High Menu Mix · Plow Horse = Low Margin + High Mix · Puzzle = High Margin + Low Mix · Dog = Low Margin + Low Mix">Menu Engineering - Final</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('category')}>Category{sortArrow('category')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sub_category')}>Sub Category{sortArrow('sub_category')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_pct')} title="Net Sales ÷ grand total Net Sales across every item in this view">Sls %{sortArrow('sls_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_cat_pct')} title="Net Sales ÷ total Net Sales for this item's Category">Sls % Category{sortArrow('sls_cat_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_sub_pct')} title="Net Sales ÷ total Net Sales for this item's Sub Category">Sls % Sub Category{sortArrow('sls_sub_pct')}</th>
               </tr></thead>
               <tbody>
-                {blendedTableRows.map(r => {
-                  const margin  = r.avg_price - r.avg_cost;
-                  const totMgn  = r.net_sales - r.total_cost;
-                  const slsPct  = blGrandNS > 0 ? r.net_sales / blGrandNS : 0;
-                  const slsCat  = (blCatSales[r.category]      ?? 0) > 0 ? r.net_sales / blCatSales[r.category]      : 0;
-                  const slsSub  = (blSubCatSales[r.sub_category] ?? 0) > 0 ? r.net_sales / blSubCatSales[r.sub_category] : 0;
-                  return (
-                    <tr key={r.name}>
-                      <td style={{ fontWeight: 600 }}>{r.name}</td>
-                      <td>{fmt$(r.avg_price)}</td>
-                      <td>{r.avg_cost > 0 ? fmt$(r.avg_cost) : '—'}</td>
-                      <td>{fmt$(margin)}</td>
-                      <td>{r.qty.toLocaleString()}</td>
-                      <td>{fmt$(r.total_cost)}</td>
-                      <td style={{ fontWeight: 600 }}>{fmt$(r.net_sales)}</td>
-                      <td>{fmt$(totMgn)}</td>
-                      <td style={{ color: r.cogs_pct > 0.35 ? '#ef4444' : 'inherit' }}>{pct(r.cogs_pct)}</td>
-                      <td>{pct(r.margin_pct)}</td>
-                      <td>{pct(r.mix_pct, 3)}</td>
-                      <td><span style={flagStyle(r.margin_flag)}>{r.margin_flag}</span></td>
-                      <td><span style={flagStyle(r.mix_flag)}>{r.mix_flag}</span></td>
-                      <td><span style={quadStyle(r.quadrant)}>{r.quadrant}</span></td>
-                      <td style={{ fontSize: 10 }}>{r.category}</td>
-                      <td style={{ fontSize: 10 }}>{r.sub_category}</td>
-                      <td>{pct(slsPct, 2)}</td>
-                      <td>{pct(slsCat, 2)}</td>
-                      <td>{pct(slsSub, 2)}</td>
-                    </tr>
-                  );
-                })}
+                {blendedTableRowsD.map(r => (
+                  <tr key={r.name}>
+                    <td style={{ fontWeight: 600 }}>{r.name}</td>
+                    <td>{fmt$(r.avg_price)}</td>
+                    <td style={{ color: 'var(--muted)' }}>{fmt$(r.avg_price_raw)}</td>
+                    <td>{r.avg_cost > 0 ? fmt$(r.avg_cost) : '—'}</td>
+                    <td style={{ color: 'var(--muted)' }}>{r.avg_cost_raw > 0 ? fmt$(r.avg_cost_raw) : '—'}</td>
+                    <td>{fmt$(r.margin)}</td>
+                    <td>{r.qty.toLocaleString()}</td>
+                    <td>{fmt$(r.total_cost)}</td>
+                    <td style={{ fontWeight: 600 }}>{fmt$(r.net_sales)}</td>
+                    <td>{fmt$(r.total_margin)}</td>
+                    <td style={{ color: r.cogs_pct > 0.35 ? '#ef4444' : 'inherit' }}>{pct(r.cogs_pct)}</td>
+                    <td>{pct(r.margin_pct)}</td>
+                    <td>{pct(r.mix_pct, 1)}</td>
+                    <td><span style={flagStyle(r.margin_flag)}>{r.margin_flag}</span></td>
+                    <td><span style={flagStyle(r.mix_flag)}>{r.mix_flag}</span></td>
+                    <td><span style={quadStyle(r.quadrant)}>{r.quadrant}</span></td>
+                    <td style={{ fontSize: 10 }}>{r.category}</td>
+                    <td style={{ fontSize: 10 }}>{r.sub_category}</td>
+                    <td>{pct(r.sls_pct, 2)}</td>
+                    <td>{pct(r.sls_cat_pct, 2)}</td>
+                    <td>{pct(r.sls_sub_pct, 2)}</td>
+                  </tr>
+                ))}
               </tbody>
               <tfoot><tr style={{ fontWeight: 700, background: 'var(--border)' }}>
                 <td>Grand Total</td>
-                <td>—</td><td>—</td><td>—</td>
+                <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
                 <td>{blGrandQty.toLocaleString()}</td>
                 <td>{fmt$(blGrandCost)}</td>
                 <td>{fmt$(blGrandNS)}</td>
@@ -861,69 +1016,68 @@ export default function MEOverall({
         <>
           <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search items…" className="srch" />
+            <MultiCheckDropdown label="Margin Level" id="margin" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={marginFlagFilter} onToggle={v => toggleFlagFilter('margin', v)} />
+            <MultiCheckDropdown label="Menu Mix" id="mix" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={mixFlagFilter} onToggle={v => toggleFlagFilter('mix', v)} />
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{filtered.length} items</span>
             <button onClick={exportSingleCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>
           </div>
           <div className="tw"><div className="tscroll">
             <table>
               <thead><tr>
-                <th style={{ minWidth: 160 }}>Item Name</th>
-                <th>Avg Price</th>
-                <th>Avg Cost With Modifiers</th>
-                <th>Margin</th>
-                <th>Quantity</th>
-                <th>Total Cost</th>
-                <th>Net Sales</th>
-                <th>Total Margin</th>
-                <th>COGS%</th>
-                <th>% Margin</th>
-                <th>% Menu Mix</th>
-                <th>Margin 2</th>
-                <th>Menu Mix</th>
-                <th>Menu Engineering - Final</th>
+                <th style={{ minWidth: 160, cursor: 'pointer' }} onClick={() => handleSort('name')}>Item Name{sortArrow('name')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price')} title="Gross sales ÷ qty for this channel; 3PD carries an additional ×1.22 price markup on top">Uplifted Price{sortArrow('avg_price')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price_raw')} title="Same as Uplifted Price, before the 3PD ×1.22 markup — identical to Uplifted Price for In-House/RASA Digital">Avg Price{sortArrow('avg_price_raw')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost')} title="Pink Sheet Final Avg Cost With Modifier (or r365 Item Cost Lookup fallback); 3PD carries an additional ×1.18 packaging markup on top">Uplifted Avg Cost With Modifiers{sortArrow('avg_cost')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost_raw')} title="Same as Uplifted Avg Cost With Modifiers, before the 3PD ×1.18 markup — identical to it for In-House/RASA Digital">Avg Cost{sortArrow('avg_cost_raw')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('qty')}>Quantity{sortArrow('qty')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_cost')} title="Uplifted Avg Cost With Modifiers × Quantity">Total Cost{sortArrow('total_cost')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Net Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Net Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Price">% Margin{sortArrow('margin_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('mix_pct')} title="Item qty ÷ total qty across this view">% Menu Mix{sortArrow('mix_pct')}</th>
+                <th title="High if % Margin is above the blended margin threshold ((total net sales − total cost) ÷ total net sales), else Low">Margin Level</th>
+                <th title="High if % Menu Mix is above the mix threshold ((1 ÷ item count) × 0.7), else Low">Menu Mix</th>
+                <th title="Star = High Margin Level + High Menu Mix · Plow Horse = Low Margin + High Mix · Puzzle = High Margin + Low Mix · Dog = Low Margin + Low Mix">Menu Engineering - Final</th>
                 <th>Revenue Center</th>
-                <th>Category</th>
-                <th>Sub Category</th>
-                <th>Sls %</th>
-                <th>Sls % Category</th>
-                <th>Sls % Sub Category</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('category')}>Category{sortArrow('category')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sub_category')}>Sub Category{sortArrow('sub_category')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_pct')} title="Net Sales ÷ grand total Net Sales across every item in this view">Sls %{sortArrow('sls_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_cat_pct')} title="Net Sales ÷ total Net Sales for this item's Category">Sls % Category{sortArrow('sls_cat_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_sub_pct')} title="Net Sales ÷ total Net Sales for this item's Sub Category">Sls % Sub Category{sortArrow('sls_sub_pct')}</th>
               </tr></thead>
               <tbody>
-                {filtered.map(r => {
-                  const margin  = r.avg_price - r.avg_cost;
-                  const totMgn  = r.net_sales - r.total_cost;
-                  const slsPct  = grandSales > 0 ? r.net_sales / grandSales : 0;
-                  const slsCat  = (catSales[r.category]         ?? 0) > 0 ? r.net_sales / catSales[r.category]         : 0;
-                  const slsSub  = (subCatSales[r.sub_category]  ?? 0) > 0 ? r.net_sales / subCatSales[r.sub_category]  : 0;
-                  return (
-                    <tr key={r.name + ch}>
-                      <td style={{ fontWeight: 600 }}>{r.name}</td>
-                      <td>{fmt$(r.avg_price)}</td>
-                      <td>{r.avg_cost > 0 ? fmt$(r.avg_cost) : '—'}</td>
-                      <td>{fmt$(margin)}</td>
-                      <td>{r.qty.toLocaleString()}</td>
-                      <td>{fmt$(r.total_cost)}</td>
-                      <td style={{ fontWeight: 600 }}>{fmt$(r.net_sales)}</td>
-                      <td>{fmt$(totMgn)}</td>
-                      <td style={{ color: r.cogs_pct > 0.35 ? '#ef4444' : 'inherit' }}>{pct(r.cogs_pct)}</td>
-                      <td>{pct(r.margin_pct)}</td>
-                      <td>{pct(r.mix_pct, 3)}</td>
-                      <td><span style={flagStyle(r.margin_flag)}>{r.margin_flag}</span></td>
-                      <td><span style={flagStyle(r.mix_flag)}>{r.mix_flag}</span></td>
-                      <td><span style={quadStyle(r.quadrant)}>{r.quadrant}</span></td>
-                      <td style={{ fontSize: 10, color: 'var(--muted)' }}>{RC_LABELS[ch]}</td>
-                      <td style={{ fontSize: 10 }}>{r.category}</td>
-                      <td style={{ fontSize: 10 }}>{r.sub_category}</td>
-                      <td>{pct(slsPct, 2)}</td>
-                      <td>{pct(slsCat, 2)}</td>
-                      <td>{pct(slsSub, 2)}</td>
-                    </tr>
-                  );
-                })}
+                {filteredD.map(r => (
+                  <tr key={r.name + ch}>
+                    <td style={{ fontWeight: 600 }}>{r.name}</td>
+                    <td>{fmt$(r.avg_price)}</td>
+                    <td style={{ color: 'var(--muted)' }}>{fmt$(r.avg_price_raw)}</td>
+                    <td>{r.avg_cost > 0 ? fmt$(r.avg_cost) : '—'}</td>
+                    <td style={{ color: 'var(--muted)' }}>{r.avg_cost_raw > 0 ? fmt$(r.avg_cost_raw) : '—'}</td>
+                    <td>{fmt$(r.margin)}</td>
+                    <td>{r.qty.toLocaleString()}</td>
+                    <td>{fmt$(r.total_cost)}</td>
+                    <td style={{ fontWeight: 600 }}>{fmt$(r.net_sales)}</td>
+                    <td>{fmt$(r.total_margin)}</td>
+                    <td style={{ color: r.cogs_pct > 0.35 ? '#ef4444' : 'inherit' }}>{pct(r.cogs_pct)}</td>
+                    <td>{pct(r.margin_pct)}</td>
+                    <td>{pct(r.mix_pct, 1)}</td>
+                    <td><span style={flagStyle(r.margin_flag)}>{r.margin_flag}</span></td>
+                    <td><span style={flagStyle(r.mix_flag)}>{r.mix_flag}</span></td>
+                    <td><span style={quadStyle(r.quadrant)}>{r.quadrant}</span></td>
+                    <td style={{ fontSize: 10, color: 'var(--muted)' }}>{RC_LABELS[ch]}</td>
+                    <td style={{ fontSize: 10 }}>{r.category}</td>
+                    <td style={{ fontSize: 10 }}>{r.sub_category}</td>
+                    <td>{pct(r.sls_pct, 2)}</td>
+                    <td>{pct(r.sls_cat_pct, 2)}</td>
+                    <td>{pct(r.sls_sub_pct, 2)}</td>
+                  </tr>
+                ))}
               </tbody>
               <tfoot><tr style={{ fontWeight: 700, background: 'var(--border)' }}>
                 <td>Grand Total</td>
-                <td>—</td><td>—</td><td>—</td>
+                <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
                 <td>{grandQty.toLocaleString()}</td>
                 <td>{fmt$(grandCost)}</td>
                 <td>{fmt$(grandSales)}</td>
