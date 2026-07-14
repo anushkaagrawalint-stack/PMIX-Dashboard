@@ -20,6 +20,7 @@ import MEOverall from './tabs/MEOverall';
 import PinkSheets from './tabs/PinkSheets';
 import EntreeMix from './tabs/EntreeMix';
 import AdminPanel from './tabs/AdminPanel';
+import AttachmentAnalytics from './tabs/AttachmentAnalytics';
 
 // Which tabs each role can see now lives in analytics.tab_permissions (owner
 // request 2026-07-10) — configurable by tester (Admin + User tabs) and admin
@@ -56,6 +57,7 @@ const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location
   needs:      { channel: false, category: false, location: false },
   openitems:  { channel: false, category: false, location: false },
   admin:      { channel: false, category: false, location: false },
+  attachment: { channel: true,  category: false, location: true  },
 };
 
 export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEmail }: { data: DashboardData; isAdmin: boolean; role: Role; visibleTabs: string[]; currentEmail: string | null }) {
@@ -813,6 +815,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}
       {tab === 'admin'      && visibleTabs.includes('admin')      && <AdminPanel currentEmail={currentEmail} currentRole={role} />}
+      {tab === 'attachment' && visibleTabs.includes('attachment') && <AttachmentAnalytics data={data.attachment} prevData={data.prevAttachment} prevLabel={data.prevLabel} locations={data.locations} selectedLocations={selectedLocations} selectedChannels={selectedChannels} />}
     </div>
   );
 }

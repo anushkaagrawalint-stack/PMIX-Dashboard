@@ -16,6 +16,7 @@ import type {
   UncategorizedItemRow,
   FiscalPeriodRow, VendorRow, PinkSheetRow, PinkSheetDetailRow,
   ItemCostRow, MissingCostRow,
+  AttachmentData, AttachmentBucketRow, AttachmentModifierRow, AttachmentItemRow, AttachmentCategoryRow,
 } from './types';
 
 function pool() {
@@ -2622,6 +2623,121 @@ export async function getMissingItemCosts(dr: DateRange): Promise<MissingCostRow
   }));
 }
 
+// ─── Attachment Analytics (tester-only) ───────────────────────────────────────
+// menu_group buckets used to classify a line as a "main" item (denominator for
+// all three reports) or a Drink/Sweet/Side attachment target — a self-contained
+// classification distinct from GRP_TO_CAT_SQL, carried over as-is from the
+// hand-verified reference tool this feature was rebuilt from.
+const ATTACHMENT_MAIN_GROUPS = [
+  'BOWLS', 'BUILD YOUR OWN BOWL', 'BURRITOS', 'BYO', 'CHEF CURATED BOWLS',
+  'CLASSIC INDIAN PLATES', 'PLATES', 'INDIAN BURRITOS', 'KIDS',
+];
+const ATTACHMENT_DRINK_GROUPS = ['Cold Drinks', 'Hot Drinks', 'DRINKS', 'Beer', 'Wine', 'Liquor'];
+
+const sqlList = (vals: string[]) => vals.map(v => `'${v.replace(/'/g, "''")}'`).join(',');
+const ATTACH_MAIN_LIST  = sqlList(ATTACHMENT_MAIN_GROUPS);
+const ATTACH_DRINK_LIST = sqlList(ATTACHMENT_DRINK_GROUPS);
+
+export async function getAttachmentData(dr: DateRange): Promise<AttachmentData> {
+  const db = pool();
+  const { rows } = await db.query(`
+    WITH
+    main_lines AS (
+      SELECT fol.check_guid, fol.location_code, fol.selection_guid, (${CHO}) AS channel
+      FROM public.fact_order_lines fol
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE NOT fol.is_voided AND NOT fol.is_deferred
+        AND fol.menu_group IN (${ATTACH_MAIN_LIST})
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+    ),
+    main_checks AS (
+      SELECT DISTINCT ON (check_guid) check_guid, location_code, channel
+      FROM main_lines
+      ORDER BY check_guid
+    ),
+    buckets AS (
+      SELECT location_code, channel, COUNT(*)::int AS n
+      FROM main_checks
+      GROUP BY 1, 2
+    ),
+    item_lines AS (
+      SELECT
+        mc.location_code, mc.channel,
+        CASE
+          WHEN fol.menu_group IN (${ATTACH_DRINK_LIST}) AND fol.menu_name <> 'CATERING' THEN 'Drink'
+          WHEN fol.menu_group = 'SWEETS' THEN 'Sweet'
+          WHEN fol.menu_group = 'SIDES'  THEN 'Side'
+          WHEN fol.menu_group IN (${ATTACH_MAIN_LIST}) THEN 'Main'
+        END AS category,
+        fol.canonical_name AS name,
+        fol.check_guid
+      FROM public.fact_order_lines fol
+      JOIN main_checks mc ON mc.check_guid = fol.check_guid
+      WHERE NOT fol.is_voided AND NOT fol.is_deferred
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+        AND (
+          (fol.menu_group IN (${ATTACH_DRINK_LIST}) AND fol.menu_name <> 'CATERING')
+          OR fol.menu_group = 'SWEETS'
+          OR fol.menu_group = 'SIDES'
+          OR fol.menu_group IN (${ATTACH_MAIN_LIST})
+        )
+    ),
+    items AS (
+      SELECT location_code, channel, category, name, COUNT(DISTINCT check_guid)::int AS n
+      FROM item_lines
+      GROUP BY 1, 2, 3, 4
+    ),
+    category_checks AS (
+      SELECT location_code, channel, category, COUNT(DISTINCT check_guid)::int AS n
+      FROM item_lines
+      GROUP BY 1, 2, 3
+    ),
+    -- fact_modifiers.parent_selection joins 100% to fact_order_lines.selection_guid
+    -- (verified: no fallback to order_guid needed, unlike the original reference tool).
+    mod_lines AS (
+      SELECT fol.check_guid, fol.location_code, (${CHO}) AS channel, fm.canonical_name AS name
+      FROM public.fact_modifiers fm
+      JOIN public.fact_order_lines fol ON fol.selection_guid = fm.parent_selection
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE NOT fm.is_voided AND NOT fol.is_voided AND NOT fol.is_deferred
+        AND fm.business_date BETWEEN $1::DATE AND $2::DATE
+    ),
+    modifiers AS (
+      SELECT location_code, channel, name, COUNT(DISTINCT check_guid)::int AS n
+      FROM mod_lines
+      GROUP BY 1, 2, 3
+    )
+    SELECT 'bucket' AS kind, location_code, channel, NULL::text AS category, NULL::text AS name, n FROM buckets
+    UNION ALL
+    SELECT 'item', location_code, channel, category, name, n FROM items
+    UNION ALL
+    SELECT 'modifier', location_code, channel, NULL::text, name, n FROM modifiers
+    UNION ALL
+    SELECT 'category', location_code, channel, category, NULL::text, n FROM category_checks
+  `, [dr.start, dr.end]);
+  await db.end();
+
+  const buckets: AttachmentBucketRow[] = [];
+  const items: AttachmentItemRow[] = [];
+  const modifiers: AttachmentModifierRow[] = [];
+  const categoryChecks: AttachmentCategoryRow[] = [];
+  for (const r of rows) {
+    const location_code = r.location_code as string;
+    const channel        = r.channel as string;
+    const n               = Number(r.n);
+    if (r.kind === 'bucket') {
+      buckets.push({ location_code, channel, main_checks: n });
+    } else if (r.kind === 'item') {
+      items.push({ location_code, channel, category: r.category as AttachmentItemRow['category'], item: r.name as string, checks_with: n });
+    } else if (r.kind === 'modifier') {
+      modifiers.push({ location_code, channel, modifier: r.name as string, checks_with: n });
+    } else {
+      categoryChecks.push({ location_code, channel, category: r.category as AttachmentCategoryRow['category'], checks: n });
+    }
+  }
+  return { buckets, items, modifiers, categoryChecks };
+}
+
 // ─── Master loader ────────────────────────────────────────────────────────────
 export async function loadDashboardData(
   override?: { start: string; end: string; label?: string }
@@ -2651,6 +2767,7 @@ export async function loadDashboardData(
     cateringVendors, offsiteVendors,
     itemCosts, missingCosts,
     prevChannelItems, prevLocationItems, prevMEItems,
+    attachment, prevAttachment,
   ] = await Promise.all([
     getSummary(dr),
     prevDr ? getSummary(prevDr) : Promise.resolve(null),
@@ -2687,6 +2804,8 @@ export async function loadDashboardData(
     prevDr ? getChannelItems(prevDr)  : Promise.resolve([]),
     prevDr ? getLocationItems(prevDr) : Promise.resolve([]),
     prevDr ? getMEItems(prevDr)       : Promise.resolve([]),
+    getAttachmentData(dr),
+    prevDr ? getAttachmentData(prevDr) : Promise.resolve(null),
   ]);
 
   const totalMargin   = meItems.reduce((s, i) => s + i.total_margin, 0);
@@ -2712,5 +2831,6 @@ export async function loadDashboardData(
     periods,
     cateringVendors, offsiteVendors,
     itemCosts, missingCosts,
+    attachment, prevAttachment,
   };
 }

@@ -1,5 +1,5 @@
 import { Pool } from '@neondatabase/serverless';
-import { DEFAULT_USER_HIDDEN } from './tabsMeta';
+import { DEFAULT_USER_HIDDEN, DEFAULT_ADMIN_HIDDEN } from './tabsMeta';
 
 function pool() { return new Pool({ connectionString: process.env.DATABASE_URL! }); }
 
@@ -26,6 +26,13 @@ async function ensureTable(db: Pool) {
       SELECT 'user', unnest($1::TEXT[]), FALSE
       ON CONFLICT (role, tab_id) DO NOTHING
     `, [DEFAULT_USER_HIDDEN]);
+  }
+  if (DEFAULT_ADMIN_HIDDEN.length > 0) {
+    await db.query(`
+      INSERT INTO analytics.tab_permissions (role, tab_id, visible)
+      SELECT 'admin', unnest($1::TEXT[]), FALSE
+      ON CONFLICT (role, tab_id) DO NOTHING
+    `, [DEFAULT_ADMIN_HIDDEN]);
   }
 }
 

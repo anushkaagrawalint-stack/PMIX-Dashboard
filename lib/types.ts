@@ -357,6 +357,40 @@ export interface VendorRow {
   pct:      number;
 }
 
+// ─── Attachment Analytics (tester-only) ───────────────────────────────────────
+// Granular (location_code, channel) buckets so the tab can slice by the same
+// location/channel filters as the rest of the dashboard without a DB round trip.
+export interface AttachmentBucketRow {
+  location_code: string;
+  channel:       string;
+  main_checks:   number; // distinct checks containing >=1 main item — shared denominator
+}
+export interface AttachmentModifierRow {
+  location_code: string;
+  channel:       string;
+  modifier:      string;
+  checks_with:   number; // distinct checks containing this modifier (not restricted to main checks)
+}
+export interface AttachmentItemRow {
+  location_code: string;
+  channel:       string;
+  category:      'Drink' | 'Sweet' | 'Side' | 'Main';
+  item:          string;
+  checks_with:   number; // distinct main checks containing this item
+}
+export interface AttachmentCategoryRow {
+  location_code: string;
+  channel:       string;
+  category:      'Drink' | 'Sweet' | 'Side' | 'Main';
+  checks:        number; // distinct main checks containing >=1 item from this category
+}
+export interface AttachmentData {
+  buckets:       AttachmentBucketRow[];
+  modifiers:     AttachmentModifierRow[];
+  items:         AttachmentItemRow[];
+  categoryChecks: AttachmentCategoryRow[];
+}
+
 // ─── Root dashboard data bundle ───────────────────────────────────────────────
 export interface DashboardData {
   dateRange:          DateRange;
@@ -396,5 +430,7 @@ export interface DashboardData {
   offsiteVendors:     VendorRow[];
   itemCosts:          ItemCostRow[];
   missingCosts:       MissingCostRow[];
+  attachment:         AttachmentData; // tester-only tab; fetched for everyone like byo/pinksheets
+  prevAttachment:     AttachmentData | null; // prev-period, for "vs previous" KPI deltas
 }
 

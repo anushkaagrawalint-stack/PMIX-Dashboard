@@ -17,13 +17,21 @@ export const TAB_META = [
   { id: 'needs',      label: 'Needs Review',        icon: 'ti-alert-triangle' },
   { id: 'openitems',  label: 'Open Items',          icon: 'ti-package' },
   { id: 'admin',      label: 'Admin Panel',         icon: 'ti-settings' },
+  { id: 'attachment', label: 'Attachment Rate',     icon: 'ti-link' },
 ] as const;
 
 export type TabId = typeof TAB_META[number]['id'];
 
 // Tabs hidden from the 'user' role before this permission system existed
 // (owner request 2026-07-04: BYO Breakdown + Pink Sheets are admin-only;
-// Admin Panel was built admin/tester-only from the start).
+// Admin Panel was built admin/tester-only from the start). Attachment Rate
+// (owner request 2026-07-14) launched tester-only and defaults hidden from
+// user here too until admin/tester explicitly turns it on.
 // Used once to seed analytics.tab_permissions so rollout changes nothing until
 // a tester/admin explicitly edits a toggle — see lib/tabPermissions.ts.
-export const DEFAULT_USER_HIDDEN: TabId[] = ['byo', 'pinksheets', 'admin'];
+export const DEFAULT_USER_HIDDEN: TabId[] = ['byo', 'pinksheets', 'admin', 'attachment'];
+
+// Tabs hidden from the 'admin' role by default — currently just Attachment
+// Rate, which launched tester-only (owner request 2026-07-14) and should stay
+// off for admin until tester explicitly turns it on via the Admin Panel.
+export const DEFAULT_ADMIN_HIDDEN: TabId[] = ['attachment'];
