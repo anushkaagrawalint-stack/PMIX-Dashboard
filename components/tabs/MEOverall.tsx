@@ -567,7 +567,7 @@ export default function MEOverall({
 
   // ── Export helpers ──
   function exportOverallCSV() {
-    const hdr = 'Item Name,Uplifted Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Menu,Category,Sub Category,Sls %,Sls % Category';
+    const hdr = 'Item Name,Uplifted Avg Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Menu,Category,Sub Category,Sls %,Sls % Category';
     const csvRows = overallFlatRows.map(r => [
       `"${r.name}"`, r.avg_price.toFixed(2), r.avg_price_raw.toFixed(2),
       r.avg_cost > 0 ? r.avg_cost.toFixed(2) : '', r.avg_cost_raw > 0 ? r.avg_cost_raw.toFixed(2) : '',
@@ -582,7 +582,7 @@ export default function MEOverall({
   }
 
   function exportBlendedCSV() {
-    const hdr = 'Item Name,Uplifted Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
+    const hdr = 'Item Name,Uplifted Avg Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
     const csvRows = blendedTableRows.map(r => {
       const margin = r.avg_price - r.avg_cost;
       const totMgn = r.net_sales - r.total_cost;
@@ -604,7 +604,7 @@ export default function MEOverall({
   }
 
   function exportSingleCSV() {
-    const hdr = 'Item Name,Uplifted Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Revenue Center,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
+    const hdr = 'Item Name,Uplifted Avg Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Revenue Center,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
     const csvRows = filtered.map(r => {
       const margin = r.avg_price - r.avg_cost;
       const totMgn = r.net_sales - r.total_cost;
@@ -689,7 +689,7 @@ export default function MEOverall({
         border: '1px solid var(--border)', borderRadius: 8, padding: '6px 10px', marginBottom: 10,
       }}>
         <strong>Note:</strong> All calculations on this page (Margin, Total Margin, COGS%, % Margin,
-        quadrant classification, etc.) are based on <strong>Uplifted Price</strong> and{' '}
+        quadrant classification, etc.) are based on <strong>Uplifted Avg Price</strong> and{' '}
         <strong>Uplifted Avg Cost With Modifiers</strong> — the raw <strong>Avg Price</strong> and{' '}
         <strong>Avg Cost</strong> columns are shown for reference only.
       </div>
@@ -855,17 +855,17 @@ export default function MEOverall({
             <table>
               <thead><tr>
                 <th style={{ minWidth: 160, cursor: 'pointer' }} onClick={() => handleSort('name')}>Item Name{sortArrow('name')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price')} title="Gross sales ÷ qty for this channel; 3PD carries an additional ×1.22 price markup on top">Uplifted Price{sortArrow('avg_price')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price_raw')} title="Same as Uplifted Price, before the 3PD ×1.22 markup — identical to Uplifted Price for In-House/RASA Digital">Avg Price{sortArrow('avg_price_raw')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost')} title="Pink Sheet Final Avg Cost With Modifier (or r365 Item Cost Lookup fallback); 3PD carries an additional ×1.18 packaging markup on top">Uplifted Avg Cost With Modifiers{sortArrow('avg_cost')}</th>
+                <th style={{ cursor: 'pointer', whiteSpace: 'normal' }} onClick={() => handleSort('avg_price')} title="Gross sales ÷ qty for this channel; 3PD carries an additional ×1.22 price markup on top">Uplifted Avg Price{sortArrow('avg_price')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price_raw')} title="Same as Uplifted Avg Price, before the 3PD ×1.22 markup — identical to Uplifted Avg Price for In-House/RASA Digital">Avg Price{sortArrow('avg_price_raw')}</th>
+                <th style={{ cursor: 'pointer', whiteSpace: 'normal' }} onClick={() => handleSort('avg_cost')} title="Pink Sheet Final Avg Cost With Modifier (or r365 Item Cost Lookup fallback); 3PD carries an additional ×1.18 packaging markup on top">Uplifted Avg Cost With Modifiers{sortArrow('avg_cost')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost_raw')} title="Same as Uplifted Avg Cost With Modifiers, before the 3PD ×1.18 markup — identical to it for In-House/RASA Digital">Avg Cost{sortArrow('avg_cost_raw')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Avg Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('qty')}>Quantity{sortArrow('qty')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_cost')} title="Uplifted Avg Cost With Modifiers × Quantity">Total Cost{sortArrow('total_cost')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Avg Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Net Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Net Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Price">% Margin{sortArrow('margin_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Avg Price">% Margin{sortArrow('margin_pct')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('mix_pct')} title="Item qty ÷ total qty across this view">% Menu Mix{sortArrow('mix_pct')}</th>
                 <th title="High if % Margin is above the blended margin threshold ((total net sales − total cost) ÷ total net sales), else Low">Margin Level</th>
                 <th title="High if % Menu Mix is above the mix threshold ((1 ÷ item count) × 0.7), else Low">Menu Mix</th>
@@ -942,17 +942,17 @@ export default function MEOverall({
             <table>
               <thead><tr>
                 <th style={{ minWidth: 160, cursor: 'pointer' }} onClick={() => handleSort('name')}>Item Name{sortArrow('name')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price')} title="Gross sales ÷ qty for this channel; 3PD carries an additional ×1.22 price markup on top">Uplifted Price{sortArrow('avg_price')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price_raw')} title="Same as Uplifted Price, before the 3PD ×1.22 markup — identical to Uplifted Price for In-House/RASA Digital">Avg Price{sortArrow('avg_price_raw')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost')} title="Pink Sheet Final Avg Cost With Modifier (or r365 Item Cost Lookup fallback); 3PD carries an additional ×1.18 packaging markup on top">Uplifted Avg Cost With Modifiers{sortArrow('avg_cost')}</th>
+                <th style={{ cursor: 'pointer', whiteSpace: 'normal' }} onClick={() => handleSort('avg_price')} title="Gross sales ÷ qty for this channel; 3PD carries an additional ×1.22 price markup on top">Uplifted Avg Price{sortArrow('avg_price')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price_raw')} title="Same as Uplifted Avg Price, before the 3PD ×1.22 markup — identical to Uplifted Avg Price for In-House/RASA Digital">Avg Price{sortArrow('avg_price_raw')}</th>
+                <th style={{ cursor: 'pointer', whiteSpace: 'normal' }} onClick={() => handleSort('avg_cost')} title="Pink Sheet Final Avg Cost With Modifier (or r365 Item Cost Lookup fallback); 3PD carries an additional ×1.18 packaging markup on top">Uplifted Avg Cost With Modifiers{sortArrow('avg_cost')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost_raw')} title="Same as Uplifted Avg Cost With Modifiers, before the 3PD ×1.18 markup — identical to it for In-House/RASA Digital">Avg Cost{sortArrow('avg_cost_raw')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Avg Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('qty')}>Quantity{sortArrow('qty')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_cost')} title="Uplifted Avg Cost With Modifiers × Quantity">Total Cost{sortArrow('total_cost')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Avg Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Net Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Net Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Price">% Margin{sortArrow('margin_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Avg Price">% Margin{sortArrow('margin_pct')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('mix_pct')} title="Item qty ÷ total qty across this view">% Menu Mix{sortArrow('mix_pct')}</th>
                 <th title="High if % Margin is above the blended margin threshold ((total net sales − total cost) ÷ total net sales), else Low">Margin Level</th>
                 <th title="High if % Menu Mix is above the mix threshold ((1 ÷ item count) × 0.7), else Low">Menu Mix</th>
@@ -1025,17 +1025,17 @@ export default function MEOverall({
             <table>
               <thead><tr>
                 <th style={{ minWidth: 160, cursor: 'pointer' }} onClick={() => handleSort('name')}>Item Name{sortArrow('name')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price')} title="Gross sales ÷ qty for this channel; 3PD carries an additional ×1.22 price markup on top">Uplifted Price{sortArrow('avg_price')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price_raw')} title="Same as Uplifted Price, before the 3PD ×1.22 markup — identical to Uplifted Price for In-House/RASA Digital">Avg Price{sortArrow('avg_price_raw')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost')} title="Pink Sheet Final Avg Cost With Modifier (or r365 Item Cost Lookup fallback); 3PD carries an additional ×1.18 packaging markup on top">Uplifted Avg Cost With Modifiers{sortArrow('avg_cost')}</th>
+                <th style={{ cursor: 'pointer', whiteSpace: 'normal' }} onClick={() => handleSort('avg_price')} title="Gross sales ÷ qty for this channel; 3PD carries an additional ×1.22 price markup on top">Uplifted Avg Price{sortArrow('avg_price')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_price_raw')} title="Same as Uplifted Avg Price, before the 3PD ×1.22 markup — identical to Uplifted Avg Price for In-House/RASA Digital">Avg Price{sortArrow('avg_price_raw')}</th>
+                <th style={{ cursor: 'pointer', whiteSpace: 'normal' }} onClick={() => handleSort('avg_cost')} title="Pink Sheet Final Avg Cost With Modifier (or r365 Item Cost Lookup fallback); 3PD carries an additional ×1.18 packaging markup on top">Uplifted Avg Cost With Modifiers{sortArrow('avg_cost')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avg_cost_raw')} title="Same as Uplifted Avg Cost With Modifiers, before the 3PD ×1.18 markup — identical to it for In-House/RASA Digital">Avg Cost{sortArrow('avg_cost_raw')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Avg Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('qty')}>Quantity{sortArrow('qty')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_cost')} title="Uplifted Avg Cost With Modifiers × Quantity">Total Cost{sortArrow('total_cost')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Avg Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Net Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Net Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Price">% Margin{sortArrow('margin_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Avg Price">% Margin{sortArrow('margin_pct')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('mix_pct')} title="Item qty ÷ total qty across this view">% Menu Mix{sortArrow('mix_pct')}</th>
                 <th title="High if % Margin is above the blended margin threshold ((total net sales − total cost) ÷ total net sales), else Low">Margin Level</th>
                 <th title="High if % Menu Mix is above the mix threshold ((1 ÷ item count) × 0.7), else Low">Menu Mix</th>
