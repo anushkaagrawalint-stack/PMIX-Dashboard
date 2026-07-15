@@ -91,7 +91,7 @@ const ITEM_SUBCAT_MAP: Record<string, string> = {
   'Chips + Chutney':'Chips',
   'That Fire Hot Sauce - Side':'Sauce Bottle','That Fire Hot Sauce (Bottle)':'Sauce Bottle',
   'Mango Lassi':'Lassi','Strawberry Lassi':'Lassi',
-  'Vanilla Mango Lassi Soft Serve':'Lassi','Blossom Lassi':'Lassi',
+  'Vanilla Mango Lassi Soft Serve':'Soft Serve','Blossom Lassi':'Lassi',
   'Homemade Juice':'Juice','Handcrafted Juice for a Group - 1/2 Gallon':'Juice',
   'Maine Root Fountain Soda':'Canned Soda','Olipop - Cola':'Canned Soda',
   'Olipop - Lemon Lime':'Canned Soda','Olipop - Root Beer':'Canned Soda',

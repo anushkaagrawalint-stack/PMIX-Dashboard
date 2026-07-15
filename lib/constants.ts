@@ -207,7 +207,7 @@ export const ITEM_SUBCAT_SQL = `
     WHEN 'That Fire Hot Sauce (Bottle)'               THEN 'Sauce Bottle'
     WHEN 'Mango Lassi'                                THEN 'Lassi'
     WHEN 'Strawberry Lassi'                           THEN 'Lassi'
-    WHEN 'Vanilla Mango Lassi Soft Serve'             THEN 'Lassi'
+    WHEN 'Vanilla Mango Lassi Soft Serve'             THEN 'Soft Serve'
     WHEN 'Blossom Lassi'                              THEN 'Lassi'
     WHEN 'Homemade Juice'                             THEN 'Juice'
     WHEN 'Handcrafted Juice for a Group - 1/2 Gallon' THEN 'Juice'
