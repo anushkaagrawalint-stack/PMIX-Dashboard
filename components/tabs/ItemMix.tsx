@@ -1,6 +1,7 @@
 'use client';
 import { useState, useMemo } from 'react';
 import type { ItemRow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow } from '@/lib/types';
+import type { Role } from '@/lib/auth';
 import { computeFinalAvgCost } from '@/lib/pinkSheetCost';
 import { normalizeCategory } from '@/lib/constants';
 
@@ -17,6 +18,7 @@ interface Props {
   itemCosts:        ItemCostRow[];
   selectedChannels: string[];
   categoryFilter:   string;
+  role:             Role;
 }
 
 interface FinalCost { online: number; ih: number }
@@ -43,7 +45,8 @@ function itemCat(i: ItemRow): string {
   return normCat(i.category);
 }
 
-export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts = [], selectedChannels, categoryFilter }: Props) {
+export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts = [], selectedChannels, categoryFilter, role }: Props) {
+  const showCogs = role !== 'user';
   const [search,          setSearch]          = useState('');
   const [sortKey,         setSortKey]         = useState<SortKey>('gross_sales');
   const [sortDir,         setSortDir]         = useState<'asc' | 'desc'>('desc');
@@ -243,7 +246,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
   }
 
   const channelsToShow = CH_ORDER.filter(c => tree[c]);
-  const COL = 11; // total columns
+  const COL = showCogs ? 11 : 10; // total columns — COGS% hidden for role='user'
 
   const tableRows: React.ReactNode[] = [];
 
@@ -366,9 +369,11 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
         <td style={{ textAlign: 'center', color: avgCost != null ? 'var(--text)' : 'var(--muted)' }}>
           {avgCost != null ? fmt$2(avgCost) : '—'}
         </td>
-        <td style={{ textAlign: 'center', color: cogsPct != null && cogsPct > 0.35 ? '#ef4444' : 'inherit' }}>
-          {cogsPct != null ? `${(cogsPct * 100).toFixed(1)}%` : '—'}
-        </td>
+        {showCogs && (
+          <td style={{ textAlign: 'center', color: cogsPct != null && cogsPct > 0.35 ? '#ef4444' : 'inherit' }}>
+            {cogsPct != null ? `${(cogsPct * 100).toFixed(1)}%` : '—'}
+          </td>
+        )}
       </tr>
     );
   }
@@ -441,9 +446,9 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
               <col style={{ width: '8%' }} />
               <col style={{ width: '8%' }} />
               <col style={{ width: '9%' }} />
-              <col style={{ width: '8%' }} />
-              <col style={{ width: '7%' }} />
-              <col style={{ width: '7%' }} />
+              <col style={{ width: showCogs ? '8%' : '15%' }} />
+              <col style={{ width: showCogs ? '7%' : '14%' }} />
+              {showCogs && <col style={{ width: '7%' }} />}
             </colgroup>
             <thead>
               <tr>
@@ -457,7 +462,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
                 <th style={{ ...thBase, textAlign: 'center', whiteSpace: 'normal' }} title="Item gross sales ÷ total gross sales across every filtered item, across all categories (not just its own category)">Mix % Revenue Overall</th>
                 {thSort('avg_price', 'Avg Price', 'Gross Sales ÷ Qty (pre-discount average selling price)')}
                 {thSort('avg_cost', 'Avg Cost', 'Pink Sheet "Final Avg Cost With Modifier" for this channel; falls back to r365 Item Cost Lookup when no Pink Sheet cost exists')}
-                <th style={{ ...thBase, textAlign: 'center' }} title="(Avg Cost × Qty) ÷ (Avg Price × Qty) — cost of goods sold as a % of price">COGS%</th>
+                {showCogs && <th style={{ ...thBase, textAlign: 'center' }} title="(Avg Cost × Qty) ÷ (Avg Price × Qty) — cost of goods sold as a % of price">COGS%</th>}
               </tr>
             </thead>
             <tbody>

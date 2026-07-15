@@ -502,6 +502,7 @@ export async function getLocationItems(dr: DateRange): Promise<LocationItemRow[]
       (${CHO})                                                           AS channel,
       SUM(fol.quantity)::BIGINT                                          AS qty,
       ROUND(SUM(fol.line_total)::NUMERIC, 2)                            AS revenue,
+      ROUND(SUM(fol.pre_discount)::NUMERIC, 2)                          AS gross_sales,
       ROUND(SUM(fol.quantity)*100.0/NULLIF(lt.loc_qty,0)::NUMERIC, 2)  AS mix_pct
     FROM public.fact_order_lines fol
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
@@ -519,6 +520,7 @@ export async function getLocationItems(dr: DateRange): Promise<LocationItemRow[]
     channel:        r.channel        as string,
     qty:            Number(r.qty),
     revenue:        Number(r.revenue),
+    gross_sales:    Number(r.gross_sales),
     mix_pct:        Number(r.mix_pct),
   }));
 }

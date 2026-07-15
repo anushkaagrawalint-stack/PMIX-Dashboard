@@ -145,41 +145,47 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
   const locationBaseItems = useMemo((): ItemRow[] => {
     if (selectedLocations.length === 0) return data.items;
 
-    // Exact location totals per (canonical_name, channel) — denominator for scaling
-    const locChannelAgg = new Map<string, { qty: number; revenue: number }>();
+    // Exact location totals per (canonical_name, channel) — denominator for scaling.
+    // gross_sales scaled here too (owner report 2026-07-15: "location dropdown not
+    // updating the gross item amount column") — it used to pass through unscaled
+    // from the global item, so it never moved when a location filter was applied.
+    const locChannelAgg = new Map<string, { qty: number; revenue: number; gross_sales: number }>();
     data.locationItems
       .filter(li => selectedLocations.includes(li.location_code))
       .forEach(li => {
         const key = `${li.canonical_name}||${li.channel}`;
-        const e = locChannelAgg.get(key) ?? { qty: 0, revenue: 0 };
-        e.qty     += li.qty;
-        e.revenue += li.revenue;
+        const e = locChannelAgg.get(key) ?? { qty: 0, revenue: 0, gross_sales: 0 };
+        e.qty         += li.qty;
+        e.revenue     += li.revenue;
+        e.gross_sales += li.gross_sales;
         locChannelAgg.set(key, e);
       });
 
     // Global totals per (canonical_name, channel) from channelItems (already aggregated by channel)
-    const totChannelAgg = new Map<string, { qty: number; revenue: number }>();
+    const totChannelAgg = new Map<string, { qty: number; revenue: number; gross_sales: number }>();
     data.channelItems.forEach(ci => {
       const key = `${ci.canonical_name}||${ci.channel}`;
-      totChannelAgg.set(key, { qty: ci.qty, revenue: ci.revenue });
+      totChannelAgg.set(key, { qty: ci.qty, revenue: ci.revenue, gross_sales: ci.gross_sales });
     });
 
-    const totalLocRev = [...locChannelAgg.values()].reduce((s, v) => s + v.revenue, 0);
-    const totalLocQty = [...locChannelAgg.values()].reduce((s, v) => s + v.qty,     0);
+    const totalLocRev   = [...locChannelAgg.values()].reduce((s, v) => s + v.revenue, 0);
+    const totalLocQty   = [...locChannelAgg.values()].reduce((s, v) => s + v.qty,     0);
 
     return data.items.flatMap(i => {
       const key = `${i.canonical_name}||${i.channel}`;
       const loc = locChannelAgg.get(key);
       if (!loc) return [];
-      const tot      = totChannelAgg.get(key);
-      const revScale = tot && tot.revenue > 0 ? loc.revenue / tot.revenue : 0;
-      const qtyScale = tot && tot.qty     > 0 ? loc.qty     / tot.qty     : 0;
-      const qty      = Math.round(i.qty * qtyScale);
-      const revenue  = Math.round(i.revenue * revScale * 100) / 100;
+      const tot        = totChannelAgg.get(key);
+      const revScale   = tot && tot.revenue     > 0 ? loc.revenue     / tot.revenue     : 0;
+      const qtyScale   = tot && tot.qty         > 0 ? loc.qty         / tot.qty         : 0;
+      const grossScale = tot && tot.gross_sales > 0 ? loc.gross_sales / tot.gross_sales : 0;
+      const qty         = Math.round(i.qty * qtyScale);
+      const revenue     = Math.round(i.revenue * revScale * 100) / 100;
+      const gross_sales = Math.round(i.gross_sales * grossScale * 100) / 100;
       if (qty === 0 && revenue === 0) return [];
       return [{
-        ...i, qty, revenue,
-        avg_price:   qty > 0 ? revenue / qty : i.avg_price,
+        ...i, qty, revenue, gross_sales,
+        avg_price:   qty > 0 ? gross_sales / qty : i.avg_price,
         revenue_pct: totalLocRev > 0 ? (revenue / totalLocRev) * 100 : 0,
         qty_pct:     totalLocQty > 0 ? (qty     / totalLocQty) * 100 : 0,
       }];
@@ -802,7 +808,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
 
       {/* ── TAB CONTENT ── */}
       {tab === 'overview'   && <Overview         data={filteredData} selectedChannels={selectedChannels} categoryFilter={categoryFilter} selectedLocations={selectedLocations} />}
-      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} itemCosts={locationFilteredItemCosts} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
+      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} itemCosts={locationFilteredItemCosts} selectedChannels={selectedChannels} categoryFilter={categoryFilter} role={role} />}
       {/* entreemix/byo/meoverall/pinksheets: location dropdown commented out pending v2
           validation — always pass blended, all-location data here regardless of the
           global location filter (the location-scaled memos stay wired for itemmix). */}

@@ -92,6 +92,7 @@ export interface LocationItemRow {
   channel:        string;
   qty:            number;
   revenue:        number;
+  gross_sales:    number;
   mix_pct:        number;
 }
 
