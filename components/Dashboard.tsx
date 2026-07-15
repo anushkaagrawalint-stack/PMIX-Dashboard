@@ -96,10 +96,9 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       ? CHANNEL_LABEL[selectedChannels[0]] ?? selectedChannels[0]
       : `${selectedChannels.length} Channels`;
 
-  // Admin/tester-only "Real Menu Items" quick-select — every channel except
-  // TPD_MARKUP (owner request 2026-07-15), available wherever the channel
-  // dropdown shows since it's this one shared component across tabs.
-  const canSeeRealMenuFilter = role === 'admin' || role === 'tester';
+  // "Real Menu Items" quick-select — every channel except TPD_MARKUP (owner
+  // request 2026-07-15), available wherever the channel filter shows since
+  // it's this one shared component across tabs.
   const realMenuChannelCodes = useMemo(
     () => CHANNELS.filter(c => c.code !== 'TPD_MARKUP').map(c => c.code as string),
     [],
@@ -792,7 +791,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
             </>
           )}
 
-          {showCh && canSeeRealMenuFilter && (
+          {showCh && (
             <>
               <div className="fb-sep" />
               <label className="dr-it" style={{ gap: 7, userSelect: 'none' }}>
