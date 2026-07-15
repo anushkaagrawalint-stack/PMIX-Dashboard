@@ -387,10 +387,12 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 4, borderBottom: '2px solid #e5e7eb', marginBottom: 2 }}>
                     <span style={{ fontSize: 9, color: 'var(--muted)', width: 14, flexShrink: 0 }} />
                     <div style={{ flex: 1, fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Item</div>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right', minWidth: 55 }}>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right', minWidth: 55 }}
+                      title="This item's revenue ÷ this location's total revenue (not overall revenue across all locations)">
                       {locTopView === 'pct' ? '% Rev' : 'Revenue'}
                     </div>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right', minWidth: 45 }}>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', textAlign: 'right', minWidth: 45 }}
+                      title="This item's qty ÷ this location's total qty (not overall qty across all locations)">
                       {locTopView === 'pct' ? '% Qty' : 'Qty'}
                     </div>
                   </div>
