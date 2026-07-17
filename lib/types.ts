@@ -18,6 +18,8 @@ export interface Summary {
   top_item:          string;
   top_item_revenue:  number;
   top_item_mix:      number;
+  refunds:           number;  // sales portion of refunds in range (ties Toast)
+  net_revenue:       number;  // total_revenue - refunds = Toast "Net item amt"
 }
 
 // ─── Channel breakdown ────────────────────────────────────────────────────────
@@ -70,6 +72,8 @@ export interface ItemRow {
   qty:            number;
   revenue:        number;   // line_total (net, after discounts)
   gross_sales:    number;   // pre_discount (true gross, ties to Toast reports)
+  refunds:        number;   // itemized refunds (analytics.refund_sales)
+  net_after_refunds: number; // revenue - refunds
   avg_price:      number;   // pre_discount / qty (matches AppScript + Toast)
   revenue_pct:    number;
   qty_pct:        number;
@@ -83,6 +87,8 @@ export interface ChannelItemRow {
   qty:            number;
   revenue:        number;   // line_total (net)
   gross_sales:    number;   // pre_discount (true gross)
+  refunds:        number;   // itemized refunds (analytics.refund_sales)
+  net_after_refunds: number; // revenue - refunds
 }
 
 // ─── Location compare ─────────────────────────────────────────────────────────
@@ -93,6 +99,8 @@ export interface LocationItemRow {
   qty:            number;
   revenue:        number;
   gross_sales:    number;
+  refunds:        number;   // itemized refunds (analytics.refund_sales)
+  net_after_refunds: number; // revenue - refunds
   mix_pct:        number;
 }
 

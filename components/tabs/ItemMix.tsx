@@ -158,11 +158,14 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
         const qty        = ex.qty        + item.qty;
         const revenue    = ex.revenue    + item.revenue;
         const gross_sales= ex.gross_sales+ item.gross_sales;
+        const refunds    = (ex.refunds ?? 0) + (item.refunds ?? 0);
         map.set(key, {
           ...ex,
           qty,
           revenue,
           gross_sales,
+          refunds,
+          net_after_refunds: revenue - refunds,
           avg_price:   qty > 0 ? gross_sales / qty : ex.avg_price,
           revenue_pct: ex.revenue_pct + item.revenue_pct,
           qty_pct:     ex.qty_pct     + item.qty_pct,
@@ -246,7 +249,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
   }
 
   const channelsToShow = CH_ORDER.filter(c => tree[c]);
-  const COL = showCogs ? 11 : 10; // total columns — COGS% hidden for role='user'
+  const COL = showCogs ? 13 : 12; // total columns — COGS% hidden for role='user' (incl. Refunds + Net after Refunds)
 
   const tableRows: React.ReactNode[] = [];
 
@@ -364,6 +367,12 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
         <td style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 11 }}>
           {fmt$(item.revenue)}
         </td>
+        <td style={{ textAlign: 'center', color: (item.refunds ?? 0) > 0 ? 'var(--lost)' : 'var(--muted)', fontSize: 11 }}>
+          {(item.refunds ?? 0) > 0 ? fmt$(item.refunds) : '—'}
+        </td>
+        <td style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 11 }}>
+          {fmt$(item.net_after_refunds ?? item.revenue)}
+        </td>
         <td style={{ fontSize: 10, textAlign: 'center', fontWeight: 600, color: 'var(--accent)' }}>{grossMixAll.toFixed(1)}%</td>
         <td style={{ textAlign: 'center' }}>{fmt$2(item.avg_price)}</td>
         <td style={{ textAlign: 'center', color: avgCost != null ? 'var(--text)' : 'var(--muted)' }}>
@@ -459,6 +468,8 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
                 {thSort('gross_sales', 'Gross Sales', 'SUM of pre-discount revenue (ties to Toast gross sales reports)')}
                 <th style={{ ...thBase, textAlign: 'center', whiteSpace: 'normal' }} title="Item gross sales ÷ category gross sales (pre-discount, ties to Toast)">Mix % Revenue by Category</th>
                 <th style={{ ...thBase, textAlign: 'center', fontSize: 10, color: 'var(--muted)' }} title="Net sales after discounts (line_total)">Net Sales</th>
+                <th style={{ ...thBase, textAlign: 'center', fontSize: 10, color: 'var(--muted)' }} title="Sales portion of itemized refunds (ties to Toast's Refund amt column)">Refunds</th>
+                <th style={{ ...thBase, textAlign: 'center', fontSize: 10, color: 'var(--muted)' }} title="Net Sales − Refunds (equals Toast's Net item amt)">Net after Refunds</th>
                 <th style={{ ...thBase, textAlign: 'center', whiteSpace: 'normal' }} title="Item gross sales ÷ total gross sales across every filtered item, across all categories (not just its own category)">Mix % Revenue Overall</th>
                 {thSort('avg_price', 'Avg Price', 'Gross Sales ÷ Qty (pre-discount average selling price)')}
                 {thSort('avg_cost', 'Avg Cost', 'Pink Sheet "Final Avg Cost With Modifier" for this channel; falls back to r365 Item Cost Lookup when no Pink Sheet cost exists')}

@@ -106,22 +106,23 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
   const effectiveItems = useMemo(() => {
     if (selectedChannels.length === 0) return items;
     const meta = new Map(items.map(i => [i.canonical_name, i]));
-    const agg  = new Map<string, { qty: number; revenue: number }>();
+    const agg  = new Map<string, { qty: number; revenue: number; refunds: number }>();
     channelItems
       .filter(ci => selectedChannels.includes(ci.channel))
       .forEach(ci => {
-        const e = agg.get(ci.canonical_name) ?? { qty: 0, revenue: 0 };
+        const e = agg.get(ci.canonical_name) ?? { qty: 0, revenue: 0, refunds: 0 };
         e.qty     += ci.qty;
         e.revenue += ci.revenue;
+        e.refunds += ci.refunds ?? 0;
         agg.set(ci.canonical_name, e);
       });
-    return [...agg.entries()].map(([name, { qty, revenue }]) => ({
+    return [...agg.entries()].map(([name, { qty, revenue, refunds }]) => ({
       ...(meta.get(name) ?? {
         canonical_name: name, menu_name: '', menu_group: '', channel: '',
         is_open_item: false, category: 'Other', sub_category: '',
         avg_price: 0, revenue_pct: 0, qty_pct: 0,
       }),
-      qty, revenue,
+      qty, revenue, refunds, net_after_refunds: revenue - refunds,
     }));
   }, [selectedChannels, items, channelItems]);
 
@@ -196,8 +197,15 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
     return effectiveItems.filter(i => mapCat(i.category ?? 'Other') === categoryFilter);
   }, [effectiveItems, categoryFilter]);
 
+  // Net Revenue = net of discounts AND refunds — equals Toast's "Net item amt".
   const kpiRevenue = useMemo(() =>
-    isFiltered ? kpiItems.reduce((s, i) => s + i.revenue, 0) : summary.total_revenue,
+    isFiltered
+      ? kpiItems.reduce((s, i) => s + (i.net_after_refunds ?? i.revenue), 0)
+      : summary.net_revenue,
+  [isFiltered, kpiItems, summary]);
+
+  const kpiRefunds = useMemo(() =>
+    isFiltered ? kpiItems.reduce((s, i) => s + (i.refunds ?? 0), 0) : summary.refunds,
   [isFiltered, kpiItems, summary]);
 
   const kpiQty = useMemo(() =>
@@ -281,6 +289,7 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
         <div className="kc g">
           <div className="kl">Net Revenue</div>
           <div className="kv">{fmt$(kpiRevenue)}</div>
+          {kpiRefunds > 0 && <div className="ks">after {fmt$(kpiRefunds)} refunds</div>}
           {showDelta
             ? <DeltaBadge curr={kpiRevenue} prev={prevKpi!.revenue} vsLabel={prevLabel} />
             : isFiltered && <div className="ks">filtered</div>}
