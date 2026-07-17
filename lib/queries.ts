@@ -11,12 +11,13 @@ import type {
   ItemRow, ChannelItemRow, LocationItemRow, LocationRow,
   MERow, ModifierRow, PaymentRow, PaymentByLocationRow, PaymentSourceLocationRow, BikkyRow,
   CategoryRow, ChannelCategoryRow,
-  RenameRow, RenameDemoRow, NeedsReviewRow, NeedsReviewLineItem,
+  RenameRow, RenameNameHistoryEntry, RenameDemoRow, NeedsReviewRow, NeedsReviewLineItem,
   OpenItemRow, OpenItemsSummary,
   UncategorizedItemRow,
   FiscalPeriodRow, VendorRow, PinkSheetRow, PinkSheetDetailRow,
   ItemCostRow, MissingCostRow,
   AttachmentData, AttachmentBucketRow, AttachmentModifierRow, AttachmentItemRow, AttachmentCategoryRow,
+  BeverageModifierRow,
 } from './types';
 
 function pool() {
@@ -217,11 +218,20 @@ export async function getSummary(dr: DateRange): Promise<Summary> {
   const db = pool();
   const [sumRes, topRes] = await Promise.all([
     db.query(`
+      WITH refunds AS (
+        SELECT COALESCE(SUM(rs.sales_refund), 0) AS refunds
+        FROM analytics.refund_sales rs
+        JOIN public.fact_order_lines fol ON fol.selection_guid = rs.selection_guid
+        WHERE ${BASE_WHERE}
+          AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+      )
       SELECT
-        SUM(fol.quantity)::BIGINT                       AS total_qty,
-        ROUND(SUM(fol.line_total)::NUMERIC, 2)          AS total_revenue,
-        COUNT(DISTINCT fol.canonical_name)::INT         AS unique_items,
-        MAX(fol.business_date)::TEXT                    AS last_date
+        SUM(fol.quantity)::BIGINT                                          AS total_qty,
+        ROUND(SUM(fol.line_total)::NUMERIC, 2)                            AS total_revenue,
+        COUNT(DISTINCT fol.canonical_name)::INT                           AS unique_items,
+        MAX(fol.business_date)::TEXT                                      AS last_date,
+        (SELECT refunds FROM refunds)                                     AS refunds,
+        ROUND(SUM(fol.line_total)::NUMERIC - (SELECT refunds FROM refunds), 2) AS net_revenue
       FROM public.fact_order_lines fol
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
@@ -258,6 +268,8 @@ export async function getSummary(dr: DateRange): Promise<Summary> {
     top_item:         (top?.canonical_name as string) ?? '',
     top_item_revenue: Number(top?.revenue ?? 0),
     top_item_mix:     Number(top?.mix_pct ?? 0),
+    refunds:          Number(row?.refunds ?? 0),
+    net_revenue:      Number(row?.net_revenue ?? 0),
   };
 }
 
@@ -408,6 +420,21 @@ export async function getItems(dr: DateRange): Promise<ItemRow[]> {
       FROM public.fact_order_lines fol
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+    ),
+    refund_totals AS (
+      SELECT
+        ${mappedExpr}       AS canonical_name,
+        fol.menu_name       AS rt_menu_name,
+        fol.menu_group      AS rt_menu_group,
+        (${CHO})            AS channel,
+        SUM(rs.sales_refund) AS refunds
+      FROM analytics.refund_sales rs
+      JOIN public.fact_order_lines fol ON fol.selection_guid = rs.selection_guid
+      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE ${BASE_WHERE}
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY 1, 2, 3, 4
     )
     SELECT
       ${mappedExpr}                                                           AS canonical_name,
@@ -422,12 +449,19 @@ export async function getItems(dr: DateRange): Promise<ItemRow[]> {
       ROUND(SUM(fol.line_total)*100.0/NULLIF(g.total_rev,0)::NUMERIC, 2)    AS revenue_pct,
       ROUND(SUM(fol.quantity)*100.0/NULLIF(g.total_qty,0)::NUMERIC, 2)      AS qty_pct,
       ${cat1Mapped}                                                          AS category,
-      ${cat2Mapped}                                                          AS sub_category
+      ${cat2Mapped}                                                         AS sub_category,
+      COALESCE(MAX(rt.refunds), 0)                                          AS refunds,
+      ROUND(SUM(fol.line_total)::NUMERIC - COALESCE(MAX(rt.refunds), 0), 2) AS net_after_refunds
     FROM public.fact_order_lines fol
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
     ${IL_JOIN}
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     CROSS JOIN grand g
+    LEFT JOIN refund_totals rt
+      ON rt.canonical_name = ${mappedExpr}
+      AND rt.rt_menu_name = fol.menu_name
+      AND rt.rt_menu_group = fol.menu_group
+      AND rt.channel = (${CHO})
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY
@@ -451,6 +485,8 @@ export async function getItems(dr: DateRange): Promise<ItemRow[]> {
     qty_pct:        Number(r.qty_pct),
     category:       r.category as string,
     sub_category:   r.sub_category as string,
+    refunds:            Number(r.refunds),
+    net_after_refunds:  Number(r.net_after_refunds),
   }));
 }
 
@@ -458,16 +494,35 @@ export async function getItems(dr: DateRange): Promise<ItemRow[]> {
 export async function getChannelItems(dr: DateRange): Promise<ChannelItemRow[]> {
   const db = pool();
   const { rows } = await db.query(`
-    WITH ${BYO_FIX_CTE}
+    WITH
+    ${BYO_FIX_CTE},
+    refund_totals AS (
+      SELECT
+        COALESCE(bf.clean, fol.canonical_name) AS canonical_name,
+        (${CHO})                               AS channel,
+        SUM(rs.sales_refund)                   AS refunds
+      FROM analytics.refund_sales rs
+      JOIN public.fact_order_lines fol ON fol.selection_guid = rs.selection_guid
+      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE ${BASE_WHERE}
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY 1, 2
+    )
     SELECT
       COALESCE(bf.clean, fol.canonical_name) AS canonical_name,
       (${CHO}) AS channel,
       SUM(fol.quantity)::BIGINT               AS qty,
       ROUND(SUM(fol.line_total)::NUMERIC,2)   AS revenue,
-      ROUND(SUM(fol.pre_discount)::NUMERIC,2) AS gross_sales
+      ROUND(SUM(fol.pre_discount)::NUMERIC,2) AS gross_sales,
+      COALESCE(MAX(rt.refunds), 0)                                        AS refunds,
+      ROUND(SUM(fol.line_total)::NUMERIC - COALESCE(MAX(rt.refunds), 0), 2) AS net_after_refunds
     FROM public.fact_order_lines fol
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+    LEFT JOIN refund_totals rt
+      ON rt.canonical_name = COALESCE(bf.clean, fol.canonical_name)
+      AND rt.channel = (${CHO})
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY COALESCE(bf.clean, fol.canonical_name), 2
@@ -480,6 +535,8 @@ export async function getChannelItems(dr: DateRange): Promise<ChannelItemRow[]> 
     qty:            Number(r.qty),
     revenue:        Number(r.revenue),
     gross_sales:    Number(r.gross_sales),
+    refunds:            Number(r.refunds),
+    net_after_refunds:  Number(r.net_after_refunds),
   }));
 }
 
@@ -495,6 +552,20 @@ export async function getLocationItems(dr: DateRange): Promise<LocationItemRow[]
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
       GROUP BY location_code
+    ),
+    refund_totals AS (
+      SELECT
+        COALESCE(bf.clean, fol.canonical_name) AS canonical_name,
+        fol.location_code,
+        (${CHO})                               AS channel,
+        SUM(rs.sales_refund)                   AS refunds
+      FROM analytics.refund_sales rs
+      JOIN public.fact_order_lines fol ON fol.selection_guid = rs.selection_guid
+      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE ${BASE_WHERE}
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY 1, 2, 3
     )
     SELECT
       COALESCE(bf.clean, fol.canonical_name)                            AS canonical_name,
@@ -503,11 +574,17 @@ export async function getLocationItems(dr: DateRange): Promise<LocationItemRow[]
       SUM(fol.quantity)::BIGINT                                          AS qty,
       ROUND(SUM(fol.line_total)::NUMERIC, 2)                            AS revenue,
       ROUND(SUM(fol.pre_discount)::NUMERIC, 2)                          AS gross_sales,
-      ROUND(SUM(fol.quantity)*100.0/NULLIF(lt.loc_qty,0)::NUMERIC, 2)  AS mix_pct
+      ROUND(SUM(fol.quantity)*100.0/NULLIF(lt.loc_qty,0)::NUMERIC, 2)  AS mix_pct,
+      COALESCE(MAX(rt.refunds), 0)                                        AS refunds,
+      ROUND(SUM(fol.line_total)::NUMERIC - COALESCE(MAX(rt.refunds), 0), 2) AS net_after_refunds
     FROM public.fact_order_lines fol
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
     JOIN loc_totals lt ON lt.location_code = fol.location_code
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+    LEFT JOIN refund_totals rt
+      ON rt.canonical_name = COALESCE(bf.clean, fol.canonical_name)
+      AND rt.location_code = fol.location_code
+      AND rt.channel = (${CHO})
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY COALESCE(bf.clean, fol.canonical_name), fol.location_code, (${CHO}), lt.loc_qty
@@ -522,6 +599,8 @@ export async function getLocationItems(dr: DateRange): Promise<LocationItemRow[]
     revenue:        Number(r.revenue),
     gross_sales:    Number(r.gross_sales),
     mix_pct:        Number(r.mix_pct),
+    refunds:            Number(r.refunds),
+    net_after_refunds:  Number(r.net_after_refunds),
   }));
 }
 
@@ -1586,6 +1665,35 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
   }));
 }
 
+// ─── Beverage Modifiers (drinks added as a free modifier, e.g. kids-meal drink) ─
+// Reuses the same section-resolution CASE as getMEPinkSheetDetails so "what
+// counts as a drink modifier" stays consistent everywhere it's derived.
+// Always $0 revenue (bundled into the parent item's price) — qty only.
+export async function getBeverageModifiers(dr: DateRange): Promise<BeverageModifierRow[]> {
+  const db = pool();
+  // No section filter here — "make it a meal" drink picks and any other
+  // BYO-scoped modifier choice are all returned; the caller narrows down to
+  // actual beverage names (matching against ItemRow's 'NA Drinks' category)
+  // instead of relying on the derived section label, which was too narrow
+  // (missed drink picks whose section_base wasn't the literal string 'Drink').
+  const { rows } = await db.query(`
+    SELECT d.mod_display AS name, d.channel, COALESCE(d.location_code, '') AS location_code, SUM(d.qty)::BIGINT AS qty
+    FROM analytics.pc_modifier_daily d
+    WHERE d.business_date BETWEEN $1::DATE AND $2::DATE
+      AND d.channel IN ('IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP')
+      AND d.in_byo_scope
+    GROUP BY 1, 2, 3
+    ORDER BY name, channel
+  `, [dr.start, dr.end]);
+  await db.end();
+  return rows.map(r => ({
+    name:          r.name          as string,
+    channel:       r.channel       as string,
+    location_code: r.location_code as string,
+    qty:           Number(r.qty),
+  }));
+}
+
 // ─── BYO Modifiers ────────────────────────────────────────────────────────────
 export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
   const db = pool();
@@ -1911,6 +2019,31 @@ export async function getRenames(): Promise<RenameRow[]> {
           AND fol.item_key  IS NOT NULL
           AND fol.menu_name IS NOT NULL
         ORDER BY fol.item_key, fol.business_date DESC
+      ),
+      -- Date range each name was actually in use, per item — lets the UI show
+      -- "Grain Bowl (until 2026-03-15) → BYO Grain Bowl (2026-03-16 → present)"
+      -- instead of just a single first_seen date for the whole item.
+      name_periods AS (
+        SELECT
+          item_key, canonical_name,
+          MIN(business_date)::TEXT AS first_used,
+          MAX(business_date)::TEXT AS last_used
+        FROM public.fact_order_lines
+        WHERE NOT is_voided
+          AND item_key      IS NOT NULL
+          AND canonical_name IS NOT NULL
+          AND menu_name      IS NOT NULL
+        GROUP BY item_key, canonical_name
+      ),
+      name_history AS (
+        SELECT
+          item_key,
+          JSON_AGG(
+            JSON_BUILD_OBJECT('name', canonical_name, 'first_used', first_used, 'last_used', last_used)
+            ORDER BY first_used
+          ) AS history
+        FROM name_periods
+        GROUP BY item_key
       )
       SELECT
         l.canonical_name,
@@ -1920,11 +2053,12 @@ export async function getRenames(): Promise<RenameRow[]> {
         r.lifetime_qty,
         r.lifetime_revenue,
         r.location_count,
-        r.first_seen
+        r.first_seen,
+        nh.history AS name_history
       FROM renamed r
       JOIN latest l ON l.item_key = r.item_key
+      JOIN name_history nh ON nh.item_key = r.item_key
       ORDER BY r.lifetime_qty DESC
-      LIMIT 50
     `);
     await db.end();
 
@@ -1937,6 +2071,7 @@ export async function getRenames(): Promise<RenameRow[]> {
       return {
         canonical_name:   name,
         all_names:        (r.all_names_str as string).split('|||'),
+        name_history:     r.name_history as RenameNameHistoryEntry[],
         category,
         lifetime_qty:     Number(r.lifetime_qty),
         lifetime_revenue: Number(r.lifetime_revenue),
@@ -2001,33 +2136,50 @@ export async function getRenamesDemo(): Promise<RenameDemoRow[]> {
             ELSE canonical_name
           END AS variant_label
         FROM tagged
+      ),
+      -- Most recent menu_group per canonical_name, for the category column —
+      -- same "pick the latest row's menu_group" approach as getRenames() above.
+      latest_group AS (
+        SELECT DISTINCT ON (canonical_name) canonical_name, menu_group
+        FROM public.fact_order_lines
+        WHERE NOT is_voided AND canonical_name IS NOT NULL AND menu_name IS NOT NULL
+        ORDER BY canonical_name, business_date DESC
       )
       SELECT
-        canonical_name,
-        STRING_AGG(DISTINCT variant_label, '|||' ORDER BY variant_label) AS all_labels_str,
-        COUNT(DISTINCT variant_label)::INT                               AS label_count,
-        SUM(quantity)::BIGINT                                            AS lifetime_qty,
-        ROUND(SUM(line_total)::NUMERIC, 2)                               AS lifetime_revenue,
-        COUNT(DISTINCT location_code)::INT                               AS location_count,
-        MIN(business_date)::TEXT                                         AS first_seen,
-        MAX(business_date)::TEXT                                         AS last_seen
-      FROM variant
-      GROUP BY canonical_name
-      HAVING COUNT(DISTINCT variant_label) > 1
-      ORDER BY SUM(quantity) DESC
-      LIMIT 50
+        v.canonical_name,
+        lg.menu_group,
+        STRING_AGG(DISTINCT v.variant_label, '|||' ORDER BY v.variant_label) AS all_labels_str,
+        COUNT(DISTINCT v.variant_label)::INT                                 AS label_count,
+        SUM(v.quantity)::BIGINT                                              AS lifetime_qty,
+        ROUND(SUM(v.line_total)::NUMERIC, 2)                                AS lifetime_revenue,
+        COUNT(DISTINCT v.location_code)::INT                                AS location_count,
+        MIN(v.business_date)::TEXT                                          AS first_seen,
+        MAX(v.business_date)::TEXT                                         AS last_seen
+      FROM variant v
+      JOIN latest_group lg ON lg.canonical_name = v.canonical_name
+      GROUP BY v.canonical_name, lg.menu_group
+      HAVING COUNT(DISTINCT v.variant_label) > 1
+      ORDER BY SUM(v.quantity) DESC
     `, [CATERING_VENDORS]);
     await db.end();
 
-    return rows.map(r => ({
-      canonical_name:   r.canonical_name as string,
-      variant_labels:   (r.all_labels_str as string).split('|||'),
-      lifetime_qty:     Number(r.lifetime_qty),
-      lifetime_revenue: Number(r.lifetime_revenue),
-      location_count:   Number(r.location_count),
-      first_seen:       r.first_seen as string,
-      last_seen:        r.last_seen as string,
-    }));
+    return rows.map(r => {
+      const name      = r.canonical_name as string;
+      const menuGroup = (r.menu_group ?? '') as string;
+      const category  = name === 'That Fire Hot Sauce (Bottle)' || name === 'That Fire Hot Sauce - Side'
+        ? 'Retail'
+        : (GRP_TO_CAT_MAP[menuGroup] ?? 'Other');
+      return {
+        canonical_name:   name,
+        category,
+        variant_labels:   (r.all_labels_str as string).split('|||'),
+        lifetime_qty:     Number(r.lifetime_qty),
+        lifetime_revenue: Number(r.lifetime_revenue),
+        location_count:   Number(r.location_count),
+        first_seen:       r.first_seen as string,
+        last_seen:        r.last_seen as string,
+      };
+    });
   } catch (err) {
     console.error('getRenamesDemo error:', err);
     await db.end().catch(() => {});
@@ -2872,6 +3024,7 @@ export async function loadDashboardData(
     itemCosts, missingCosts,
     prevChannelItems, prevLocationItems, prevMEItems,
     attachment, prevAttachment,
+    beverageModifiers,
   ] = await Promise.all([
     getSummary(dr),
     prevDr ? getSummary(prevDr) : Promise.resolve(null),
@@ -2911,6 +3064,7 @@ export async function loadDashboardData(
     prevDr ? getMEItems(prevDr)       : Promise.resolve([]),
     getAttachmentData(dr),
     prevDr ? getAttachmentData(prevDr) : Promise.resolve(null),
+    getBeverageModifiers(dr),
   ]);
 
   const totalMargin   = meItems.reduce((s, i) => s + i.total_margin, 0);
@@ -2937,5 +3091,6 @@ export async function loadDashboardData(
     cateringVendors, offsiteVendors,
     itemCosts, missingCosts,
     attachment, prevAttachment,
+    beverageModifiers,
   };
 }

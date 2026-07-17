@@ -18,6 +18,8 @@ export interface Summary {
   top_item:          string;
   top_item_revenue:  number;
   top_item_mix:      number;
+  refunds:           number;  // analytics.refund_sales, exact — Toast's "Refunds" line
+  net_revenue:       number;  // total_revenue - refunds — matches Toast's "Net item amt"
 }
 
 // ─── Channel breakdown ────────────────────────────────────────────────────────
@@ -74,6 +76,8 @@ export interface ItemRow {
   revenue_pct:    number;
   qty_pct:        number;
   is_open_item:   boolean;  // menu_name IS NULL
+  refunds:            number;  // analytics.refund_sales, exact, joined by selection_guid
+  net_after_refunds:  number;  // revenue - refunds
 }
 
 // Per-channel breakdown of an item (for channel filter in ME / Overview)
@@ -83,6 +87,8 @@ export interface ChannelItemRow {
   qty:            number;
   revenue:        number;   // line_total (net)
   gross_sales:    number;   // pre_discount (true gross)
+  refunds:            number;
+  net_after_refunds:  number;
 }
 
 // ─── Location compare ─────────────────────────────────────────────────────────
@@ -94,6 +100,8 @@ export interface LocationItemRow {
   revenue:        number;
   gross_sales:    number;
   mix_pct:        number;
+  refunds:            number;
+  net_after_refunds:  number;
 }
 
 export interface LocationRow {
@@ -234,9 +242,16 @@ export interface BikkyRow {
 }
 
 // ─── Renames ─────────────────────────────────────────────────────────────────
+export interface RenameNameHistoryEntry {
+  name:       string;
+  first_used: string;
+  last_used:  string;
+}
+
 export interface RenameRow {
   canonical_name:   string;
   all_names:        string[];
+  name_history:     RenameNameHistoryEntry[]; // chronological, oldest first — when each name was actually in use
   category:         string;
   lifetime_qty:     number;
   lifetime_revenue: number;
@@ -249,6 +264,7 @@ export interface RenameRow {
 // literal canonical_name changes on a stable item_key. See getRenamesDemo().
 export interface RenameDemoRow {
   canonical_name:   string;
+  category:         string;
   variant_labels:   string[];
   lifetime_qty:     number;
   lifetime_revenue: number;
@@ -407,6 +423,15 @@ export interface AttachmentData {
   categoryChecks: AttachmentCategoryRow[];
 }
 
+// Drinks sold as a modifier (e.g. a kids-meal drink choice) — qty only, since
+// these rows are bundled into the parent item's price (always $0 marginal revenue).
+export interface BeverageModifierRow {
+  name:          string;
+  channel:       string;
+  location_code: string;
+  qty:           number;
+}
+
 // ─── Root dashboard data bundle ───────────────────────────────────────────────
 export interface DashboardData {
   dateRange:          DateRange;
@@ -449,5 +474,6 @@ export interface DashboardData {
   missingCosts:       MissingCostRow[];
   attachment:         AttachmentData; // tester-only tab; fetched for everyone like byo/pinksheets
   prevAttachment:     AttachmentData | null; // prev-period, for "vs previous" KPI deltas
+  beverageModifiers:  BeverageModifierRow[]; // drinks sold as a modifier (e.g. kids-meal drink choice), for the Analytics tab's Beverages section
 }
 

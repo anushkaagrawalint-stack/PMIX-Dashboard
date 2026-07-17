@@ -1,13 +1,28 @@
 'use client';
 import { useState } from 'react';
 import type { RenameRow } from '@/lib/types';
+import type { Role } from '@/lib/auth';
 
-interface Props { renames: RenameRow[] }
+interface Props { renames: RenameRow[]; role: Role }
 
 const fmt$ = (v: number) =>
   `$${Math.round(v).toLocaleString('en-US')}`;
 
-export default function RenamesAudit({ renames }: Props) {
+function csvDownload(filename: string, headers: string[], rows: (string | number)[][]) {
+  const esc = (v: string | number) => {
+    const s = String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export default function RenamesAudit({ renames, role }: Props) {
   const [search, setSearch] = useState('');
 
   const filtered = renames.filter(r =>
@@ -16,13 +31,26 @@ export default function RenamesAudit({ renames }: Props) {
     r.all_names.some(n => n.toLowerCase().includes(search.toLowerCase())),
   );
 
+  function exportCsv() {
+    const headers = ['Canonical Name (Current)', 'Name History', 'Lifetime Qty', 'Lifetime $', 'Locations', 'First Seen'];
+    const rows = filtered.map(r => [
+      r.canonical_name,
+      r.name_history.map(h => `${h.name} (${h.first_used} → ${h.name === r.canonical_name ? 'present' : h.last_used})`).join('; '),
+      r.lifetime_qty,
+      r.lifetime_revenue.toFixed(2),
+      r.location_count,
+      r.first_seen,
+    ]);
+    csvDownload('renames_audit.csv', headers, rows);
+  }
+
   return (
     <div>
       <div className="info-banner purple">
         <i className="ti ti-refresh" />
         <div>
           <strong>{renames.length}</strong> items renamed in Toast POS — same item (by internal ID) appeared under different display names over time.
-          Current name shown normally; former names appear strikethrough. Sorted by lifetime qty.
+          Current name shown normally; former names appear strikethrough, each with the date range it was actually in use. Sorted by lifetime qty.
         </div>
       </div>
 
@@ -35,17 +63,25 @@ export default function RenamesAudit({ renames }: Props) {
         <div className="tw">
           <div className="th2">
             <h3>Item name history</h3>
-            <input
-              value={search} onChange={e => setSearch(e.target.value)}
-              placeholder="Search items…" className="srch"
-            />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Search items…" className="srch"
+              />
+              {role !== 'user' && (
+                <button className="drb" onClick={exportCsv} style={{ minWidth: 0, padding: '6px 12px' }}>
+                  <i className="ti ti-download" style={{ fontSize: 12, marginRight: 4 }} />
+                  Export CSV
+                </button>
+              )}
+            </div>
           </div>
           <div className="tscroll">
             <table>
               <thead>
                 <tr>
                   <th>Canonical name (current)</th>
-                  <th>Historical names</th>
+                  <th>Name history</th>
                   <th>Lifetime Qty</th>
                   <th>Lifetime $</th>
                   <th>Locations</th>
@@ -53,43 +89,41 @@ export default function RenamesAudit({ renames }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(r => {
-                  // The canonical_name is considered the "current" name;
-                  // all other names in all_names that differ are historical
-                  const otherNames = r.all_names.filter(n => n !== r.canonical_name);
-                  return (
-                    <tr key={r.canonical_name}>
-                      <td style={{ fontWeight: 700 }}>{r.canonical_name}</td>
-                      <td>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                          {otherNames.length > 0 ? otherNames.map(n => (
-                            <span
-                              key={n}
-                              style={{
-                                fontSize: 10, padding: '1px 6px', borderRadius: 4,
-                                background: '#f3f4f6', color: '#9ca3af',
-                                textDecoration: 'line-through',
-                              }}
-                            >{n}</span>
-                          )) : (
-                            <span style={{ fontSize: 10, color: 'var(--muted)' }}>—</span>
-                          )}
-                        </div>
-                      </td>
-                      <td>{r.lifetime_qty.toLocaleString()}</td>
-                      <td>{fmt$(r.lifetime_revenue)}</td>
-                      <td>
-                        <span style={{
-                          display: 'inline-block', background: '#f3f0fb', color: '#381d7c',
-                          borderRadius: 4, padding: '1px 7px', fontSize: 10, fontWeight: 700,
-                        }}>
-                          {r.location_count}
-                        </span>
-                      </td>
-                      <td style={{ fontSize: 10, color: 'var(--muted)' }}>{r.first_seen}</td>
-                    </tr>
-                  );
-                })}
+                {filtered.map(r => (
+                  <tr key={r.canonical_name}>
+                    <td style={{ fontWeight: 700 }}>{r.canonical_name}</td>
+                    <td>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        {r.name_history.map(h => {
+                          const isCurrent = h.name === r.canonical_name;
+                          return (
+                            <div key={h.name} style={{ fontSize: 10, display: 'flex', gap: 5, alignItems: 'baseline' }}>
+                              <span style={{
+                                fontWeight: isCurrent ? 700 : 400,
+                                color: isCurrent ? 'var(--text)' : '#9ca3af',
+                                textDecoration: isCurrent ? 'none' : 'line-through',
+                              }}>{h.name}</span>
+                              <span style={{ color: 'var(--muted)' }}>
+                                {h.first_used} → {isCurrent ? 'present' : h.last_used}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </td>
+                    <td>{r.lifetime_qty.toLocaleString()}</td>
+                    <td>{fmt$(r.lifetime_revenue)}</td>
+                    <td>
+                      <span style={{
+                        display: 'inline-block', background: '#f3f0fb', color: '#381d7c',
+                        borderRadius: 4, padding: '1px 7px', fontSize: 10, fontWeight: 700,
+                      }}>
+                        {r.location_count}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: 10, color: 'var(--muted)' }}>{r.first_seen}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

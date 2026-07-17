@@ -106,22 +106,24 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
   const effectiveItems = useMemo(() => {
     if (selectedChannels.length === 0) return items;
     const meta = new Map(items.map(i => [i.canonical_name, i]));
-    const agg  = new Map<string, { qty: number; revenue: number }>();
+    const agg  = new Map<string, { qty: number; revenue: number; refunds: number }>();
     channelItems
       .filter(ci => selectedChannels.includes(ci.channel))
       .forEach(ci => {
-        const e = agg.get(ci.canonical_name) ?? { qty: 0, revenue: 0 };
+        const e = agg.get(ci.canonical_name) ?? { qty: 0, revenue: 0, refunds: 0 };
         e.qty     += ci.qty;
         e.revenue += ci.revenue;
+        e.refunds += ci.refunds;
         agg.set(ci.canonical_name, e);
       });
-    return [...agg.entries()].map(([name, { qty, revenue }]) => ({
+    return [...agg.entries()].map(([name, { qty, revenue, refunds }]) => ({
       ...(meta.get(name) ?? {
         canonical_name: name, menu_name: '', menu_group: '', channel: '',
         is_open_item: false, category: 'Other', sub_category: '',
         avg_price: 0, revenue_pct: 0, qty_pct: 0,
       }),
-      qty, revenue,
+      qty, revenue, refunds,
+      net_after_refunds: Math.round((revenue - refunds) * 100) / 100,
     }));
   }, [selectedChannels, items, channelItems]);
 
@@ -196,8 +198,17 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
     return effectiveItems.filter(i => mapCat(i.category ?? 'Other') === categoryFilter);
   }, [effectiveItems, categoryFilter]);
 
+  // Net Revenue — Toast-exact (Gross - Discounts - Refunds). Unfiltered uses
+  // summary.net_revenue (computed server-side via analytics.refund_sales);
+  // filtered sums kpiItems' own net_after_refunds, since ItemRow now carries
+  // exact per-item refunds too — total_revenue is intentionally left alone
+  // elsewhere (other tabs still consume the pre-refund figure).
   const kpiRevenue = useMemo(() =>
-    isFiltered ? kpiItems.reduce((s, i) => s + i.revenue, 0) : summary.total_revenue,
+    isFiltered ? kpiItems.reduce((s, i) => s + i.net_after_refunds, 0) : summary.net_revenue,
+  [isFiltered, kpiItems, summary]);
+
+  const kpiRefunds = useMemo(() =>
+    isFiltered ? kpiItems.reduce((s, i) => s + i.refunds, 0) : summary.refunds,
   [isFiltered, kpiItems, summary]);
 
   const kpiQty = useMemo(() =>
@@ -241,14 +252,16 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
 
     if (!isFiltered) {
       return {
-        revenue: prevSummary!.total_revenue,
+        revenue: prevSummary!.net_revenue,
+        refunds: prevSummary!.refunds,
         qty:     prevSummary!.total_qty,
         unique:  prevSummary!.unique_items,
         topName: prevSummary!.top_item,
         avgMargin,
       };
     }
-    const revenue = prevChannelItems.reduce((s, i) => s + i.revenue, 0);
+    const revenue = prevChannelItems.reduce((s, i) => s + i.net_after_refunds, 0);
+    const refunds = prevChannelItems.reduce((s, i) => s + i.refunds, 0);
     const qty     = prevChannelItems.reduce((s, i) => s + i.qty, 0);
     const unique  = new Set(
       prevChannelItems.filter(i => !isOpenItemMap.get(i.canonical_name)).map(i => i.canonical_name)
@@ -257,7 +270,7 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
     prevChannelItems.forEach(i => byRev.set(i.canonical_name, (byRev.get(i.canonical_name) ?? 0) + i.revenue));
     let topName = '', topRev = 0;
     byRev.forEach((rev, name) => { if (rev > topRev) { topRev = rev; topName = name; } });
-    return { revenue, qty, unique, topName: topName || prevSummary!.top_item, avgMargin };
+    return { revenue, refunds, qty, unique, topName: topName || prevSummary!.top_item, avgMargin };
   }, [showDelta, isFiltered, prevSummary, prevChannelItems, prevMEItems, isOpenItemMap]);
 
   const rightChartData  = categoryFilter === 'all' ? catData : subCatData;
@@ -270,7 +283,7 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
   return (
     <div>
       {/* KPI row */}
-      <div className="krow">
+      <div className="krow" style={{ gridTemplateColumns: 'repeat(6, 1fr)' }}>
         <div className="kc a">
           <div className="kl">Items Sold</div>
           <div className="kv">{Number(kpiQty).toLocaleString()}</div>
@@ -281,8 +294,16 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
         <div className="kc g">
           <div className="kl">Net Revenue</div>
           <div className="kv">{fmt$(kpiRevenue)}</div>
+          {kpiRefunds > 0 && <div className="ks">after {fmt$(kpiRefunds)} refunds</div>}
           {showDelta
             ? <DeltaBadge curr={kpiRevenue} prev={prevKpi!.revenue} vsLabel={prevLabel} />
+            : isFiltered && <div className="ks">filtered</div>}
+        </div>
+        <div className="kc r">
+          <div className="kl">Refunds</div>
+          <div className="kv">{fmt$(kpiRefunds)}</div>
+          {showDelta
+            ? <DeltaBadge curr={kpiRefunds} prev={prevKpi!.refunds} positiveGood={false} vsLabel={prevLabel} />
             : isFiltered && <div className="ks">filtered</div>}
         </div>
         <div className="kc b">

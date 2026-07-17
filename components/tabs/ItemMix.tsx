@@ -158,6 +158,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
         const qty        = ex.qty        + item.qty;
         const revenue    = ex.revenue    + item.revenue;
         const gross_sales= ex.gross_sales+ item.gross_sales;
+        const refunds    = ex.refunds    + item.refunds;
         map.set(key, {
           ...ex,
           qty,
@@ -166,6 +167,8 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
           avg_price:   qty > 0 ? gross_sales / qty : ex.avg_price,
           revenue_pct: ex.revenue_pct + item.revenue_pct,
           qty_pct:     ex.qty_pct     + item.qty_pct,
+          refunds,
+          net_after_refunds: Math.round((revenue - refunds) * 100) / 100,
         });
       }
     });
@@ -219,17 +222,31 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
   function subRev(rows: ItemRow[])   { return rows.reduce((s, i) => s + i.revenue,    0); }
   function subGross(rows: ItemRow[]) { return rows.reduce((s, i) => s + i.gross_sales, 0); }
   function subQty(rows: ItemRow[])   { return rows.reduce((s, i) => s + i.qty,         0); }
+  function subRefunds(rows: ItemRow[])         { return rows.reduce((s, i) => s + i.refunds,           0); }
+  function subNetAfterRefunds(rows: ItemRow[]) { return rows.reduce((s, i) => s + i.net_after_refunds, 0); }
   function catRev(subs: Record<string, ItemRow[]>) {
     return Object.values(subs).reduce((s, r) => s + subRev(r), 0);
   }
   function catGross(subs: Record<string, ItemRow[]>) {
     return Object.values(subs).reduce((s, r) => s + subGross(r), 0);
   }
+  function catRefunds(subs: Record<string, ItemRow[]>) {
+    return Object.values(subs).reduce((s, r) => s + subRefunds(r), 0);
+  }
+  function catNetAfterRefunds(subs: Record<string, ItemRow[]>) {
+    return Object.values(subs).reduce((s, r) => s + subNetAfterRefunds(r), 0);
+  }
   function chRev(cats: Record<string, Record<string, ItemRow[]>>) {
     return Object.values(cats).reduce((s, subs) => s + catRev(subs), 0);
   }
   function chGross(cats: Record<string, Record<string, ItemRow[]>>) {
     return Object.values(cats).reduce((s, subs) => s + catGross(subs), 0);
+  }
+  function chRefunds(cats: Record<string, Record<string, ItemRow[]>>) {
+    return Object.values(cats).reduce((s, subs) => s + catRefunds(subs), 0);
+  }
+  function chNetAfterRefunds(cats: Record<string, Record<string, ItemRow[]>>) {
+    return Object.values(cats).reduce((s, subs) => s + catNetAfterRefunds(subs), 0);
   }
 
   // Whether a ch/cat/sub node has at least one item matching the search box —
@@ -246,7 +263,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
   }
 
   const channelsToShow = CH_ORDER.filter(c => tree[c]);
-  const COL = showCogs ? 11 : 10; // total columns — COGS% hidden for role='user'
+  const COL = showCogs ? 13 : 12; // total columns — COGS% hidden for role='user'; +2 for Refunds/Net after Refunds
 
   const tableRows: React.ReactNode[] = [];
 
@@ -255,6 +272,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
     if (!nodeHasMatch(catMap)) return;
     const chTotal       = chRev(catMap);
     const chTotalGross  = chGross(catMap);
+    const chTotalRefunds= chRefunds(catMap);
     const chKey        = `ch:${ch}`;
     const showChHeader = channelsToShow.length > 1;
 
@@ -266,6 +284,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
             {CH_LABEL[ch] ?? ch}
             <span style={{ fontWeight: 400, fontSize: 10, marginLeft: 8, opacity: 0.7 }}>
               {fmt$(chTotalGross)} gross · {fmt$(chTotal)} net · {totalGrossSales > 0 ? ((chTotalGross / totalGrossSales) * 100).toFixed(1) : 0}%
+              {chTotalRefunds > 0 && <> · {fmt$(chTotalRefunds)} refunds · {fmt$(chNetAfterRefunds(catMap))} after refunds</>}
             </span>
           </td>
         </tr>
@@ -289,6 +308,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
       if (!catHasMatch(subMap)) return;
       const cRev     = catRev(subMap);
       const cGross   = catGross(subMap);
+      const cRefunds = catRefunds(subMap);
       const cQty     = Object.values(subMap).reduce((s, r) => s + subQty(r), 0);
       const catKey   = `cat:${ch}:${cat}`;
       const catDepth = showChHeader ? 28 : 12;
@@ -300,6 +320,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
             {cat}
             <span style={{ fontWeight: 400, fontSize: 10, color: 'var(--muted)', marginLeft: 8 }}>
               {cQty.toLocaleString()} qty · {fmt$(cGross)} gross · {fmt$(cRev)} net · {totalGrossSales > 0 ? ((cGross / totalGrossSales) * 100).toFixed(1) : 0}% of total
+              {cRefunds > 0 && <> · {fmt$(cRefunds)} refunds · {fmt$(catNetAfterRefunds(subMap))} after refunds</>}
             </span>
           </td>
         </tr>
@@ -363,6 +384,12 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
         <td style={{ fontSize: 10, textAlign: 'center' }}>{grossMix.toFixed(1)}%</td>
         <td style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 11 }}>
           {fmt$(item.revenue)}
+        </td>
+        <td style={{ textAlign: 'center', fontSize: 11, color: item.refunds > 0 ? '#dc2626' : 'var(--muted)' }}>
+          {item.refunds > 0 ? fmt$(item.refunds) : '—'}
+        </td>
+        <td style={{ textAlign: 'center', fontWeight: 600, fontSize: 11 }}>
+          {fmt$(item.net_after_refunds)}
         </td>
         <td style={{ fontSize: 10, textAlign: 'center', fontWeight: 600, color: 'var(--accent)' }}>{grossMixAll.toFixed(1)}%</td>
         <td style={{ textAlign: 'center' }}>{fmt$2(item.avg_price)}</td>
@@ -438,17 +465,19 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
         <div className="tscroll">
           <table style={{ tableLayout: 'fixed' }}>
             <colgroup>
-              <col style={{ width: '21%' }} />
-              <col style={{ width: '10%' }} />
+              <col style={{ width: '18%' }} />
+              <col style={{ width: '8%' }} />
               <col style={{ width: '6%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '7%' }} />
               <col style={{ width: '8%' }} />
-              <col style={{ width: '8%' }} />
-              <col style={{ width: '8%' }} />
-              <col style={{ width: '8%' }} />
-              <col style={{ width: '9%' }} />
-              <col style={{ width: showCogs ? '8%' : '15%' }} />
-              <col style={{ width: showCogs ? '7%' : '14%' }} />
-              {showCogs && <col style={{ width: '7%' }} />}
+              <col style={{ width: showCogs ? '7%' : '13%' }} />
+              <col style={{ width: showCogs ? '6%' : '12%' }} />
+              {showCogs && <col style={{ width: '6%' }} />}
             </colgroup>
             <thead>
               <tr>
@@ -459,6 +488,8 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
                 {thSort('gross_sales', 'Gross Sales', 'SUM of pre-discount revenue (ties to Toast gross sales reports)')}
                 <th style={{ ...thBase, textAlign: 'center', whiteSpace: 'normal' }} title="Item gross sales ÷ category gross sales (pre-discount, ties to Toast)">Mix % Revenue by Category</th>
                 <th style={{ ...thBase, textAlign: 'center', fontSize: 10, color: 'var(--muted)' }} title="Net sales after discounts (line_total)">Net Sales</th>
+                <th style={{ ...thBase, textAlign: 'center', fontSize: 10 }} title="analytics.refund_sales, exact — joined by selection_guid">Refunds</th>
+                <th style={{ ...thBase, textAlign: 'center', fontSize: 10, whiteSpace: 'normal' }} title="Net Sales − Refunds — matches Toast's Net item amt">Net after Refunds</th>
                 <th style={{ ...thBase, textAlign: 'center', whiteSpace: 'normal' }} title="Item gross sales ÷ total gross sales across every filtered item, across all categories (not just its own category)">Mix % Revenue Overall</th>
                 {thSort('avg_price', 'Avg Price', 'Gross Sales ÷ Qty (pre-discount average selling price)')}
                 {thSort('avg_cost', 'Avg Cost', 'Pink Sheet "Final Avg Cost With Modifier" for this channel; falls back to r365 Item Cost Lookup when no Pink Sheet cost exists')}

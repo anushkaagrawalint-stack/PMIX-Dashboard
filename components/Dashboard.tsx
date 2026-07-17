@@ -162,15 +162,16 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
     // gross_sales scaled here too (owner report 2026-07-15: "location dropdown not
     // updating the gross item amount column") — it used to pass through unscaled
     // from the global item, so it never moved when a location filter was applied.
-    const locChannelAgg = new Map<string, { qty: number; revenue: number; gross_sales: number }>();
+    const locChannelAgg = new Map<string, { qty: number; revenue: number; gross_sales: number; refunds: number }>();
     data.locationItems
       .filter(li => selectedLocations.includes(li.location_code))
       .forEach(li => {
         const key = `${li.canonical_name}||${li.channel}`;
-        const e = locChannelAgg.get(key) ?? { qty: 0, revenue: 0, gross_sales: 0 };
+        const e = locChannelAgg.get(key) ?? { qty: 0, revenue: 0, gross_sales: 0, refunds: 0 };
         e.qty         += li.qty;
         e.revenue     += li.revenue;
         e.gross_sales += li.gross_sales;
+        e.refunds     += li.refunds; // exact per-location refunds — no scaling needed, unlike revenue/qty/gross_sales
         locChannelAgg.set(key, e);
       });
 
@@ -201,6 +202,8 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
         avg_price:   qty > 0 ? gross_sales / qty : i.avg_price,
         revenue_pct: totalLocRev > 0 ? (revenue / totalLocRev) * 100 : 0,
         qty_pct:     totalLocQty > 0 ? (qty     / totalLocQty) * 100 : 0,
+        refunds:           loc.refunds,
+        net_after_refunds: Math.round((revenue - loc.refunds) * 100) / 100,
       }];
     }).sort((a, b) => b.revenue - a.revenue);
   }, [selectedLocations, data.locationItems, data.channelItems, data.items]);
@@ -211,6 +214,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
     const locItems = data.locationItems.filter(li => selectedLocations.includes(li.location_code));
     const totalRev = locItems.reduce((s, li) => s + li.revenue, 0);
     const totalQty = locItems.reduce((s, li) => s + li.qty,     0);
+    const totalRefunds = locItems.reduce((s, li) => s + li.refunds, 0);
     const uniqueItems = new Set(locItems.map(li => li.canonical_name)).size;
     // Aggregate by canonical_name to get true per-item totals (locItems now has one row per item×channel)
     const itemAgg = new Map<string, { qty: number; revenue: number }>();
@@ -229,6 +233,8 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       top_item:         topEntry?.[0]           ?? data.summary.top_item,
       top_item_revenue: topEntry?.[1].revenue   ?? data.summary.top_item_revenue,
       top_item_mix:     totalQty > 0 ? ((topEntry?.[1].qty ?? 0) / totalQty) * 100 : data.summary.top_item_mix,
+      refunds:          totalRefunds,
+      net_revenue:      Math.round((totalRev - totalRefunds) * 100) / 100,
     };
   }, [selectedLocations, data.locationItems, data.summary]);
 
@@ -241,6 +247,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
     const locItems = data.prevLocationItems.filter(li => selectedLocations.includes(li.location_code));
     const totalRev = locItems.reduce((s, li) => s + li.revenue, 0);
     const totalQty = locItems.reduce((s, li) => s + li.qty,     0);
+    const totalRefunds = locItems.reduce((s, li) => s + li.refunds, 0);
     const uniqueItems = new Set(locItems.map(li => li.canonical_name)).size;
     const itemAgg = new Map<string, { qty: number; revenue: number }>();
     locItems.forEach(li => {
@@ -258,6 +265,8 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       top_item:         topEntry?.[0]           ?? data.prevSummary.top_item,
       top_item_revenue: topEntry?.[1].revenue   ?? data.prevSummary.top_item_revenue,
       top_item_mix:     totalQty > 0 ? ((topEntry?.[1].qty ?? 0) / totalQty) * 100 : data.prevSummary.top_item_mix,
+      refunds:          totalRefunds,
+      net_revenue:      Math.round((totalRev - totalRefunds) * 100) / 100,
     };
   }, [selectedLocations, data.prevLocationItems, data.prevSummary]);
 
@@ -290,6 +299,8 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       qty:            i.qty,
       revenue:        i.revenue,
       gross_sales:    i.gross_sales,
+      refunds:            i.refunds,
+      net_after_refunds:  i.net_after_refunds,
     }));
   }, [selectedLocations, locationBaseItems, data.channelItems]);
 
@@ -311,21 +322,22 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
   const channelFilteredItems = useMemo((): ItemRow[] => {
     if (selectedChannels.length === 0) return locationBaseItems;
 
-    const agg = new Map<string, { qty: number; revenue: number; gross_sales: number }>();
+    const agg = new Map<string, { qty: number; revenue: number; gross_sales: number; refunds: number }>();
     locationAdjustedChannelItems
       .filter(ci => selectedChannels.includes(ci.channel))
       .forEach(ci => {
-        const e = agg.get(ci.canonical_name) ?? { qty: 0, revenue: 0, gross_sales: 0 };
+        const e = agg.get(ci.canonical_name) ?? { qty: 0, revenue: 0, gross_sales: 0, refunds: 0 };
         e.qty         += ci.qty;
         e.revenue     += ci.revenue;
         e.gross_sales += ci.gross_sales;
+        e.refunds     += ci.refunds;
         agg.set(ci.canonical_name, e);
       });
 
     const totalRev = [...agg.values()].reduce((s, v) => s + v.revenue, 0);
     const totalQty = [...agg.values()].reduce((s, v) => s + v.qty,     0);
 
-    return [...agg.entries()].map(([name, { qty, revenue, gross_sales }]) => {
+    return [...agg.entries()].map(([name, { qty, revenue, gross_sales, refunds }]) => {
       const meta = itemMetaMap.get(name);
       return {
         canonical_name: name,
@@ -341,6 +353,8 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
         avg_price:   qty > 0 ? gross_sales / qty : 0,
         revenue_pct: totalRev > 0 ? (revenue / totalRev) * 100 : 0,
         qty_pct:     totalQty > 0 ? (qty / totalQty) * 100 : 0,
+        refunds,
+        net_after_refunds: Math.round((revenue - refunds) * 100) / 100,
       };
     }).sort((a, b) => b.revenue - a.revenue);
   }, [selectedChannels, locationBaseItems, locationAdjustedChannelItems, itemMetaMap]);
@@ -368,14 +382,15 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
   // channel-level granularity, not the finer menu_group split locationBaseItems scales for).
   const prevLocationAdjustedChannelItems = useMemo((): ChannelItemRow[] => {
     if (selectedLocations.length === 0) return data.prevChannelItems;
-    const agg = new Map<string, { qty: number; revenue: number }>();
+    const agg = new Map<string, { qty: number; revenue: number; refunds: number }>();
     data.prevLocationItems
       .filter(li => selectedLocations.includes(li.location_code))
       .forEach(li => {
         const key = `${li.canonical_name}||${li.channel}`;
-        const e = agg.get(key) ?? { qty: 0, revenue: 0 };
+        const e = agg.get(key) ?? { qty: 0, revenue: 0, refunds: 0 };
         e.qty     += li.qty;
         e.revenue += li.revenue;
+        e.refunds += li.refunds;
         agg.set(key, e);
       });
     return [...agg.entries()].map(([key, v]) => {
@@ -386,6 +401,8 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
         qty:            v.qty,
         revenue:        v.revenue,
         gross_sales:    v.revenue, // not tracked per-location; unused downstream for prev-period deltas
+        refunds:            v.refunds,
+        net_after_refunds:  Math.round((v.revenue - v.refunds) * 100) / 100,
       };
     });
   }, [selectedLocations, data.prevChannelItems, data.prevLocationItems]);
@@ -845,12 +862,12 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       {tab === 'meoverall'  && <MEOverall meItems={data.meItems} pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} itemCosts={data.itemCosts} />}
       {tab === 'pinksheets' && visibleTabs.includes('pinksheets') && <PinkSheets pinkSheets={data.pinkSheets} details={data.pinkSheetDetails} />}
       {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} />}
-      {tab === 'renames'    && <RenamesAudit     renames={data.renames} />}
+      {tab === 'renames'    && <RenamesAudit     renames={data.renames} role={role} />}
       {tab === 'renamesdemo' && visibleTabs.includes('renamesdemo') && <RenamesDemo renames={data.renamesDemo} />}
       {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}
       {tab === 'admin'      && visibleTabs.includes('admin')      && <AdminPanel currentEmail={currentEmail} currentRole={role} />}
-      {tab === 'attachment' && visibleTabs.includes('attachment') && <AttachmentAnalytics data={data.attachment} prevData={data.prevAttachment} prevLabel={data.prevLabel} locations={data.locations} selectedLocations={selectedLocations} selectedChannels={selectedChannels} />}
+      {tab === 'attachment' && visibleTabs.includes('attachment') && <AttachmentAnalytics data={data.attachment} prevData={data.prevAttachment} prevLabel={data.prevLabel} locations={data.locations} selectedLocations={selectedLocations} selectedChannels={selectedChannels} items={locationBaseItems} beverageModifiers={data.beverageModifiers} />}
     </div>
   );
 }
