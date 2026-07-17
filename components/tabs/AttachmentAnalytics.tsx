@@ -3,10 +3,11 @@ import { Fragment, useMemo, useState } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
-import type { AttachmentData, LocationRow } from '@/lib/types';
+import type { AttachmentData, LocationRow, ItemRow, BeverageModifierRow } from '@/lib/types';
 
 const fmtInt = (v: number) => v.toLocaleString();
 const fmtPct = (v: number) => `${v.toFixed(2)}%`;
+const fmtUsd = (v: number) => `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 const CATEGORIES = ['Main', 'Sweet', 'Side', 'Drink'] as const;
 // Main is excluded from the category-checks KPI row — it's always exactly
 // 100% of Total Main Checks by definition (that KPI card already covers it),
@@ -18,6 +19,35 @@ const ATTACH_CATEGORIES = ['Sweet', 'Side', 'Drink'] as const;
 // sticky offset must sit below the first row instead of overlapping it at top:0.
 const HEADER_ROW_H = 28;
 const CAT_COLOR: Record<string, string> = { Drink: '#2563eb', Sweet: '#c9832e', Side: '#10b981', Main: '#8b5cf6' };
+
+// Entree Mix / Beverages sections scope to In-House + APP + 3PD only —
+// catering/offsite/open-items/3PD Markup are all out of scope for this report
+// (owner request — 3PD Markup isn't a platform they want to see here).
+const ENTREE_CHANNELS = [
+  { code: 'IN_HOUSE', label: 'In-House' },
+  { code: 'APP',      label: 'APP' },
+  { code: 'TPD',      label: '3PD' },
+] as const;
+type EntreeChannelCode = typeof ENTREE_CHANNELS[number]['code'];
+const ENTREE_CHANNEL_SET = new Set<string>(ENTREE_CHANNELS.map(c => c.code));
+
+const SUB_CAT_LABEL: Record<string, string> = { Bowl: 'Bowls', Plates: 'Plates', Burrito: 'Burritos', 'Kids Meal': 'Kids' };
+const SUB_CAT_ORDER = ['Bowl', 'Plates', 'Burrito', 'Kids Meal'];
+
+// Unified Item Mix — one table switchable between Entree/Drink/Side/Sweet via
+// dropdown. Drink includes both NA and Alc Drinks (a "make it a meal" pick
+// can be either). Category roll-up (Bowls/Plates/Burritos/Kids) only applies
+// to Entree — the other three don't have an equivalent sub-bucket grouping.
+const MIX_TYPES = ['Entree', 'Drink', 'Side', 'Sweet'] as const;
+type MixType = typeof MIX_TYPES[number];
+const MIX_TYPE_ITEM_CATEGORIES: Record<MixType, string[]> = {
+  Entree: ['Entrees'],
+  Drink:  ['NA Drinks', 'Alc Drinks'],
+  Side:   ['Sides'],
+  Sweet:  ['Sweets'],
+};
+
+interface MixRow { name: string; asItem: number; asModifier: number; total: number; pct: number; revenue: number; revPct: number; }
 
 // mul=1 (default, first click) sorts descending for numbers and Z→A for text;
 // mul=-1 (second click) sorts ascending / A→Z — same convention for every table.
@@ -116,7 +146,7 @@ function aggregate(ad: AttachmentData, filter: (loc: string, ch: string) => bool
 }
 
 export default function AttachmentAnalytics({
-  data, prevData, prevLabel, locations, selectedLocations, selectedChannels,
+  data, prevData, prevLabel, locations, selectedLocations, selectedChannels, items, beverageModifiers,
 }: {
   data: AttachmentData;
   prevData: AttachmentData | null;
@@ -124,6 +154,8 @@ export default function AttachmentAnalytics({
   locations: LocationRow[];
   selectedLocations: string[];
   selectedChannels: string[];
+  items: ItemRow[];
+  beverageModifiers: BeverageModifierRow[];
 }) {
   const [tableCategory, setTableCategory] = useState('');
   const [tableSearch, setTableSearch]     = useState('');
@@ -261,6 +293,124 @@ export default function AttachmentAnalytics({
     csvDownload('attachment_rate_by_item_and_location.csv', headers, rows);
   }
 
+  // ── Unified Item Mix (Entree / Drink / Side / Sweet) — one table switchable
+  // via dropdown, scoped to In-House + APP + 3PD (catering/offsite/open-items
+  // excluded). `items` is already location-adjusted by the parent (Dashboard's
+  // locationBaseItems, scaled from data.locationItems), so this section is
+  // dynamic to the location filter too, same as channel/date. beverageModifiers
+  // carries its own exact location_code (unscaled), filtered the same way.
+  const namesByMixType = useMemo(() => {
+    const m: Record<MixType, Set<string>> = { Entree: new Set(), Drink: new Set(), Side: new Set(), Sweet: new Set() };
+    for (const i of items) {
+      for (const t of MIX_TYPES) if (MIX_TYPE_ITEM_CATEGORIES[t].includes(i.category)) m[t].add(i.canonical_name);
+    }
+    return m;
+  }, [items]);
+
+  const [mixType, setMixType]         = useState<MixType>('Entree');
+  const [mixPlatform, setMixPlatform] = useState<'ALL' | EntreeChannelCode>('ALL');
+  const [mixSortCol, setMixSortCol]   = useState<keyof MixRow>('total');
+  const [mixSortDir, setMixSortDir]   = useState<'desc' | 'asc'>('desc');
+
+  const mixItemsInScope = useMemo(() => {
+    const cats = MIX_TYPE_ITEM_CATEGORIES[mixType];
+    return items.filter(i =>
+      cats.includes(i.category) && ENTREE_CHANNEL_SET.has(i.channel) &&
+      (selectedChannels.length === 0 || selectedChannels.includes(i.channel))
+    );
+  }, [items, mixType, selectedChannels]);
+
+  const mixModifiersInScope = useMemo(() => {
+    const names = namesByMixType[mixType];
+    return beverageModifiers.filter(r =>
+      names.has(r.name) && ENTREE_CHANNEL_SET.has(r.channel) &&
+      (selectedChannels.length === 0 || selectedChannels.includes(r.channel)) &&
+      (selectedLocations.length === 0 || selectedLocations.includes(r.location_code))
+    );
+  }, [beverageModifiers, namesByMixType, mixType, selectedChannels, selectedLocations]);
+
+  // Category roll-up (Bowls/Plates/Burritos/Kids) — Entree only.
+  const entreeTotals = useMemo(() => {
+    if (mixType !== 'Entree') return { qty: 0, revenue: 0 };
+    let qty = 0, revenue = 0;
+    for (const i of mixItemsInScope) { qty += i.qty; revenue += i.revenue; }
+    return { qty, revenue };
+  }, [mixItemsInScope, mixType]);
+
+  const categoryRollup = useMemo(() => {
+    if (mixType !== 'Entree') return [];
+    const m = new Map<string, { qty: number; revenue: number }>();
+    for (const i of mixItemsInScope) {
+      const key = i.sub_category || 'Other';
+      const e = m.get(key) ?? { qty: 0, revenue: 0 };
+      e.qty += i.qty; e.revenue += i.revenue;
+      m.set(key, e);
+    }
+    return [...m.entries()]
+      .map(([subCat, v]) => ({
+        subCat, label: SUB_CAT_LABEL[subCat] ?? subCat, qty: v.qty, revenue: v.revenue,
+        pct: entreeTotals.qty ? (v.qty / entreeTotals.qty) * 100 : 0,
+      }))
+      .sort((a, b) => {
+        const ai = SUB_CAT_ORDER.indexOf(a.subCat), bi = SUB_CAT_ORDER.indexOf(b.subCat);
+        if (ai === -1 && bi === -1) return b.qty - a.qty;
+        if (ai === -1) return 1;
+        if (bi === -1) return -1;
+        return ai - bi;
+      });
+  }, [mixItemsInScope, entreeTotals, mixType]);
+
+  const mixRows = useMemo((): MixRow[] => {
+    const items_ = mixPlatform === 'ALL' ? mixItemsInScope : mixItemsInScope.filter(i => i.channel === mixPlatform);
+    const mods_  = mixPlatform === 'ALL' ? mixModifiersInScope : mixModifiersInScope.filter(r => r.channel === mixPlatform);
+    const m = new Map<string, { asItem: number; asModifier: number; revenue: number }>();
+    for (const i of items_) {
+      const e = m.get(i.canonical_name) ?? { asItem: 0, asModifier: 0, revenue: 0 };
+      e.asItem += i.qty; e.revenue += i.revenue;
+      m.set(i.canonical_name, e);
+    }
+    for (const r of mods_) {
+      const e = m.get(r.name) ?? { asItem: 0, asModifier: 0, revenue: 0 };
+      e.asModifier += r.qty;
+      m.set(r.name, e);
+    }
+    const totalQty = [...m.values()].reduce((s, v) => s + v.asItem + v.asModifier, 0);
+    const totalRev = [...m.values()].reduce((s, v) => s + v.revenue, 0);
+    const rows = [...m.entries()].map(([name, v]) => {
+      const total = v.asItem + v.asModifier;
+      return {
+        name, asItem: v.asItem, asModifier: v.asModifier, total,
+        pct: totalQty ? (total / totalQty) * 100 : 0,
+        revenue: v.revenue,
+        revPct: totalRev ? (v.revenue / totalRev) * 100 : 0,
+      };
+    });
+    const mul = mixSortDir === 'asc' ? -1 : 1;
+    return rows.sort((a, b) => cmp(a[mixSortCol], b[mixSortCol], mul));
+  }, [mixItemsInScope, mixModifiersInScope, mixPlatform, mixSortCol, mixSortDir]);
+
+  // KPI cards for the unified section — recompute from mixRows, so they're
+  // dynamic to the category dropdown, the platform toggle, and (via mixRows'
+  // inputs) the global channel/location/date filters.
+  const mixKpis = useMemo(() => {
+    const qty     = mixRows.reduce((s, r) => s + r.total, 0);
+    const revenue = mixRows.reduce((s, r) => s + r.revenue, 0);
+    const top     = [...mixRows].sort((a, b) => b.total - a.total)[0];
+    return { qty, revenue, top, distinct: mixRows.length };
+  }, [mixRows]);
+
+  function handleMixSort(col: keyof MixRow) {
+    if (mixSortCol === col) setMixSortDir(d => d === 'desc' ? 'asc' : 'desc');
+    else { setMixSortCol(col); setMixSortDir('desc'); }
+  }
+  const mixSortArrow = (col: keyof MixRow) => mixSortCol === col ? (mixSortDir === 'desc' ? ' ↓' : ' ↑') : '';
+
+  function exportMixCsv() {
+    const headers = ['Item', 'As Item', 'As Modifier', 'Total Qty', '% of Qty', 'Revenue', '% of Revenue'];
+    const rows = mixRows.map(r => [r.name, r.asItem, r.asModifier, r.total, r.pct.toFixed(1), r.revenue.toFixed(2), r.revPct.toFixed(1)]);
+    csvDownload(`${mixType.toLowerCase()}_mix.csv`, headers, rows);
+  }
+
   return (
     <div>
       {/* ── Headline KPI cards ── */}
@@ -274,13 +424,13 @@ export default function AttachmentAnalytics({
         <div className="kc b">
           <div className="kl">Highest Attachment</div>
           <div className="kv" style={{ fontSize: 16 }}>{highest ? highest.name : '—'}</div>
-          <div className="ks">{highest ? fmtPct(highest.rate) : 'No data'}</div>
+          <div className="ks">{highest ? `${fmtPct(highest.rate)} attachment rate` : 'No data'}</div>
           {highest && <DeltaBadge curr={highest.rate} prev={prevHighestRate} vsLabel={prevLabel} />}
         </div>
         <div className="kc p">
           <div className="kl">Best Performing Location</div>
           <div className="kv" style={{ fontSize: 16 }}>{bestLocation ? locName(bestLocation.code) : '—'}</div>
-          <div className="ks">{bestLocation ? fmtPct(bestLocation.rate) : 'No data'}</div>
+          <div className="ks">{bestLocation ? `${fmtPct(bestLocation.rate)} attachment rate` : 'No data'}</div>
           {bestLocation && <DeltaBadge curr={bestLocation.rate} prev={bestLocation.prevRate} vsLabel={prevLabel} />}
         </div>
         <div className="kc g">
@@ -493,6 +643,107 @@ export default function AttachmentAnalytics({
 
       <div className="cc" style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.6, marginTop: 12 }}>
         <b style={{ color: 'var(--text)' }}>Notes:</b> Every row is a Main/Sweet/Side/Drink item — modifiers never get their own row, they only merge into an item&apos;s totals when a modifier happens to share that item&apos;s exact name. Per-item rates (in the table above and the chart) use total main-item checks as the denominator and cover all four categories, including Main. Aggregate &quot;total attachment&quot; figures — the per-location table, the &quot;Overall&quot; row, and &quot;Best Performing Location&quot; — count Side/Sweet/Drink only; Main is excluded from these sums since a Main item recurring on a check is just another entree, not an up-sell. &quot;Best Performing Location&quot; and the per-location columns ignore the current location filter (so locations can be compared) but still respect the channel filter. Voided rows are excluded from every count.
+      </div>
+
+      {/* ══════════════════════ Item Mix (Entree / Drink / Side / Sweet) ══════════════════════ */}
+      <h2 style={{ fontSize: 15, fontWeight: 700, margin: '24px 0 4px' }}>Item Mix</h2>
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
+        Scope: In-House + APP + 3PD only (catering excluded) · includes items sold standalone and as a modifier (e.g. a &quot;make it a meal&quot; pick) · reacts to the channel, location, and date filters above
+      </div>
+
+      <div className="krow k4">
+        <div className="kc a">
+          <div className="kl">Total {mixType} Qty</div>
+          <div className="kv">{fmtInt(mixKpis.qty)}</div>
+          <div className="ks">As item + as modifier combined</div>
+        </div>
+        <div className="kc b">
+          <div className="kl">Total Revenue</div>
+          <div className="kv">{fmtUsd(mixKpis.revenue)}</div>
+          <div className="ks">As-item revenue (modifier picks are bundled, $0 marginal)</div>
+        </div>
+        <div className="kc p">
+          <div className="kl">Top {mixType}</div>
+          <div className="kv" style={{ fontSize: 16 }}>{mixKpis.top ? mixKpis.top.name : '—'}</div>
+          <div className="ks">{mixKpis.top ? `${fmtInt(mixKpis.top.total)} qty` : 'No data'}</div>
+        </div>
+        <div className="kc g">
+          <div className="kl">Distinct Items</div>
+          <div className="kv">{fmtInt(mixKpis.distinct)}</div>
+          <div className="ks">Unique {mixType.toLowerCase()} names in scope</div>
+        </div>
+      </div>
+
+      {mixType === 'Entree' && (
+        <div className="krow k4">
+          {categoryRollup.map(c => (
+            <div key={c.subCat} className="kc">
+              <div className="kl">{c.label}</div>
+              <div className="kv">{fmtInt(c.qty)}</div>
+              <div className="ks">{fmtPct(c.pct)} of entrees · {fmtUsd(c.revenue)}</div>
+            </div>
+          ))}
+          {categoryRollup.length === 0 && (
+            <div className="kc"><div className="ks">No entree data in the current scope</div></div>
+          )}
+        </div>
+      )}
+
+      <div className="tw">
+        <div className="th2">
+          <h3>{mixType} Mix by Item</h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <select className="fb-sel" value={mixType} onChange={e => setMixType(e.target.value as MixType)}>
+              {MIX_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
+              {([['ALL', 'All Platforms Combined'], ...ENTREE_CHANNELS.map(c => [c.code, c.label])] as const).map(([v, label]) => (
+                <button key={v} onClick={() => setMixPlatform(v as 'ALL' | EntreeChannelCode)} style={{
+                  fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                  background: mixPlatform === v ? 'var(--accent)' : 'transparent',
+                  color: mixPlatform === v ? '#fff' : '#6b7280',
+                  boxShadow: mixPlatform === v ? '0 1px 4px rgba(99,102,241,.35)' : 'none',
+                  transition: 'all .15s',
+                }}>{label}</button>
+              ))}
+            </div>
+            <button className="drb" onClick={exportMixCsv} style={{ minWidth: 0, padding: '6px 12px' }}>
+              <i className="ti ti-download" style={{ fontSize: 12, marginRight: 4 }} />
+              Export CSV
+            </button>
+          </div>
+        </div>
+        <div className="tscroll">
+          <table>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', cursor: 'pointer' }} onClick={() => handleMixSort('name')}>Item{mixSortArrow('name')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleMixSort('asItem')}>As Item{mixSortArrow('asItem')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleMixSort('asModifier')}>As Modifier{mixSortArrow('asModifier')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleMixSort('total')}>Total Qty{mixSortArrow('total')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleMixSort('pct')}>% of Qty{mixSortArrow('pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleMixSort('revenue')}>Revenue{mixSortArrow('revenue')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleMixSort('revPct')}>% of Rev{mixSortArrow('revPct')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mixRows.map(r => (
+                <tr key={r.name}>
+                  <td style={{ fontWeight: 600 }}>{r.name}</td>
+                  <td>{r.asItem ? fmtInt(r.asItem) : '—'}</td>
+                  <td>{r.asModifier ? fmtInt(r.asModifier) : '—'}</td>
+                  <td style={{ fontWeight: 700 }}>{fmtInt(r.total)}</td>
+                  <td>{fmtPct(r.pct)}</td>
+                  <td>{fmtUsd(r.revenue)}</td>
+                  <td>{fmtPct(r.revPct)}</td>
+                </tr>
+              ))}
+              {mixRows.length === 0 && (
+                <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>No matching rows</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

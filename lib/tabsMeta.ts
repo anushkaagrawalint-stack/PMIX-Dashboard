@@ -18,7 +18,7 @@ export const TAB_META = [
   { id: 'needs',      label: 'Needs Review',        icon: 'ti-alert-triangle' },
   { id: 'openitems',  label: 'Open Items',          icon: 'ti-package' },
   { id: 'admin',      label: 'Admin Panel',         icon: 'ti-settings' },
-  { id: 'attachment', label: 'Attachment Rate',     icon: 'ti-link' },
+  { id: 'attachment', label: 'Analytics',           icon: 'ti-link' },
 ] as const;
 
 export type TabId = typeof TAB_META[number]['id'];

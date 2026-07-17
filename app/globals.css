@@ -116,6 +116,7 @@ body {
 .kc.pk { border-left-color: #ec4899; }
 .kc.t  { border-left-color: #14b8a6; }
 .kc.o  { border-left-color: #f59e0b; }
+.kc.r  { border-left-color: #dc2626; }
 .kl  { font-size: 9px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 5px; }
 .kv  { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1; }
 .kv-sm { font-size: 14px; font-weight: 700; color: var(--text); margin-top: 2px; line-height: 1.2; }

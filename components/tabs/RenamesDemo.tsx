@@ -48,6 +48,7 @@ export default function RenamesDemo({ renames }: Props) {
               <thead>
                 <tr>
                   <th>Item</th>
+                  <th>Category</th>
                   <th>Variant tags found</th>
                   <th>Lifetime Qty</th>
                   <th>Lifetime $</th>
@@ -64,6 +65,7 @@ export default function RenamesDemo({ renames }: Props) {
                   return (
                     <tr key={r.canonical_name}>
                       <td style={{ fontWeight: 700 }}>{r.canonical_name}</td>
+                      <td style={{ fontSize: 10, color: 'var(--muted)' }}>{r.category}</td>
                       <td>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                           {taggedVariants.length > 0 ? taggedVariants.map(n => (
