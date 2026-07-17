@@ -290,8 +290,6 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       qty:            i.qty,
       revenue:        i.revenue,
       gross_sales:    i.gross_sales,
-      refunds:        i.refunds,
-      net_after_refunds: i.net_after_refunds,
     }));
   }, [selectedLocations, locationBaseItems, data.channelItems]);
 
@@ -313,22 +311,21 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
   const channelFilteredItems = useMemo((): ItemRow[] => {
     if (selectedChannels.length === 0) return locationBaseItems;
 
-    const agg = new Map<string, { qty: number; revenue: number; gross_sales: number; refunds: number }>();
+    const agg = new Map<string, { qty: number; revenue: number; gross_sales: number }>();
     locationAdjustedChannelItems
       .filter(ci => selectedChannels.includes(ci.channel))
       .forEach(ci => {
-        const e = agg.get(ci.canonical_name) ?? { qty: 0, revenue: 0, gross_sales: 0, refunds: 0 };
+        const e = agg.get(ci.canonical_name) ?? { qty: 0, revenue: 0, gross_sales: 0 };
         e.qty         += ci.qty;
         e.revenue     += ci.revenue;
         e.gross_sales += ci.gross_sales;
-        e.refunds     += ci.refunds ?? 0;
         agg.set(ci.canonical_name, e);
       });
 
     const totalRev = [...agg.values()].reduce((s, v) => s + v.revenue, 0);
     const totalQty = [...agg.values()].reduce((s, v) => s + v.qty,     0);
 
-    return [...agg.entries()].map(([name, { qty, revenue, gross_sales, refunds }]) => {
+    return [...agg.entries()].map(([name, { qty, revenue, gross_sales }]) => {
       const meta = itemMetaMap.get(name);
       return {
         canonical_name: name,
@@ -341,8 +338,6 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
         qty,
         revenue,
         gross_sales,
-        refunds,
-        net_after_refunds: revenue - refunds,
         avg_price:   qty > 0 ? gross_sales / qty : 0,
         revenue_pct: totalRev > 0 ? (revenue / totalRev) * 100 : 0,
         qty_pct:     totalQty > 0 ? (qty / totalQty) * 100 : 0,
@@ -391,8 +386,6 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
         qty:            v.qty,
         revenue:        v.revenue,
         gross_sales:    v.revenue, // not tracked per-location; unused downstream for prev-period deltas
-        refunds:        0,
-        net_after_refunds: v.revenue,
       };
     });
   }, [selectedLocations, data.prevChannelItems, data.prevLocationItems]);
