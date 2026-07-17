@@ -215,7 +215,7 @@ export async function getDateRange(
 // ─── Summary KPIs ─────────────────────────────────────────────────────────────
 export async function getSummary(dr: DateRange): Promise<Summary> {
   const db = pool();
-  const [sumRes, topRes, refRes] = await Promise.all([
+  const [sumRes, topRes] = await Promise.all([
     db.query(`
       SELECT
         SUM(fol.quantity)::BIGINT                       AS total_qty,
@@ -245,27 +245,14 @@ export async function getSummary(dr: DateRange): Promise<Summary> {
       ORDER BY revenue DESC
       LIMIT 1
     `, [dr.start, dr.end]),
-
-    // Sales portion of itemized refunds (analytics.refund_sales, selection grain) —
-    // subtracting this makes the headline equal Toast's "Net item amt" exactly.
-    db.query(`
-      SELECT COALESCE(SUM(rs.sales_refund), 0) AS refunds
-      FROM analytics.refund_sales rs
-      JOIN public.fact_order_lines fol USING (selection_guid)
-      WHERE ${BASE_WHERE}
-        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-    `, [dr.start, dr.end]),
   ]);
   await db.end();
 
   const row = sumRes.rows[0];
   const top = topRes.rows[0];
-  const refunds = Number(refRes.rows[0]?.refunds ?? 0);
   return {
     total_qty:        Number(row?.total_qty ?? 0),
     total_revenue:    Number(row?.total_revenue ?? 0),
-    refunds,
-    net_revenue:      Number(row?.total_revenue ?? 0) - refunds,
     unique_items:     Number(row?.unique_items ?? 0),
     last_date:        (row?.last_date as string) ?? '',
     top_item:         (top?.canonical_name as string) ?? '',
@@ -431,7 +418,6 @@ export async function getItems(dr: DateRange): Promise<ItemRow[]> {
       SUM(fol.quantity)::BIGINT                                              AS qty,
       ROUND(SUM(fol.line_total)::NUMERIC, 2)                                AS revenue,
       ROUND(SUM(fol.pre_discount)::NUMERIC, 2)                              AS gross_sales,
-      ROUND(SUM(COALESCE(rs.sales_refund, 0))::NUMERIC, 2) AS refunds,
       ROUND(SUM(fol.pre_discount)/NULLIF(SUM(fol.quantity),0)::NUMERIC, 2)  AS avg_price,
       ROUND(SUM(fol.line_total)*100.0/NULLIF(g.total_rev,0)::NUMERIC, 2)    AS revenue_pct,
       ROUND(SUM(fol.quantity)*100.0/NULLIF(g.total_qty,0)::NUMERIC, 2)      AS qty_pct,
@@ -441,7 +427,6 @@ export async function getItems(dr: DateRange): Promise<ItemRow[]> {
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
     ${IL_JOIN}
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
-    LEFT JOIN analytics.refund_sales rs ON rs.selection_guid = fol.selection_guid
     CROSS JOIN grand g
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
@@ -461,8 +446,6 @@ export async function getItems(dr: DateRange): Promise<ItemRow[]> {
     qty:            Number(r.qty),
     revenue:        Number(r.revenue),
     gross_sales:    Number(r.gross_sales),
-    refunds:        Number(r.refunds ?? 0),
-    net_after_refunds: Number(r.revenue ?? 0) - Number(r.refunds ?? 0),
     avg_price:      Number(r.avg_price),
     revenue_pct:    Number(r.revenue_pct),
     qty_pct:        Number(r.qty_pct),
@@ -481,12 +464,10 @@ export async function getChannelItems(dr: DateRange): Promise<ChannelItemRow[]> 
       (${CHO}) AS channel,
       SUM(fol.quantity)::BIGINT               AS qty,
       ROUND(SUM(fol.line_total)::NUMERIC,2)   AS revenue,
-      ROUND(SUM(fol.pre_discount)::NUMERIC,2) AS gross_sales,
-      ROUND(SUM(COALESCE(rs.sales_refund, 0))::NUMERIC, 2) AS refunds
+      ROUND(SUM(fol.pre_discount)::NUMERIC,2) AS gross_sales
     FROM public.fact_order_lines fol
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
-    LEFT JOIN analytics.refund_sales rs ON rs.selection_guid = fol.selection_guid
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY COALESCE(bf.clean, fol.canonical_name), 2
@@ -499,8 +480,6 @@ export async function getChannelItems(dr: DateRange): Promise<ChannelItemRow[]> 
     qty:            Number(r.qty),
     revenue:        Number(r.revenue),
     gross_sales:    Number(r.gross_sales),
-    refunds:        Number(r.refunds ?? 0),
-    net_after_refunds: Number(r.revenue ?? 0) - Number(r.refunds ?? 0),
   }));
 }
 
@@ -524,13 +503,11 @@ export async function getLocationItems(dr: DateRange): Promise<LocationItemRow[]
       SUM(fol.quantity)::BIGINT                                          AS qty,
       ROUND(SUM(fol.line_total)::NUMERIC, 2)                            AS revenue,
       ROUND(SUM(fol.pre_discount)::NUMERIC, 2)                          AS gross_sales,
-      ROUND(SUM(COALESCE(rs.sales_refund, 0))::NUMERIC, 2) AS refunds,
       ROUND(SUM(fol.quantity)*100.0/NULLIF(lt.loc_qty,0)::NUMERIC, 2)  AS mix_pct
     FROM public.fact_order_lines fol
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
     JOIN loc_totals lt ON lt.location_code = fol.location_code
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
-    LEFT JOIN analytics.refund_sales rs ON rs.selection_guid = fol.selection_guid
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY COALESCE(bf.clean, fol.canonical_name), fol.location_code, (${CHO}), lt.loc_qty
@@ -544,8 +521,6 @@ export async function getLocationItems(dr: DateRange): Promise<LocationItemRow[]
     qty:            Number(r.qty),
     revenue:        Number(r.revenue),
     gross_sales:    Number(r.gross_sales),
-    refunds:        Number(r.refunds ?? 0),
-    net_after_refunds: Number(r.revenue ?? 0) - Number(r.refunds ?? 0),
     mix_pct:        Number(r.mix_pct),
   }));
 }
