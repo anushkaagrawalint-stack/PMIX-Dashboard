@@ -14,6 +14,7 @@ import BYOBreakdown from './tabs/BYOBreakdown';
 import PaymentSource from './tabs/PaymentSource';
 import CustomerRetention from './tabs/CustomerRetention';
 import RenamesAudit from './tabs/RenamesAudit';
+import RenamesDemo from './tabs/RenamesDemo';
 import NeedsReview from './tabs/NeedsReview';
 import OpenItems from './tabs/OpenItems';
 import MEOverall from './tabs/MEOverall';
@@ -54,6 +55,7 @@ const TAB_FILTERS: Record<TabId, { channel: boolean; category: boolean; location
   pinksheets: { channel: false, category: false, location: false },
   bikky:      { channel: false, category: false, location: false },
   renames:    { channel: false, category: false, location: false },
+  renamesdemo:{ channel: false, category: false, location: false },
   needs:      { channel: false, category: false, location: false },
   openitems:  { channel: false, category: false, location: false },
   admin:      { channel: false, category: false, location: false },
@@ -844,6 +846,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       {tab === 'pinksheets' && visibleTabs.includes('pinksheets') && <PinkSheets pinkSheets={data.pinkSheets} details={data.pinkSheetDetails} />}
       {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} />}
       {tab === 'renames'    && <RenamesAudit     renames={data.renames} />}
+      {tab === 'renamesdemo' && visibleTabs.includes('renamesdemo') && <RenamesDemo renames={data.renamesDemo} />}
       {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}
       {tab === 'admin'      && visibleTabs.includes('admin')      && <AdminPanel currentEmail={currentEmail} currentRole={role} />}

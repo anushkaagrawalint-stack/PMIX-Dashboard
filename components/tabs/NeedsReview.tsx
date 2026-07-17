@@ -192,6 +192,39 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
   const doneChannels = needsReview.filter(r => r.override_channel !== null).length;
   const doneItems    = Object.values(itemStatus).filter(s => s === 'done').length;
 
+  // ── CSV export (admin only) — exports whichever section is currently active ──
+  function exportCSV() {
+    let hdr: string, rows: string[], filename: string;
+    if (section === 'channels') {
+      // Only the flagged line(s) — what channel it's currently tagged as, what
+      // it should be per the system's suggestion, and what the admin actually
+      // chose (may differ from the suggestion if they picked something else).
+      hdr = 'Order GUID,Location,Business Date,Flagged Item,Amount,What It Is (Current Channel),What It Should Be (Suggested),User\'s Preference (Chosen Channel)';
+      rows = needsReview.flatMap(r => {
+        const chosen = r.override_channel ?? channelDraft[r.order_guid] ?? '';
+        return r.flagged_lines.map(l => {
+          const amount = r.line_items.find(li => li.selection_guid === l.selection_guid)?.line_total ?? 0;
+          return [
+            r.order_guid, `"${r.location}"`, r.business_date, `"${l.canonical_name}"`, amount.toFixed(2),
+            CHANNEL_LABEL[r.current_channel] ?? r.current_channel,
+            CHANNEL_LABEL[r.suggested_channel] ?? r.suggested_channel,
+            chosen ? (CHANNEL_LABEL[chosen] ?? chosen) : '',
+          ].join(',');
+        });
+      });
+      filename = 'needs-review-wrong-channel-orders.csv';
+    } else {
+      hdr = 'Canonical Name,Category,Menu Group,Bucket,Qty,Net Sales';
+      rows = missingCosts.map(r => [
+        `"${r.canonical_name}"`, `"${r.category}"`, `"${r.menu_group}"`, BUCKET_LABEL[r.bucket], r.qty, r.net_sales.toFixed(2),
+      ].join(','));
+      filename = 'needs-review-missing-costs.csv';
+    }
+    const blob = new Blob([[hdr, ...rows].join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = filename; a.click();
+  }
+
   return (
     <div>
 
@@ -216,6 +249,11 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
             </option>
           )}
         </select>
+        {isAdmin && (
+          <button onClick={exportCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>
+            ⬇ Export CSV
+          </button>
+        )}
       </div>
 
       {/* ══════════════════════════════════════════════════════════════════════

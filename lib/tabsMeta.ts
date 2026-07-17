@@ -14,6 +14,7 @@ export const TAB_META = [
   { id: 'pinksheets', label: 'Pink Sheets',         icon: 'ti-file-spreadsheet' },
   { id: 'bikky',      label: 'Customer Retention',  icon: 'ti-users' },
   { id: 'renames',    label: 'Renames Audit',       icon: 'ti-refresh' },
+  { id: 'renamesdemo',label: 'Rename Demo',         icon: 'ti-flask' },
   { id: 'needs',      label: 'Needs Review',        icon: 'ti-alert-triangle' },
   { id: 'openitems',  label: 'Open Items',          icon: 'ti-package' },
   { id: 'admin',      label: 'Admin Panel',         icon: 'ti-settings' },
@@ -29,9 +30,11 @@ export type TabId = typeof TAB_META[number]['id'];
 // user here too until admin/tester explicitly turns it on.
 // Used once to seed analytics.tab_permissions so rollout changes nothing until
 // a tester/admin explicitly edits a toggle — see lib/tabPermissions.ts.
-export const DEFAULT_USER_HIDDEN: TabId[] = ['byo', 'pinksheets', 'admin', 'attachment'];
+export const DEFAULT_USER_HIDDEN: TabId[] = ['byo', 'pinksheets', 'admin', 'attachment', 'renamesdemo'];
 
-// Tabs hidden from the 'admin' role by default — currently just Attachment
-// Rate, which launched tester-only (owner request 2026-07-14) and should stay
-// off for admin until tester explicitly turns it on via the Admin Panel.
-export const DEFAULT_ADMIN_HIDDEN: TabId[] = ['attachment'];
+// Tabs hidden from the 'admin' role by default — Attachment Rate launched
+// tester-only (owner request 2026-07-14); Rename Demo (owner request
+// 2026-07-17) is a tester-only exploratory view comparing a broader rename-
+// detection definition against the real Renames Audit tab. Both stay off for
+// admin until tester explicitly turns them on via the Admin Panel.
+export const DEFAULT_ADMIN_HIDDEN: TabId[] = ['attachment', 'renamesdemo'];

@@ -11,7 +11,7 @@ import type {
   ItemRow, ChannelItemRow, LocationItemRow, LocationRow,
   MERow, ModifierRow, PaymentRow, PaymentByLocationRow, PaymentSourceLocationRow, BikkyRow,
   CategoryRow, ChannelCategoryRow,
-  RenameRow, NeedsReviewRow, NeedsReviewLineItem,
+  RenameRow, RenameDemoRow, NeedsReviewRow, NeedsReviewLineItem,
   OpenItemRow, OpenItemsSummary,
   UncategorizedItemRow,
   FiscalPeriodRow, VendorRow, PinkSheetRow, PinkSheetDetailRow,
@@ -1951,6 +1951,90 @@ export async function getRenames(): Promise<RenameRow[]> {
   }
 }
 
+// ─── Renames demo (tester-only, 2026-07-17) ───────────────────────────────────
+// getRenames() above only catches a literal canonical_name change on the SAME
+// item_key — genuinely rare, since item_key in this Toast account is really
+// "one entry per menu the item was added to" (IH/Online/Catering all get their
+// own item_key for the same dish), not a stable per-dish ID. This demo instead
+// groups by canonical_name and synthesizes a "variant label" by appending the
+// catering/offsite vendor (alt_payment_name) or a Gameday tag when present —
+// matching what a since-departed team member's separate dashboard was showing
+// as "historical names" (owner report 2026-07-17: items like Kingfisher /
+// Kingfisher - Gameday weren't in our list — turned out that suffix doesn't
+// exist in canonical_name at all, it was being synthesized there).
+const CATERING_VENDORS = [
+  'EzCater','Ez Cater','HUNGRY','Sharebite','Territory Foods','Cater Cow',
+  'WCK','Food Fleet','ZeroCater','Cater2Me','Fooda','Aramark','Eurest',
+  'Metz Corp','Taher','Foodworks','Cureate','Guest Services',
+];
+export async function getRenamesDemo(): Promise<RenameDemoRow[]> {
+  const db = pool();
+  try {
+    const { rows } = await db.query(`
+      WITH tagged AS (
+        SELECT
+          fol.canonical_name,
+          fol.menu_group,
+          fol.quantity,
+          fol.line_total,
+          fol.location_code,
+          fol.business_date,
+          p.alt_payment_name
+        FROM public.fact_order_lines fol
+        LEFT JOIN LATERAL (
+          SELECT alt_payment_name FROM public.br_order_payment
+          WHERE order_guid = fol.order_guid AND alt_payment_name IS NOT NULL
+          ORDER BY amount DESC LIMIT 1
+        ) p ON TRUE
+        WHERE NOT fol.is_voided
+          AND fol.canonical_name IS NOT NULL
+          AND fol.menu_name      IS NOT NULL
+      ),
+      variant AS (
+        SELECT
+          canonical_name, quantity, line_total, location_code, business_date,
+          CASE
+            WHEN alt_payment_name = ANY($1::TEXT[])
+              THEN canonical_name || ' - ' || alt_payment_name
+            WHEN menu_group ILIKE '%gameday%'
+              THEN canonical_name || ' - Gameday'
+            ELSE canonical_name
+          END AS variant_label
+        FROM tagged
+      )
+      SELECT
+        canonical_name,
+        STRING_AGG(DISTINCT variant_label, '|||' ORDER BY variant_label) AS all_labels_str,
+        COUNT(DISTINCT variant_label)::INT                               AS label_count,
+        SUM(quantity)::BIGINT                                            AS lifetime_qty,
+        ROUND(SUM(line_total)::NUMERIC, 2)                               AS lifetime_revenue,
+        COUNT(DISTINCT location_code)::INT                               AS location_count,
+        MIN(business_date)::TEXT                                         AS first_seen,
+        MAX(business_date)::TEXT                                         AS last_seen
+      FROM variant
+      GROUP BY canonical_name
+      HAVING COUNT(DISTINCT variant_label) > 1
+      ORDER BY SUM(quantity) DESC
+      LIMIT 50
+    `, [CATERING_VENDORS]);
+    await db.end();
+
+    return rows.map(r => ({
+      canonical_name:   r.canonical_name as string,
+      variant_labels:   (r.all_labels_str as string).split('|||'),
+      lifetime_qty:     Number(r.lifetime_qty),
+      lifetime_revenue: Number(r.lifetime_revenue),
+      location_count:   Number(r.location_count),
+      first_seen:       r.first_seen as string,
+      last_seen:        r.last_seen as string,
+    }));
+  } catch (err) {
+    console.error('getRenamesDemo error:', err);
+    await db.end().catch(() => {});
+    return [];
+  }
+}
+
 // ─── Needs Review ────────────────────────────────────────────────────────────
 // Items where the derived channel (menu_name) and channel_code disagree,
 // or where alt_payment_name contradicts the menu_name channel.
@@ -2781,7 +2865,7 @@ export async function loadDashboardData(
     items, channelItems, locationItems, locations,
     meItems, pinkSheets, pinkSheetDetails, modifiers, payments, paymentsByLocation, paymentSourcesByLocation, bikky,
     categories, channelCategories,
-    renames, needsReview,
+    renames, renamesDemo, needsReview,
     openItemsResult,
     uncategorizedItems,
     cateringVendors, offsiteVendors,
@@ -2811,6 +2895,7 @@ export async function loadDashboardData(
     getCategories(dr),
     getChannelCategories(dr),
     getRenames(),
+    getRenamesDemo(),
     getNeedsReview(dr),
     getOpenItems(dr),
     getUncategorizedItems(dr),
@@ -2844,7 +2929,7 @@ export async function loadDashboardData(
     meItems, pinkSheets, pinkSheetDetails, avgMargin,
     modifiers, payments, paymentsByLocation, paymentSourcesByLocation, bikky,
     categories, channelCategories,
-    renames, needsReview,
+    renames, renamesDemo, needsReview,
     uncategorizedItems,
     openItems:        openItemsResult.items,
     openItemsSummary: openItemsResult.summary,

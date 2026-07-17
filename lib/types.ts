@@ -244,6 +244,19 @@ export interface RenameRow {
   first_seen:       string;
 }
 
+// ─── Renames demo (tester-only) — broader definition: same canonical_name sold
+// under a vendor/event-tagged variant (Fooda, Aramark, Gameday, etc.), not just
+// literal canonical_name changes on a stable item_key. See getRenamesDemo().
+export interface RenameDemoRow {
+  canonical_name:   string;
+  variant_labels:   string[];
+  lifetime_qty:     number;
+  lifetime_revenue: number;
+  location_count:   number;
+  first_seen:       string;
+  last_seen:        string;
+}
+
 // ─── Needs Review ────────────────────────────────────────────────────────────
 export interface NeedsReviewLineItem {
   selection_guid: string;          // matches a NeedsReviewFlaggedLine.selection_guid if this line is the flagged one
@@ -422,6 +435,7 @@ export interface DashboardData {
   categories:         CategoryRow[];
   channelCategories:  ChannelCategoryRow[];
   renames:            RenameRow[];
+  renamesDemo:        RenameDemoRow[];
   needsReview:          NeedsReviewRow[];
   uncategorizedItems:   UncategorizedItemRow[];
   openItems:            OpenItemRow[];
