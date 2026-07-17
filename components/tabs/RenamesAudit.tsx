@@ -51,6 +51,7 @@ export default function RenamesAudit({ renames, role }: Props) {
         <div>
           <strong>{renames.length}</strong> items renamed in Toast POS — same item (by internal ID) appeared under different display names over time.
           Current name shown normally; former names appear strikethrough, each with the date range it was actually in use. Sorted by lifetime qty.
+          Detection is GUID-based from raw Toast data and covers our data window (Dec 2025 onward).
         </div>
       </div>
 
