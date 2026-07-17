@@ -294,7 +294,6 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
         <div className="kc g">
           <div className="kl">Net Revenue</div>
           <div className="kv">{fmt$(kpiRevenue)}</div>
-          {kpiRefunds > 0 && <div className="ks">after {fmt$(kpiRefunds)} refunds</div>}
           {showDelta
             ? <DeltaBadge curr={kpiRevenue} prev={prevKpi!.revenue} vsLabel={prevLabel} />
             : isFiltered && <div className="ks">filtered</div>}
