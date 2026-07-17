@@ -1881,72 +1881,43 @@ export async function getBikky(): Promise<BikkyRow[]> {
 // changed over time — i.e., genuine Toast POS renames. The latest name (by
 // business_date DESC) is the current canonical; older names are historical.
 export async function getRenames(): Promise<RenameRow[]> {
+  // Real rename detection: analytics.item_name_history (view over raw Toast
+  // payloads) has one row per (Toast item GUID, display name). A GUID with
+  // names_for_item > 1 genuinely appeared under different names over time —
+  // unlike item_key (one key per menu placement) or synthesized suffixes.
+  // Detection covers our data window (~Dec 2025 onward).
   const db = pool();
   try {
     const { rows } = await db.query(`
-      WITH renamed AS (
-        SELECT
-          item_key,
-          STRING_AGG(DISTINCT canonical_name, '|||' ORDER BY canonical_name) AS all_names_str,
-          COUNT(DISTINCT canonical_name)::INT                                AS name_count,
-          SUM(quantity)::BIGINT                                              AS lifetime_qty,
-          ROUND(SUM(line_total)::NUMERIC, 2)                                AS lifetime_revenue,
-          COUNT(DISTINCT location_code)::INT                                AS location_count,
-          MIN(business_date)::TEXT                                          AS first_seen
-        FROM public.fact_order_lines
-        WHERE NOT is_voided
-          AND item_key      IS NOT NULL
-          AND canonical_name IS NOT NULL
-          AND menu_name      IS NOT NULL
-        GROUP BY item_key
-        HAVING COUNT(DISTINCT canonical_name) > 1
-      ),
-      latest AS (
-        SELECT DISTINCT ON (fol.item_key)
-          fol.item_key,
-          fol.canonical_name,
-          fol.menu_group
-        FROM public.fact_order_lines fol
-        WHERE NOT fol.is_voided
-          AND fol.item_key  IS NOT NULL
-          AND fol.menu_name IS NOT NULL
-        ORDER BY fol.item_key, fol.business_date DESC
-      )
-      SELECT
-        l.canonical_name,
-        l.menu_group,
-        r.all_names_str,
-        r.name_count,
-        r.lifetime_qty,
-        r.lifetime_revenue,
-        r.location_count,
-        r.first_seen
-      FROM renamed r
-      JOIN latest l ON l.item_key = r.item_key
-      ORDER BY r.lifetime_qty DESC
-      LIMIT 50
+      SELECT item_guid, display_name,
+             first_seen::TEXT AS first_seen, last_seen::TEXT AS last_seen,
+             lifetime_qty, lifetime_gross, locations
+      FROM analytics.item_name_history
+      WHERE names_for_item > 1
+      ORDER BY item_guid, last_seen DESC, lifetime_qty DESC
     `);
     await db.end();
 
-    return rows.map(r => {
-      const name      = r.canonical_name as string;
-      const menuGroup = (r.menu_group ?? '') as string;
-      const category  = name === 'That Fire Hot Sauce (Bottle)' || name === 'That Fire Hot Sauce - Side'
-        ? 'Retail'
-        : (GRP_TO_CAT_MAP[menuGroup] ?? 'Other');
-      return {
-        canonical_name:   name,
-        all_names:        (r.all_names_str as string).split('|||'),
-        category,
-        lifetime_qty:     Number(r.lifetime_qty),
-        lifetime_revenue: Number(r.lifetime_revenue),
-        location_count:   Number(r.location_count),
-        first_seen:       r.first_seen as string,
-      };
+    const byGuid = new Map<string, typeof rows>();
+    rows.forEach(r => {
+      const k = r.item_guid as string;
+      if (!byGuid.has(k)) byGuid.set(k, []);
+      byGuid.get(k)!.push(r);
     });
+
+    return [...byGuid.values()].map(g => ({
+      canonical_name:   g[0].display_name as string,   // most recently seen name
+      all_names:        g.map(r => r.display_name as string),
+      category:         '',
+      lifetime_qty:     g.reduce((s2, r) => s2 + Number(r.lifetime_qty), 0),
+      lifetime_revenue: g.reduce((s2, r) => s2 + Number(r.lifetime_gross), 0),
+      location_count:   Math.max(...g.map(r => Number(r.locations))),
+      first_seen:       g.reduce((m, r) => ((r.first_seen as string) < m ? (r.first_seen as string) : m), g[0].first_seen as string),
+      last_seen:        g[0].last_seen as string,
+    })).sort((a, b) => b.lifetime_qty - a.lifetime_qty);
   } catch (err) {
     console.error('getRenames error:', err);
-    await db.end().catch(() => {}); // connection may already be broken; don't let cleanup crash the request
+    await db.end().catch(() => {});
     return [];
   }
 }

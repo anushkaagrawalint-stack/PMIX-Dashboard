@@ -235,13 +235,14 @@ export interface BikkyRow {
 
 // ─── Renames ─────────────────────────────────────────────────────────────────
 export interface RenameRow {
-  canonical_name:   string;
-  all_names:        string[];
+  canonical_name:   string;   // most recently seen display name for the item GUID
+  all_names:        string[]; // latest first; others are historical
   category:         string;
   lifetime_qty:     number;
-  lifetime_revenue: number;
+  lifetime_revenue: number;   // gross (pre-discount), from raw payloads
   location_count:   number;
   first_seen:       string;
+  last_seen:        string;
 }
 
 // ─── Renames demo (tester-only) — broader definition: same canonical_name sold

@@ -23,6 +23,7 @@ export default function RenamesAudit({ renames }: Props) {
         <div>
           <strong>{renames.length}</strong> items renamed in Toast POS — same item (by internal ID) appeared under different display names over time.
           Current name shown normally; former names appear strikethrough. Sorted by lifetime qty.
+          Detection is GUID-based from raw Toast data and covers our data window (Dec 2025 onward).
         </div>
       </div>
 
@@ -50,6 +51,7 @@ export default function RenamesAudit({ renames }: Props) {
                   <th>Lifetime $</th>
                   <th>Locations</th>
                   <th>First seen</th>
+                  <th>Last seen</th>
                 </tr>
               </thead>
               <tbody>
@@ -87,6 +89,7 @@ export default function RenamesAudit({ renames }: Props) {
                         </span>
                       </td>
                       <td style={{ fontSize: 10, color: 'var(--muted)' }}>{r.first_seen}</td>
+                      <td style={{ fontSize: 10, color: 'var(--muted)' }}>{r.last_seen}</td>
                     </tr>
                   );
                 })}
