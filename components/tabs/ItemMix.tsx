@@ -624,7 +624,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
                 <th style={{ ...thBase, textAlign: 'center' }} title="Item qty ÷ category total qty">Mix % (Qty)</th>
                 {thSort('gross_sales', 'Gross Sales', 'SUM of pre-discount revenue (ties to Toast gross sales reports)')}
                 <th style={{ ...thBase, textAlign: 'center', whiteSpace: 'normal' }} title="Item gross sales ÷ category gross sales (pre-discount, ties to Toast)">Mix % Revenue by Category</th>
-                <th style={{ ...thBase, textAlign: 'center', fontSize: 10, color: 'var(--muted)' }} title="Net sales after discounts (line_total)">Net Sales</th>
+                {thSort('revenue', 'Net Sales', 'Net sales after discounts (line_total)')}
                 <th style={{ ...thBase, textAlign: 'center', fontSize: 10 }} title="analytics.refund_sales, exact — joined by selection_guid">Refunds</th>
                 <th style={{ ...thBase, textAlign: 'center', fontSize: 10, whiteSpace: 'normal' }} title="Net Sales − Refunds — matches Toast's Net item amt">Net after Refunds</th>
                 <th style={{ ...thBase, textAlign: 'center', whiteSpace: 'normal' }} title="Item gross sales ÷ total gross sales across every filtered item, across all categories (not just its own category)">Mix % Revenue Overall</th>
