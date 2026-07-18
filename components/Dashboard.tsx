@@ -643,6 +643,14 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
     return data.itemCosts.filter(c => locNames.has(c.canonical_name));
   }, [data.itemCosts, selectedLocations, locationBaseItems]);
 
+  // makeItMealModifiers carries its own exact location_code (unlike pinkSheets/
+  // itemCosts, no proportional scaling needed) — for Item Mix's "Make It a
+  // Meal" checkbox.
+  const locationFilteredMakeItMealModifiers = useMemo(() => {
+    if (selectedLocations.length === 0) return data.makeItMealModifiers;
+    return data.makeItMealModifiers.filter(m => selectedLocations.includes(m.location_code));
+  }, [data.makeItMealModifiers, selectedLocations]);
+
   // Find the most recent fiscal period that overlaps the selected date range
   const activeBikkyPeriod = useMemo(() => {
     const overlapping = data.periods.filter(
@@ -850,7 +858,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
 
       {/* ── TAB CONTENT ── */}
       {tab === 'overview'   && <Overview         data={filteredData} selectedChannels={selectedChannels} categoryFilter={categoryFilter} selectedLocations={selectedLocations} />}
-      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} itemCosts={locationFilteredItemCosts} selectedChannels={selectedChannels} categoryFilter={categoryFilter} role={role} />}
+      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} itemCosts={locationFilteredItemCosts} makeItMealModifiers={locationFilteredMakeItMealModifiers} selectedChannels={selectedChannels} categoryFilter={categoryFilter} role={role} />}
       {/* entreemix/byo/meoverall/pinksheets: location dropdown commented out pending v2
           validation — always pass blended, all-location data here regardless of the
           global location filter (the location-scaled memos stay wired for itemmix). */}
@@ -859,7 +867,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} />}
       {tab === 'byo'        && visibleTabs.includes('byo')        && <BYOBreakdown modifiers={data.modifiers} items={data.items} pinkSheets={data.pinkSheets} meItems={data.meItems} selectedLocations={[]} />}
       {tab === 'payment'    && <PaymentSource    payments={data.payments} paymentsByLocation={data.paymentsByLocation} paymentSourcesByLocation={data.paymentSourcesByLocation} selectedLocations={selectedLocations} />}
-      {tab === 'meoverall'  && <MEOverall meItems={data.meItems} pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} itemCosts={data.itemCosts} />}
+      {tab === 'meoverall'  && <MEOverall meItems={data.meItems} pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} itemCosts={data.itemCosts} role={role} />}
       {tab === 'pinksheets' && visibleTabs.includes('pinksheets') && <PinkSheets pinkSheets={data.pinkSheets} details={data.pinkSheetDetails} />}
       {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} />}
       {tab === 'renames'    && <RenamesAudit     renames={data.renames} role={role} />}
@@ -867,7 +875,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}
       {tab === 'admin'      && visibleTabs.includes('admin')      && <AdminPanel currentEmail={currentEmail} currentRole={role} />}
-      {tab === 'attachment' && visibleTabs.includes('attachment') && <AttachmentAnalytics data={data.attachment} prevData={data.prevAttachment} prevLabel={data.prevLabel} locations={data.locations} selectedLocations={selectedLocations} selectedChannels={selectedChannels} items={locationBaseItems} beverageModifiers={data.beverageModifiers} />}
+      {tab === 'attachment' && visibleTabs.includes('attachment') && <AttachmentAnalytics data={data.attachment} prevData={data.prevAttachment} prevLabel={data.prevLabel} locations={data.locations} selectedLocations={selectedLocations} selectedChannels={selectedChannels} items={locationBaseItems} beverageModifiers={data.beverageModifiers} role={role} />}
     </div>
   );
 }

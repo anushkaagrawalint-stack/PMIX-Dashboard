@@ -432,6 +432,19 @@ export interface BeverageModifierRow {
   qty:           number;
 }
 
+// "Make it a Meal" picks — public.fact_modifiers WHERE option_group_name =
+// 'Make it a Meal'. Unlike BeverageModifierRow, this carries the modifier's
+// own real `price` (already a line-level total, not per-unit — e.g. qty=2,
+// price=$1.00 for a $0.50 item) straight from the raw modifier record, for
+// Item Mix's admin/tester-only "include Make It a Meal" checkbox.
+export interface MakeItMealModifierRow {
+  canonical_name: string;
+  channel:        string;
+  location_code:  string;
+  qty:            number;
+  price:          number;
+}
+
 // ─── Root dashboard data bundle ───────────────────────────────────────────────
 export interface DashboardData {
   dateRange:          DateRange;
@@ -475,5 +488,6 @@ export interface DashboardData {
   attachment:         AttachmentData; // tester-only tab; fetched for everyone like byo/pinksheets
   prevAttachment:     AttachmentData | null; // prev-period, for "vs previous" KPI deltas
   beverageModifiers:  BeverageModifierRow[]; // drinks sold as a modifier (e.g. kids-meal drink choice), for the Analytics tab's Beverages section
+  makeItMealModifiers: MakeItMealModifierRow[]; // fact_modifiers "Make it a Meal" picks, for Item Mix's admin/tester-only checkbox
 }
 

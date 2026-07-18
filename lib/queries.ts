@@ -17,7 +17,7 @@ import type {
   FiscalPeriodRow, VendorRow, PinkSheetRow, PinkSheetDetailRow,
   ItemCostRow, MissingCostRow,
   AttachmentData, AttachmentBucketRow, AttachmentModifierRow, AttachmentItemRow, AttachmentCategoryRow,
-  BeverageModifierRow,
+  BeverageModifierRow, MakeItMealModifierRow,
 } from './types';
 
 function pool() {
@@ -1694,6 +1694,42 @@ export async function getBeverageModifiers(dr: DateRange): Promise<BeverageModif
   }));
 }
 
+// ─── Make It a Meal modifiers (Item Mix admin/tester-only checkbox) ─────────────
+// public.fact_modifiers WHERE option_group_name = 'Make it a Meal' — the raw
+// modifier line itself, with its own real `price` (verified against the live
+// DB: already a line-level total, e.g. qty=2, price=$1.00 for a $0.50 item —
+// NOT a per-unit price, so SUM(price) directly, never SUM(price) * qty).
+// This is a different, more direct source than getBeverageModifiers() above
+// (which reads the precomputed analytics.pc_modifier_daily and has no price
+// at all) — deliberately not reused, since only fact_modifiers carries price.
+export async function getMakeItMealModifiers(dr: DateRange): Promise<MakeItMealModifierRow[]> {
+  const db = pool();
+  const { rows } = await db.query(`
+    SELECT
+      fm.canonical_name,
+      (${CHO})          AS channel,
+      fm.location_code,
+      SUM(fm.quantity)::BIGINT              AS qty,
+      ROUND(SUM(fm.price)::NUMERIC, 2)      AS price
+    FROM public.fact_modifiers fm
+    JOIN public.fact_order_lines fol ON fol.selection_guid = fm.parent_selection
+    ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+    WHERE fm.option_group_name = 'Make it a Meal'
+      AND NOT fm.is_voided
+      AND ${BASE_WHERE}
+      AND fm.business_date BETWEEN $1::DATE AND $2::DATE
+    GROUP BY 1, 2, 3
+  `, [dr.start, dr.end]);
+  await db.end();
+  return rows.map(r => ({
+    canonical_name: r.canonical_name as string,
+    channel:        r.channel        as string,
+    location_code:  r.location_code  as string,
+    qty:            Number(r.qty),
+    price:          Number(r.price),
+  }));
+}
+
 // ─── BYO Modifiers ────────────────────────────────────────────────────────────
 export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
   const db = pool();
@@ -2978,7 +3014,7 @@ export async function loadDashboardData(
     itemCosts, missingCosts,
     prevChannelItems, prevLocationItems, prevMEItems,
     attachment, prevAttachment,
-    beverageModifiers,
+    beverageModifiers, makeItMealModifiers,
   ] = await Promise.all([
     getSummary(dr),
     prevDr ? getSummary(prevDr) : Promise.resolve(null),
@@ -3019,6 +3055,7 @@ export async function loadDashboardData(
     getAttachmentData(dr),
     prevDr ? getAttachmentData(prevDr) : Promise.resolve(null),
     getBeverageModifiers(dr),
+    getMakeItMealModifiers(dr),
   ]);
 
   const totalMargin   = meItems.reduce((s, i) => s + i.total_margin, 0);
@@ -3045,6 +3082,6 @@ export async function loadDashboardData(
     cateringVendors, offsiteVendors,
     itemCosts, missingCosts,
     attachment, prevAttachment,
-    beverageModifiers,
+    beverageModifiers, makeItMealModifiers,
   };
 }

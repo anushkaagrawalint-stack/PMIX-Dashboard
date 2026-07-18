@@ -1,6 +1,7 @@
 'use client';
 import { useState, useMemo } from 'react';
 import type { MERow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow } from '@/lib/types';
+import type { Role } from '@/lib/auth';
 import { computeFinalAvgCost } from '@/lib/pinkSheetCost';
 import { normalizeCategory } from '@/lib/constants';
 import {
@@ -20,7 +21,7 @@ type QuadrantKey = 'Star' | 'Plow Horse' | 'Puzzle' | 'Dog';
 type ViewMode    = 'table' | 'scatter' | 'bar';
 
 const CH_LABELS: Record<ChannelTab, string> = {
-  ALL: 'Overall', BL: 'Blended (IH+LO+3PD)', IH: 'In House', LO: 'RASA Digital / APP', '3PD': '3rd Party Delivery',
+  ALL: 'Overall', BL: 'Blended (IH+LO+3PD)', IH: 'In House', LO: 'RASA Digital', '3PD': '3rd Party Delivery',
 };
 const RC_LABELS: Record<ChannelTab, string> = {
   ALL: 'ALL', BL: 'BLENDED', IH: 'IN-HOUSE', LO: 'RASA DIGITAL', '3PD': '3PD',
@@ -249,13 +250,15 @@ function QuadrantBarChart({ title, subtitle, color, data }: {
 }
 
 export default function MEOverall({
-  meItems, pinkSheets, pinkSheetDetails, itemCosts,
+  meItems, pinkSheets, pinkSheetDetails, itemCosts, role,
 }: {
   meItems: MERow[];
   pinkSheets: PinkSheetRow[];
   pinkSheetDetails: PinkSheetDetailRow[];
   itemCosts: ItemCostRow[];
+  role: Role;
 }) {
+  const showExport = role !== 'user';
   const [ch,         setCh]         = useState<ChannelTab>('ALL');
   const [search,     setSearch]     = useState('');
   const [quadFilter, setQuadFilter] = useState<Set<QuadrantKey>>(new Set());
@@ -849,7 +852,7 @@ export default function MEOverall({
             <MultiCheckDropdown label="Margin Level" id="margin" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={marginFlagFilter} onToggle={v => toggleFlagFilter('margin', v)} />
             <MultiCheckDropdown label="Menu Mix" id="mix" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={mixFlagFilter} onToggle={v => toggleFlagFilter('mix', v)} />
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{overallFlatRows.length} rows</span>
-            <button onClick={exportOverallCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>
+            {showExport && <button onClick={exportOverallCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>}
           </div>
           <div className="tw"><div className="tscroll">
             <table>
@@ -936,7 +939,7 @@ export default function MEOverall({
             <MultiCheckDropdown label="Margin Level" id="margin" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={marginFlagFilter} onToggle={v => toggleFlagFilter('margin', v)} />
             <MultiCheckDropdown label="Menu Mix" id="mix" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={mixFlagFilter} onToggle={v => toggleFlagFilter('mix', v)} />
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{blendedTableRows.length} items</span>
-            <button onClick={exportBlendedCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>
+            {showExport && <button onClick={exportBlendedCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>}
           </div>
           <div className="tw"><div className="tscroll">
             <table>
@@ -1019,7 +1022,7 @@ export default function MEOverall({
             <MultiCheckDropdown label="Margin Level" id="margin" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={marginFlagFilter} onToggle={v => toggleFlagFilter('margin', v)} />
             <MultiCheckDropdown label="Menu Mix" id="mix" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={mixFlagFilter} onToggle={v => toggleFlagFilter('mix', v)} />
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{filtered.length} items</span>
-            <button onClick={exportSingleCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>
+            {showExport && <button onClick={exportSingleCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>}
           </div>
           <div className="tw"><div className="tscroll">
             <table>

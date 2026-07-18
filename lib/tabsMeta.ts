@@ -13,12 +13,12 @@ export const TAB_META = [
   { id: 'meoverall',  label: 'Menu Engineering',    icon: 'ti-layout-grid' },
   { id: 'pinksheets', label: 'Pink Sheets',         icon: 'ti-file-spreadsheet' },
   { id: 'bikky',      label: 'Customer Retention',  icon: 'ti-users' },
+  { id: 'attachment', label: 'Analytics',           icon: 'ti-link' },
   { id: 'renames',    label: 'Renames Audit',       icon: 'ti-refresh' },
   { id: 'renamesdemo',label: 'Rename Demo',         icon: 'ti-flask' },
   { id: 'needs',      label: 'Needs Review',        icon: 'ti-alert-triangle' },
   { id: 'openitems',  label: 'Open Items',          icon: 'ti-package' },
   { id: 'admin',      label: 'Admin Panel',         icon: 'ti-settings' },
-  { id: 'attachment', label: 'Analytics',           icon: 'ti-link' },
 ] as const;
 
 export type TabId = typeof TAB_META[number]['id'];

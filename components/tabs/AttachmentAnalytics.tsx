@@ -4,6 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
 import type { AttachmentData, LocationRow, ItemRow, BeverageModifierRow } from '@/lib/types';
+import type { Role } from '@/lib/auth';
 
 const fmtInt = (v: number) => v.toLocaleString();
 const fmtPct = (v: number) => `${v.toFixed(2)}%`;
@@ -25,7 +26,7 @@ const CAT_COLOR: Record<string, string> = { Drink: '#2563eb', Sweet: '#c9832e', 
 // (owner request — 3PD Markup isn't a platform they want to see here).
 const ENTREE_CHANNELS = [
   { code: 'IN_HOUSE', label: 'In-House' },
-  { code: 'APP',      label: 'APP' },
+  { code: 'APP',      label: 'RASA Digital' },
   { code: 'TPD',      label: '3PD' },
 ] as const;
 type EntreeChannelCode = typeof ENTREE_CHANNELS[number]['code'];
@@ -146,7 +147,7 @@ function aggregate(ad: AttachmentData, filter: (loc: string, ch: string) => bool
 }
 
 export default function AttachmentAnalytics({
-  data, prevData, prevLabel, locations, selectedLocations, selectedChannels, items, beverageModifiers,
+  data, prevData, prevLabel, locations, selectedLocations, selectedChannels, items, beverageModifiers, role,
 }: {
   data: AttachmentData;
   prevData: AttachmentData | null;
@@ -156,7 +157,9 @@ export default function AttachmentAnalytics({
   selectedChannels: string[];
   items: ItemRow[];
   beverageModifiers: BeverageModifierRow[];
+  role: Role;
 }) {
+  const showExport = role !== 'user';
   const [tableCategory, setTableCategory] = useState('');
   const [tableSearch, setTableSearch]     = useState('');
   const [tableLimit, setTableLimit]       = useState<10 | 25 | 50 | 100 | 'all'>(25);
@@ -542,10 +545,12 @@ export default function AttachmentAnalytics({
               <option value="100">Top 100</option>
               <option value="all">All</option>
             </select>
-            <button className="drb" onClick={exportTableCsv} style={{ minWidth: 0, padding: '6px 12px' }}>
-              <i className="ti ti-download" style={{ fontSize: 12, marginRight: 4 }} />
-              Export CSV
-            </button>
+            {showExport && (
+              <button className="drb" onClick={exportTableCsv} style={{ minWidth: 0, padding: '6px 12px' }}>
+                <i className="ti ti-download" style={{ fontSize: 12, marginRight: 4 }} />
+                Export CSV
+              </button>
+            )}
           </div>
         </div>
         <div className="tscroll">
@@ -648,7 +653,7 @@ export default function AttachmentAnalytics({
       {/* ══════════════════════ Item Mix (Entree / Drink / Side / Sweet) ══════════════════════ */}
       <h2 style={{ fontSize: 15, fontWeight: 700, margin: '24px 0 4px' }}>Item Mix</h2>
       <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>
-        Scope: In-House + APP + 3PD only (catering excluded) · includes items sold standalone and as a modifier (e.g. a &quot;make it a meal&quot; pick) · reacts to the channel, location, and date filters above
+        Scope: In-House + RASA Digital + 3PD only (catering excluded) · includes items sold standalone and as a modifier (e.g. a &quot;make it a meal&quot; pick) · reacts to the channel, location, and date filters above
       </div>
 
       <div className="krow k4">
@@ -697,7 +702,7 @@ export default function AttachmentAnalytics({
               {MIX_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
             <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
-              {([['ALL', 'All Platforms Combined'], ...ENTREE_CHANNELS.map(c => [c.code, c.label])] as const).map(([v, label]) => (
+              {([['ALL', 'All Channels'], ...ENTREE_CHANNELS.map(c => [c.code, c.label])] as const).map(([v, label]) => (
                 <button key={v} onClick={() => setMixPlatform(v as 'ALL' | EntreeChannelCode)} style={{
                   fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer',
                   background: mixPlatform === v ? 'var(--accent)' : 'transparent',
@@ -707,10 +712,12 @@ export default function AttachmentAnalytics({
                 }}>{label}</button>
               ))}
             </div>
-            <button className="drb" onClick={exportMixCsv} style={{ minWidth: 0, padding: '6px 12px' }}>
-              <i className="ti ti-download" style={{ fontSize: 12, marginRight: 4 }} />
-              Export CSV
-            </button>
+            {showExport && (
+              <button className="drb" onClick={exportMixCsv} style={{ minWidth: 0, padding: '6px 12px' }}>
+                <i className="ti ti-download" style={{ fontSize: 12, marginRight: 4 }} />
+                Export CSV
+              </button>
+            )}
           </div>
         </div>
         <div className="tscroll">
