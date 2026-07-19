@@ -1,7 +1,6 @@
 'use client';
 import { useState, useMemo } from 'react';
 import type { ItemRow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow, MakeItMealModifierRow } from '@/lib/types';
-import type { Role } from '@/lib/auth';
 import { computeFinalAvgCost } from '@/lib/pinkSheetCost';
 import { normalizeCategory } from '@/lib/constants';
 
@@ -32,7 +31,6 @@ interface Props {
   makeItMealModifiers: MakeItMealModifierRow[];
   selectedChannels:   string[];
   categoryFilter:     string;
-  role:               Role;
 }
 
 interface FinalCost { online: number; ih: number }
@@ -59,8 +57,7 @@ function itemCat(i: ItemRow): string {
   return normCat(i.category);
 }
 
-export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts = [], makeItMealModifiers, selectedChannels, categoryFilter, role }: Props) {
-  const showMakeItMealToggle = role !== 'user';
+export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts = [], makeItMealModifiers, selectedChannels, categoryFilter }: Props) {
   const [search,          setSearch]          = useState('');
   const [sortKey,         setSortKey]         = useState<SortKey>('gross_sales');
   const [sortDir,         setSortDir]         = useState<'asc' | 'desc'>('desc');
@@ -582,12 +579,10 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
         <span style={{ fontSize: 10, color: 'var(--muted)' }}>
           {search.trim() ? dedupedFiltered.filter(matchesSearch).length : dedupedFiltered.length} items
         </span>
-        {showMakeItMealToggle && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, cursor: 'pointer', width: '100%' }}>
-            <input type="checkbox" checked={includeMakeItMeal} onChange={e => setIncludeMakeItMeal(e.target.checked)} />
-            Include &quot;Make It a Meal&quot; picks in Gross Sales / Net Sales / Net after Refunds (adds the modifier&apos;s own real price from fact_modifiers)
-          </label>
-        )}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, cursor: 'pointer', width: '100%' }}>
+          <input type="checkbox" checked={includeMakeItMeal} onChange={e => setIncludeMakeItMeal(e.target.checked)} />
+          Include &quot;Make It a Meal&quot; picks in Gross Sales / Net Sales / Net after Refunds (adds the modifier&apos;s own real price from fact_modifiers)
+        </label>
       </div>
 
       <div className="tw">

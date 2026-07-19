@@ -858,7 +858,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
 
       {/* ── TAB CONTENT ── */}
       {tab === 'overview'   && <Overview         data={filteredData} selectedChannels={selectedChannels} categoryFilter={categoryFilter} selectedLocations={selectedLocations} />}
-      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} itemCosts={locationFilteredItemCosts} makeItMealModifiers={locationFilteredMakeItMealModifiers} selectedChannels={selectedChannels} categoryFilter={categoryFilter} role={role} />}
+      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} itemCosts={locationFilteredItemCosts} makeItMealModifiers={locationFilteredMakeItMealModifiers} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
       {/* entreemix/byo/meoverall/pinksheets: location dropdown commented out pending v2
           validation — always pass blended, all-location data here regardless of the
           global location filter (the location-scaled memos stay wired for itemmix). */}
