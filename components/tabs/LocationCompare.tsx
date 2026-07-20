@@ -144,14 +144,16 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
   const locStats = useMemo(() => {
     // Aggregate per (location, item) first so topItem reflects item totals, not channel-specific revenue
     const itemTotals: Record<string, Record<string, { revenue: number; qty: number }>> = {};
+    const refundTotals: Record<string, number> = {};
     effectiveLocationItems.forEach(r => {
       if (!itemTotals[r.location_code]) itemTotals[r.location_code] = {};
       const it = itemTotals[r.location_code];
       if (!it[r.canonical_name]) it[r.canonical_name] = { revenue: 0, qty: 0 };
       it[r.canonical_name].revenue += r.revenue;
       it[r.canonical_name].qty     += r.qty;
+      refundTotals[r.location_code] = (refundTotals[r.location_code] ?? 0) + (r.refunds ?? 0);
     });
-    const stats: Record<string, { revenue: number; qty: number; topItem: string; topRev: number }> = {};
+    const stats: Record<string, { revenue: number; qty: number; refunds: number; topItem: string; topRev: number }> = {};
     for (const [loc, items] of Object.entries(itemTotals)) {
       let revenue = 0, qty = 0, topItem = '', topRev = 0;
       for (const [name, v] of Object.entries(items)) {
@@ -159,7 +161,8 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
         qty     += v.qty;
         if (v.revenue > topRev) { topRev = v.revenue; topItem = name; }
       }
-      stats[loc] = { revenue, qty, topItem, topRev };
+      const refunds = refundTotals[loc] ?? 0;
+      stats[loc] = { revenue: revenue - refunds, qty, refunds, topItem, topRev };
     }
     return stats;
   }, [effectiveLocationItems]);
@@ -347,6 +350,9 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
               <div className="ks">{share.toFixed(1)}% of category {useQty ? 'qty' : 'revenue'}</div>
               {mimQty > 0 && (
                 <div className="ks">+{mimQty.toLocaleString()} from Make It a Meal</div>
+              )}
+              {(s?.refunds ?? 0) > 0 && (
+                <div className="ks" style={{ color: '#dc2626' }}>-{fmt$(s!.refunds)} refunds</div>
               )}
               {s?.topItem && (
                 <div className="ks" style={{ marginTop: 3, fontWeight: 700, color: 'var(--text)' }}>

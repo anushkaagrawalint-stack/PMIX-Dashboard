@@ -66,18 +66,20 @@ export default function ChannelMenu({ data, makeItMealModifiers }: { data: Dashb
 
   // Per-channel KPI aggregates from channelItems (already channel+category filtered by Dashboard)
   const kpiByChannel = useMemo(() => {
-    const agg = new Map<string, { revenue: number; qty: number }>();
+    const agg = new Map<string, { revenue: number; qty: number; refunds: number }>();
     channelItems.forEach(ci => {
       const mm = includeMakeItMeal ? makeItMealMap.get(`${ci.canonical_name}|${ci.channel}`) : undefined;
-      const e = agg.get(ci.channel) ?? { revenue: 0, qty: 0 };
+      const e = agg.get(ci.channel) ?? { revenue: 0, qty: 0, refunds: 0 };
       e.revenue += ci.revenue + (mm?.price ?? 0);
       e.qty     += ci.qty     + (mm?.qty   ?? 0);
+      e.refunds += ci.refunds;
       agg.set(ci.channel, e);
     });
-    const totalRev = [...agg.values()].reduce((s, v) => s + v.revenue, 0);
-    const result = new Map<string, { revenue: number; qty: number; pct: string }>();
+    const totalNet = [...agg.values()].reduce((s, v) => s + (v.revenue - v.refunds), 0);
+    const result = new Map<string, { revenue: number; qty: number; refunds: number; net: number; pct: string }>();
     agg.forEach((v, ch) => {
-      result.set(ch, { ...v, pct: totalRev > 0 ? ((v.revenue / totalRev) * 100).toFixed(1) : '0.0' });
+      const net = v.revenue - v.refunds;
+      result.set(ch, { ...v, net, pct: totalNet > 0 ? ((net / totalNet) * 100).toFixed(1) : '0.0' });
     });
     return result;
   }, [channelItems, makeItMealMap, includeMakeItMeal]);
@@ -186,7 +188,7 @@ export default function ChannelMenu({ data, makeItMealModifiers }: { data: Dashb
     const map: Record<string, number> = {};
     channelItems.forEach(r => {
       const added = includeMakeItMeal ? (makeItMealMap.get(`${r.canonical_name}|${r.channel}`)?.price ?? 0) : 0;
-      map[r.channel] = (map[r.channel] ?? 0) + r.revenue + added;
+      map[r.channel] = (map[r.channel] ?? 0) + r.revenue - r.refunds + added;
     });
     return Object.entries(map)
       .sort((a, b) => b[1] - a[1])
@@ -271,7 +273,7 @@ export default function ChannelMenu({ data, makeItMealModifiers }: { data: Dashb
       {/* ── Row 1: KPI cards ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 10 }}>
         {channels.map(ch => {
-          const kpi    = kpiByChannel.get(ch.channel) ?? { revenue: 0, qty: 0, pct: '0.0' };
+          const kpi    = kpiByChannel.get(ch.channel) ?? { revenue: 0, qty: 0, refunds: 0, net: 0, pct: '0.0' };
           const mimQty = channelMakeItMealQty.get(ch.channel) ?? 0;
           return (
             <div
@@ -280,9 +282,10 @@ export default function ChannelMenu({ data, makeItMealModifiers }: { data: Dashb
               style={{ borderLeftColor: CHANNEL_COLOR[ch.channel] ?? '#999', borderLeftWidth: 3, borderLeftStyle: 'solid' }}
             >
               <div className="kl">{CHANNEL_LABEL[ch.channel] ?? ch.channel}</div>
-              <div className="kv">{fmt$(kpi.revenue)}</div>
+              <div className="kv">{fmt$(kpi.net)}</div>
               <div className="ks">{kpi.pct}% of total · {kpi.qty.toLocaleString()} sold</div>
               {mimQty > 0 && <div className="ks">+{mimQty.toLocaleString()} from Make It a Meal</div>}
+              {kpi.refunds > 0 && <div className="ks" style={{ color: '#dc2626' }}>-{fmt$(kpi.refunds)} refunds</div>}
             </div>
           );
         })}
@@ -307,7 +310,7 @@ export default function ChannelMenu({ data, makeItMealModifiers }: { data: Dashb
             </thead>
             <tbody>
               {channels.map(ch => {
-                const kpi = kpiByChannel.get(ch.channel) ?? { revenue: 0, qty: 0, pct: '0.0' };
+                const kpi = kpiByChannel.get(ch.channel) ?? { revenue: 0, qty: 0, refunds: 0, net: 0, pct: '0.0' };
                 return (
                   <tr key={ch.channel}>
                     <td style={{ ...tdC, textAlign: 'left', fontSize: 11 }}>
@@ -316,7 +319,7 @@ export default function ChannelMenu({ data, makeItMealModifiers }: { data: Dashb
                         {CHANNEL_LABEL[ch.channel] ?? ch.channel}
                       </div>
                     </td>
-                    <td style={{ ...tdC, fontSize: 11, fontWeight: 600 }}>{fmt$(kpi.revenue)}</td>
+                    <td style={{ ...tdC, fontSize: 11, fontWeight: 600 }}>{fmt$(kpi.net)}</td>
                     <td style={{ ...tdC, fontSize: 10, color: 'var(--muted)' }}>{kpi.pct}%</td>
                   </tr>
                 );
