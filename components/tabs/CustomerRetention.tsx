@@ -31,13 +31,6 @@ const SOURCE_LABELS: Record<Source, string> = {
   '3pd_loyalty': '3PD + RASA Digital',
 };
 
-const QUADRANT_COLORS: Record<string, string> = {
-  Star:        '#f59e0b',
-  'Plow Horse': '#3b82f6',
-  Puzzle:      '#8b5cf6',
-  Dog:         '#9ca3af',
-};
-
 // Bikky tables store the pre-byo_fix item names; ME/items use post-fix canonical names.
 // This map lets quadrant/category/sub-category look up correctly for both name forms.
 const BIKKY_TO_CANONICAL: Record<string, string> = {
@@ -105,7 +98,7 @@ function CheckboxDropdown({ label, options, selected, onChange }: {
 }
 
 function Top10List({ rows, color }: {
-  rows: { name: string; value: number; prev: number | null }[];
+  rows: { name: string; value: number; prev: number | null; guests: number }[];
   color: string;
 }) {
   const max = Math.max(...rows.map(r => r.value), 1);
@@ -121,7 +114,7 @@ function Top10List({ rows, color }: {
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 10, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {r.name}
+                {r.name} <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· {r.guests.toLocaleString()} guests</span>
               </div>
               <div style={{ height: 5, borderRadius: 3, background: 'var(--border)', marginTop: 3 }}>
                 <div style={{ height: '100%', borderRadius: 3, background: color, width: `${(r.value / max) * 100}%` }} />
@@ -288,29 +281,49 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
   // Dynamic KPIs from filtered data
   const avgReturn  = byItem.length > 0 ? byItem.reduce((s, r) => s + r.return_rate,  0) / byItem.length : 0;
   const avgReorder = byItem.length > 0 ? byItem.reduce((s, r) => s + r.reorder_rate, 0) / byItem.length : 0;
-  const topReorder = byItem.length > 0 ? [...byItem].sort((a, b) => b.reorder_rate - a.reorder_rate)[0] : null;
-  const topReturn  = byItem.length > 0 ? [...byItem].sort((a, b) => b.return_rate  - a.return_rate )[0] : null;
+
+  // "Top"/"Bottom" by rate is only meaningful among items with enough guests to
+  // trust the percentage — a 1-guest item at 100% return rate isn't a winner,
+  // it's noise. Floor is the median guest count of the currently-filtered set
+  // (adapts to whatever category/quadrant/search filters are active, rather
+  // than a hardcoded guest count that wouldn't generalize across date ranges).
+  // Falls back to the unfiltered set if the floor would empty it out.
+  const significantItems = useMemo(() => {
+    if (byItem.length === 0) return byItem;
+    const sortedGuests = [...byItem.map(r => r.guests)].sort((a, b) => a - b);
+    const mid = Math.floor(sortedGuests.length / 2);
+    const median = sortedGuests.length % 2
+      ? sortedGuests[mid]
+      : (sortedGuests[mid - 1] + sortedGuests[mid]) / 2;
+    const filtered = byItem.filter(r => r.guests >= median);
+    return filtered.length > 0 ? filtered : byItem;
+  }, [byItem]);
+
+  const topReorder = significantItems.length > 0 ? [...significantItems].sort((a, b) => b.reorder_rate - a.reorder_rate)[0] : null;
+  const topReturn  = significantItems.length > 0 ? [...significantItems].sort((a, b) => b.return_rate  - a.return_rate )[0] : null;
 
   // Top-10 data with prev-period delta
   const top10Reorder = useMemo(() =>
-    [...byItem].sort((a, b) => showBottom ? a.reorder_rate - b.reorder_rate : b.reorder_rate - a.reorder_rate)
+    [...significantItems].sort((a, b) => showBottom ? a.reorder_rate - b.reorder_rate : b.reorder_rate - a.reorder_rate)
       .slice(0, 10)
       .map(r => ({
-        name:  r.name.slice(0, 28),
-        value: Math.round(r.reorder_rate * 1000) / 10,
-        prev:  r.reorder_rate_prev != null ? Math.round(r.reorder_rate_prev * 1000) / 10 : null,
+        name:   r.name.slice(0, 28),
+        value:  Math.round(r.reorder_rate * 1000) / 10,
+        prev:   r.reorder_rate_prev != null ? Math.round(r.reorder_rate_prev * 1000) / 10 : null,
+        guests: r.guests,
       })),
-  [byItem, showBottom]);
+  [significantItems, showBottom]);
 
   const top10Return = useMemo(() =>
-    [...byItem].sort((a, b) => showBottom ? a.return_rate - b.return_rate : b.return_rate - a.return_rate)
+    [...significantItems].sort((a, b) => showBottom ? a.return_rate - b.return_rate : b.return_rate - a.return_rate)
       .slice(0, 10)
       .map(r => ({
-        name:  r.name.slice(0, 28),
-        value: Math.round(r.return_rate * 1000) / 10,
-        prev:  r.return_rate_prev != null ? Math.round(r.return_rate_prev * 1000) / 10 : null,
+        name:   r.name.slice(0, 28),
+        value:  Math.round(r.return_rate * 1000) / 10,
+        prev:   r.return_rate_prev != null ? Math.round(r.return_rate_prev * 1000) / 10 : null,
+        guests: r.guests,
       })),
-  [byItem, showBottom]);
+  [significantItems, showBottom]);
 
   const scatterData = byItem.map(r => ({
     x:    Math.round(r.return_rate  * 1000) / 10,
@@ -339,7 +352,7 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
       <div className="info-banner blue">
         <i className="ti ti-info-circle" />
         <div>
-          Bikky retention data · {period ? <strong>{period}</strong> : 'all periods'} — return rate (% of guests who returned within 90 days) and reorder rate (same item again).
+          Bikky retention data · {period ? <strong>{period}</strong> : 'all periods'} — return rate (% of guests who returned within 90 days) and reorder rate (same item again). &quot;Highest&quot;/Top-10/Bottom-10 rankings only consider items with at least median guest volume, so a low-guest item at a deceptively high or low rate can&apos;t dominate the ranking.
         </div>
       </div>
 
@@ -406,12 +419,12 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
         <div className="kc b">
           <div className="kl">Highest Reorder Item</div>
           <div className="kv-sm">{topReorder?.name ?? '—'}</div>
-          <div className="ks">{topReorder ? pct(topReorder.reorder_rate) + ' reorder rate' : ''}</div>
+          <div className="ks">{topReorder ? `${pct(topReorder.reorder_rate)} reorder rate · ${topReorder.guests.toLocaleString()} guests` : ''}</div>
         </div>
         <div className="kc p">
           <div className="kl">Highest Return Item</div>
           <div className="kv-sm">{topReturn?.name ?? '—'}</div>
-          <div className="ks">{topReturn ? pct(topReturn.return_rate) + ' return rate' : ''}</div>
+          <div className="ks">{topReturn ? `${pct(topReturn.return_rate)} return rate · ${topReturn.guests.toLocaleString()} guests` : ''}</div>
         </div>
       </div>
 
@@ -496,9 +509,8 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
                 <table>
                   <thead>
                     <tr>
-                      <th>Item</th>
+                      <th>Item / Modifier</th>
                       <th>Period</th>
-                      <th>Quadrant</th>
                       <th style={thStyle('return_rate')}  onClick={() => toggleSort('return_rate')}>Return Rate{arrow('return_rate')}</th>
                       <th style={thStyle('reorder_rate')} onClick={() => toggleSort('reorder_rate')}>Reorder Rate{arrow('reorder_rate')}</th>
                       <th style={thStyle('guests')}       onClick={() => toggleSort('guests')}>Guests{arrow('guests')}</th>
@@ -506,23 +518,10 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
                   </thead>
                   <tbody>
                     {filtered.map((r, i) => {
-                      const q = quadrantMap.get(r.item_name);
                       return (
                         <tr key={`${r.item_name}-${r.source}-${r.period}-${i}`}>
                           <td style={{ fontWeight: 600 }}>{r.item_name}</td>
                           <td style={{ fontSize: 10, color: 'var(--muted)' }}>{r.period}</td>
-                          <td>
-                            {q ? (
-                              <span style={{
-                                fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
-                                background: QUADRANT_COLORS[q] + '22',
-                                color: QUADRANT_COLORS[q],
-                                border: `1px solid ${QUADRANT_COLORS[q]}44`,
-                              }}>{q}</span>
-                            ) : (
-                              <span style={{ fontSize: 9, color: 'var(--muted)' }}>—</span>
-                            )}
-                          </td>
                           <td><span className={rateClass(r.return_rate)}>{pct(r.return_rate)}</span></td>
                           <td><span className={rateClass(r.reorder_rate)}>{pct(r.reorder_rate)}</span></td>
                           <td style={{ fontSize: 10 }}>{r.guests > 0 ? r.guests.toLocaleString() : '—'}</td>
