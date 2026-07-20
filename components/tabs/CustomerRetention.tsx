@@ -31,6 +31,13 @@ const SOURCE_LABELS: Record<Source, string> = {
   '3pd_loyalty': '3PD + RASA Digital',
 };
 
+const QUADRANT_COLORS: Record<string, string> = {
+  Star:        '#f59e0b',
+  'Plow Horse': '#3b82f6',
+  Puzzle:      '#8b5cf6',
+  Dog:         '#9ca3af',
+};
+
 // Bikky tables store the pre-byo_fix item names; ME/items use post-fix canonical names.
 // This map lets quadrant/category/sub-category look up correctly for both name forms.
 const BIKKY_TO_CANONICAL: Record<string, string> = {
@@ -511,6 +518,7 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
                     <tr>
                       <th>Item / Modifier</th>
                       <th>Period</th>
+                      <th>Quadrant</th>
                       <th style={thStyle('return_rate')}  onClick={() => toggleSort('return_rate')}>Return Rate{arrow('return_rate')}</th>
                       <th style={thStyle('reorder_rate')} onClick={() => toggleSort('reorder_rate')}>Reorder Rate{arrow('reorder_rate')}</th>
                       <th style={thStyle('guests')}       onClick={() => toggleSort('guests')}>Guests{arrow('guests')}</th>
@@ -518,10 +526,23 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
                   </thead>
                   <tbody>
                     {filtered.map((r, i) => {
+                      const q = quadrantMap.get(r.item_name);
                       return (
                         <tr key={`${r.item_name}-${r.source}-${r.period}-${i}`}>
                           <td style={{ fontWeight: 600 }}>{r.item_name}</td>
                           <td style={{ fontSize: 10, color: 'var(--muted)' }}>{r.period}</td>
+                          <td>
+                            {q ? (
+                              <span style={{
+                                fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+                                background: QUADRANT_COLORS[q] + '22',
+                                color: QUADRANT_COLORS[q],
+                                border: `1px solid ${QUADRANT_COLORS[q]}44`,
+                              }}>{q}</span>
+                            ) : (
+                              <span style={{ fontSize: 9, color: 'var(--muted)' }}>—</span>
+                            )}
+                          </td>
                           <td><span className={rateClass(r.return_rate)}>{pct(r.return_rate)}</span></td>
                           <td><span className={rateClass(r.reorder_rate)}>{pct(r.reorder_rate)}</span></td>
                           <td style={{ fontSize: 10 }}>{r.guests > 0 ? r.guests.toLocaleString() : '—'}</td>
