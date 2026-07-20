@@ -1,44 +1,41 @@
 import { parse } from 'csv-parse/sync';
 
-// Mirrors toast_pipeline/cli.py's _BIKKY_COL_MAP exactly — keep both in sync
-// if the R365/Bikky export format ever changes its header names.
-export const BIKKY_COL_MAP: Record<string, string> = {
-  'Item':                               'item_name',
-  'Item id':                            'item_id',
-  'Item revenue':                       'revenue',
-  'Item revenue per location':          'revenue_per_loc',
-  'Item revenue percentage':            'revenue_pct',
-  'Item volume':                        'volume',
-  'Item volume per location':           'volume_per_loc',
-  'Item volume percentage':             'volume_pct',
-  'Item aov':                           'aov',
-  'Item guests':                        'guests',
-  'N day item return rate':             'return_rate',
-  'N day item reorder rate':            'reorder_rate',
-  'Business date previous start':       'prev_period_start',
-  'Business date previous end':         'prev_period_end',
-  'Item revenue previous':              'revenue_prev',
-  'Item revenue per location previous': 'revenue_per_loc_prev',
-  'Item revenue percentage previous':   'revenue_pct_prev',
-  'Item volume previous':               'volume_prev',
-  'Item volume per location previous':  'volume_per_loc_prev',
-  'Item volume percentage previous':    'volume_pct_prev',
-  'Item aov previous':                  'aov_prev',
-  'Item guests previous':               'guests_prev',
-  'N day item return rate previous':    'return_rate_prev',
-  'N day item reorder rate previous':   'reorder_rate_prev',
+// Bikky has shipped at least two header spellings for the *current-period*
+// columns (confirmed by a real P6 upload 2026-07-20 — "Item" became "Menu
+// item", "Item aov" became "AOV", etc.) while leaving the "previous"/
+// "difference" suffixed columns on the old names. Each target field lists
+// every header spelling seen in the wild; the first one present in a given
+// file's header wins. Add to a field's alias list rather than replacing it
+// if the export format shifts again — don't drop old aliases, old P1-P5
+// files on disk still use them.
+interface BikkyColSpec { aliases: string[]; kind: 'text' | 'numeric' | 'date' }
+
+const BIKKY_COL_SPECS: Record<string, BikkyColSpec> = {
+  item_name:            { aliases: ['Item', 'Menu item'], kind: 'text' },
+  item_id:              { aliases: ['Item id'], kind: 'text' },
+  revenue:              { aliases: ['Item revenue'], kind: 'numeric' },
+  revenue_per_loc:      { aliases: ['Item revenue per location'], kind: 'numeric' },
+  revenue_pct:          { aliases: ['Item revenue percentage', 'Item revenue (%)'], kind: 'numeric' },
+  volume:               { aliases: ['Item volume'], kind: 'numeric' },
+  volume_per_loc:       { aliases: ['Item volume per location', 'Items per location'], kind: 'numeric' },
+  volume_pct:           { aliases: ['Item volume percentage', 'Item volume (%)'], kind: 'numeric' },
+  aov:                  { aliases: ['Item aov', 'AOV'], kind: 'numeric' },
+  guests:               { aliases: ['Item guests', 'Guests'], kind: 'numeric' },
+  return_rate:          { aliases: ['N day item return rate', 'Item return rate'], kind: 'numeric' },
+  reorder_rate:         { aliases: ['N day item reorder rate', 'Item re-order rate'], kind: 'numeric' },
+  prev_period_start:    { aliases: ['Business date previous start'], kind: 'date' },
+  prev_period_end:      { aliases: ['Business date previous end'], kind: 'date' },
+  revenue_prev:         { aliases: ['Item revenue previous'], kind: 'numeric' },
+  revenue_per_loc_prev: { aliases: ['Item revenue per location previous'], kind: 'numeric' },
+  revenue_pct_prev:     { aliases: ['Item revenue percentage previous'], kind: 'numeric' },
+  volume_prev:          { aliases: ['Item volume previous'], kind: 'numeric' },
+  volume_per_loc_prev:  { aliases: ['Item volume per location previous'], kind: 'numeric' },
+  volume_pct_prev:      { aliases: ['Item volume percentage previous'], kind: 'numeric' },
+  aov_prev:             { aliases: ['Item aov previous'], kind: 'numeric' },
+  guests_prev:          { aliases: ['Item guests previous'], kind: 'numeric' },
+  return_rate_prev:     { aliases: ['N day item return rate previous'], kind: 'numeric' },
+  reorder_rate_prev:    { aliases: ['N day item reorder rate previous'], kind: 'numeric' },
 };
-
-const BIKKY_NUMERIC_COLS = new Set([
-  'revenue', 'revenue_per_loc', 'revenue_pct',
-  'volume', 'volume_per_loc', 'volume_pct',
-  'aov', 'guests', 'return_rate', 'reorder_rate',
-  'revenue_prev', 'revenue_per_loc_prev', 'revenue_pct_prev',
-  'volume_prev', 'volume_per_loc_prev', 'volume_pct_prev',
-  'aov_prev', 'guests_prev', 'return_rate_prev', 'reorder_rate_prev',
-]);
-
-const BIKKY_DATE_COLS = new Set(['prev_period_start', 'prev_period_end']);
 
 export interface BikkyCsvRow {
   item_name: string;
@@ -67,11 +64,11 @@ export interface BikkyCsvRow {
   reorder_rate_prev: number | null;
 }
 
-function coerce(raw: string | undefined, col: string): string | number | null {
+function coerce(raw: string | undefined, kind: BikkyColSpec['kind']): string | number | null {
   const v = (raw ?? '').trim();
   if (!v) return null;
-  if (BIKKY_DATE_COLS.has(col)) return v; // ISO date string, e.g. '2024-09-02'
-  if (BIKKY_NUMERIC_COLS.has(col)) {
+  if (kind === 'date') return v; // ISO date string, e.g. '2024-09-02'
+  if (kind === 'numeric') {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   }
@@ -80,8 +77,8 @@ function coerce(raw: string | undefined, col: string): string | number | null {
 
 /**
  * Validates and parses a Bikky export CSV (In-Store or 3PD+Loyalty format).
- * Throws with a descriptive message if the header doesn't match the expected
- * export shape — this is the only integrity check left once Postgres's
+ * Throws with a descriptive message if no known alias of the item-name
+ * column is present — this is the only integrity check left once Postgres's
  * column types/NOT NULL constraints are out of the picture.
  */
 export function parseBikkyCsv(raw: string): BikkyCsvRow[] {
@@ -95,21 +92,33 @@ export function parseBikkyCsv(raw: string): BikkyCsvRow[] {
   if (records.length === 0) {
     throw new Error('CSV has no data rows');
   }
-  if (!('Item' in records[0])) {
-    throw new Error(`CSV header is missing the required "Item" column — got: ${Object.keys(records[0]).join(', ')}`);
+
+  // Resolve each target field to whichever alias this file's header actually
+  // uses (fields with no matching alias in this file just come back null).
+  const header = new Set(Object.keys(records[0]));
+  const resolved: Partial<Record<keyof typeof BIKKY_COL_SPECS, string>> = {};
+  for (const [dbCol, spec] of Object.entries(BIKKY_COL_SPECS)) {
+    const found = spec.aliases.find(a => header.has(a));
+    if (found) resolved[dbCol] = found;
+  }
+  if (!resolved.item_name) {
+    throw new Error(
+      `CSV header is missing an item-name column (expected one of: ${BIKKY_COL_SPECS.item_name.aliases.join(', ')}) — got: ${[...header].join(', ')}`,
+    );
   }
 
   const rows: BikkyCsvRow[] = [];
   for (const raw_ of records) {
     const row: Record<string, string | number | null> = {};
-    for (const [csvCol, dbCol] of Object.entries(BIKKY_COL_MAP)) {
-      row[dbCol] = coerce(raw_[csvCol], dbCol);
+    for (const [dbCol, spec] of Object.entries(BIKKY_COL_SPECS)) {
+      const srcCol = resolved[dbCol];
+      row[dbCol] = srcCol ? coerce(raw_[srcCol], spec.kind) : null;
     }
     if (row.item_name) rows.push(row as unknown as BikkyCsvRow);
   }
 
   if (rows.length === 0) {
-    throw new Error('CSV parsed but every row is missing an "Item" value');
+    throw new Error('CSV parsed but every row is missing an item-name value');
   }
   return rows;
 }
