@@ -331,6 +331,175 @@ function LocationStatusGrid({
   );
 }
 
+// ── Bikky data — upload/replace/delete the two R365 exports per period ─────
+// Commits straight to this repo's Data/Bikkydata/ via the GitHub Contents API
+// (see BIKKY_ADMIN_UPLOAD_PLAN.md) — no Postgres table involved. Replace =
+// delete the existing period's file then upload the new one (two commits,
+// by design — see the plan doc).
+type BikkySource = 'instore' | '3pd_loyalty';
+interface BikkyFileRow { source: BikkySource; name: string; path: string; period: number; fiscalYear: number }
+
+const BIKKY_SOURCE_LABEL: Record<BikkySource, string> = { instore: 'In-Store', '3pd_loyalty': '3PD + Loyalty' };
+
+function BikkyPanel() {
+  const [files, setFiles]     = useState<BikkyFileRow[] | null>(null);
+  const [listError, setListError] = useState('');
+
+  const [uploadType, setUploadType]   = useState<BikkySource>('instore');
+  const [uploadPeriod, setUploadPeriod] = useState('');
+  const [uploadYear, setUploadYear]     = useState('');
+  const [uploadFile, setUploadFile]     = useState<File | null>(null);
+  const [uploadBusy, setUploadBusy]     = useState(false);
+  const [uploadMsg, setUploadMsg]       = useState('');
+
+  const [deleting, setDeleting] = useState<string | null>(null); // path currently being deleted
+
+  const loadFiles = () => {
+    fetch('/api/admin/bikky')
+      .then(res => res.json())
+      .then(d => {
+        if (d.error) throw new Error(d.error);
+        const rows: BikkyFileRow[] = d.files;
+        rows.sort((a, b) => a.source.localeCompare(b.source) || b.fiscalYear - a.fiscalYear || b.period - a.period);
+        setFiles(rows);
+        setListError('');
+      })
+      .catch(e => setListError(e.message));
+  };
+
+  useEffect(loadFiles, []);
+
+  async function submitUpload(e: React.FormEvent) {
+    e.preventDefault();
+    if (!uploadFile) return;
+    setUploadBusy(true); setUploadMsg('');
+    try {
+      const form = new FormData();
+      form.set('type', uploadType);
+      form.set('period', uploadPeriod);
+      form.set('fiscal_year', uploadYear);
+      form.set('file', uploadFile);
+      const res = await fetch('/api/admin/bikky', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      setUploadMsg(data.replaced ? 'Replaced existing period.' : 'Uploaded.');
+      setUploadPeriod(''); setUploadYear(''); setUploadFile(null);
+      loadFiles();
+    } catch (err) {
+      setUploadMsg('Error: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setUploadBusy(false);
+    }
+  }
+
+  async function deleteFile(f: BikkyFileRow) {
+    if (!confirm(`Delete ${f.name}? This removes it from the repo — cannot be undone.`)) return;
+    setDeleting(f.path);
+    try {
+      const params = new URLSearchParams({ type: f.source, period: String(f.period), fiscal_year: String(f.fiscalYear) });
+      const res = await fetch(`/api/admin/bikky?${params}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Delete failed');
+      loadFiles();
+    } catch (err) {
+      alert('Error: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setDeleting(null);
+    }
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      <div style={card}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14, color: 'var(--text)' }}>
+          Upload new period
+        </div>
+        <form onSubmit={submitUpload} style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <label style={lbl}>Source</label>
+            <select style={inp} value={uploadType} onChange={e => setUploadType(e.target.value as BikkySource)}>
+              <option value="instore">In-Store</option>
+              <option value="3pd_loyalty">3PD + Loyalty</option>
+            </select>
+          </div>
+          <div style={{ width: 90 }}>
+            <label style={lbl}>Period</label>
+            <input style={inp} type="number" min={1} max={13} value={uploadPeriod}
+              onChange={e => setUploadPeriod(e.target.value)} placeholder="6" required />
+          </div>
+          <div style={{ width: 110 }}>
+            <label style={lbl}>Fiscal Year</label>
+            <input style={inp} type="number" value={uploadYear}
+              onChange={e => setUploadYear(e.target.value)} placeholder="2026" required />
+          </div>
+          <div>
+            <label style={lbl}>CSV file</label>
+            <input type="file" accept=".csv" required
+              onChange={e => setUploadFile(e.target.files?.[0] ?? null)} />
+          </div>
+          <button type="submit" disabled={uploadBusy || !uploadFile} style={{ ...btn('#059669'), opacity: uploadBusy ? 0.7 : 1 }}>
+            {uploadBusy ? 'Uploading…' : 'Upload'}
+          </button>
+          {uploadMsg && (
+            <span style={{ fontSize: 12, color: uploadMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{uploadMsg}</span>
+          )}
+        </form>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
+          Uploading a period that already exists replaces it (deletes the old file, commits the new one).
+        </div>
+      </div>
+
+      {listError && <div style={{ color: '#dc2626', padding: 10 }}>{listError}</div>}
+      {!files ? (
+        <div style={{ color: 'var(--muted)', padding: 20 }}>Loading uploaded periods…</div>
+      ) : (
+        (['instore', '3pd_loyalty'] as BikkySource[]).map(source => {
+          const rows = files.filter(f => f.source === source);
+          return (
+            <div key={source} style={card}>
+              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14, color: 'var(--text)' }}>
+                {BIKKY_SOURCE_LABEL[source]} ({rows.length})
+              </div>
+              {rows.length === 0 ? (
+                <div style={{ color: 'var(--muted)', fontSize: 13 }}>No periods uploaded yet.</div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid var(--border)' }}>
+                      {['Period', 'File', 'Actions'].map(h => (
+                        <th key={h} style={{ textAlign: 'left', padding: '6px 10px', fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase' }}>
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(f => (
+                      <tr key={f.path} style={{ borderBottom: '1px solid var(--border)' }}>
+                        <td style={{ padding: '10px 10px', color: 'var(--text)' }}>P{f.period} {f.fiscalYear}</td>
+                        <td style={{ padding: '10px 10px', color: 'var(--muted)', fontFamily: 'monospace', fontSize: 12 }}>{f.name}</td>
+                        <td style={{ padding: '10px 10px' }}>
+                          <button
+                            onClick={() => deleteFile(f)}
+                            disabled={deleting === f.path}
+                            style={{ ...btn('#dc2626'), padding: '4px 12px', fontSize: 12, borderRadius: 6, opacity: deleting === f.path ? 0.5 : 1 }}
+                          >
+                            {deleting === f.path ? 'Deleting…' : 'Delete'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 export default function AdminPanel({ currentEmail, currentRole }: { currentEmail: string | null; currentRole: UserRole }) {
   const [users, setUsers]       = useState<UserRow[] | null>(null);
   const [error, setError]       = useState('');
@@ -611,6 +780,14 @@ export default function AdminPanel({ currentEmail, currentRole }: { currentEmail
           )}
         </div>
       )}
+
+      <div style={{ marginTop: 28 }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: 'var(--text)' }}>Bikky Data</div>
+        <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 14 }}>
+          Upload, replace, or delete the In-Store and 3PD + Loyalty Bikky exports per period. Commits directly to this repo — see BIKKY_ADMIN_UPLOAD_PLAN.md.
+        </div>
+        <BikkyPanel />
+      </div>
     </div>
   );
 }

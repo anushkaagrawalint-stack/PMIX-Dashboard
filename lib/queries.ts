@@ -1,10 +1,12 @@
 import { Pool } from '@neondatabase/serverless';
-import { cacheLife } from 'next/cache';
+import { cacheLife, cacheTag } from 'next/cache';
 import {
   CHANNEL_SQL, CHANNEL_SQL_WITH_OVERRIDE, CHANNEL_OVERRIDE_JOIN_SQL,
   GRP_TO_CAT_SQL, ITEM_SUBCAT_SQL, GRP_TO_SUBCAT_SQL,
 } from './constants';
 import { modifierAliasCaseSQL } from './modifierCost';
+import { listDir, getFileRaw } from './github';
+import { parseBikkyCsv, bikkyFolderFor, parseBikkyFileName, type BikkySource } from './bikkyCsv';
 import type {
   DateRange, Summary, ChannelRow, WeekRow, DailyRow,
   WeeklyChannelRow, DailyChannelRow,
@@ -1985,37 +1987,71 @@ export async function getPaymentSourcesByLocation(dr: DateRange): Promise<Paymen
 }
 
 // ─── Bikky retention ─────────────────────────────────────────────────────────
-export async function getBikky(): Promise<BikkyRow[]> {
-  const db = pool();
-  try {
-    const { rows } = await db.query(`
-      SELECT item_name, return_rate, reorder_rate, return_rate_prev, reorder_rate_prev,
-             guests, fiscal_year, period, 'instore' AS source
-      FROM public.fact_bikky_instore
-      UNION ALL
-      SELECT item_name, return_rate, reorder_rate, return_rate_prev, reorder_rate_prev,
-             guests, fiscal_year, period, '3pd_loyalty' AS source
-      FROM public.fact_bikky_3pd_loyalty
-      ORDER BY fiscal_year DESC, period DESC, return_rate DESC NULLS LAST
-    `);
-    await db.end();
+// Reads git-committed CSVs directly (see BIKKY_ADMIN_UPLOAD_PLAN.md) — no
+// Postgres table involved. Returns every uploaded period across both sources,
+// same "no filter" shape as the old SQL version; CustomerRetention.tsx
+// filters/aggregates client-side. Invalidated via cacheTag('dashboard-data')
+// on loadDashboardData (this function has no cache directive of its own —
+// it inherits that scope) after an upload/delete in app/api/admin/bikky.
+type BikkyRowSortable = BikkyRow & { _period: number; _fiscalYear: number; _returnRateRaw: number | null };
 
-    return rows.map(r => ({
-      item_name:         r.item_name as string,
-      return_rate:       Number(r.return_rate       ?? 0),
-      reorder_rate:      Number(r.reorder_rate      ?? 0),
-      return_rate_prev:  Number(r.return_rate_prev  ?? 0),
-      reorder_rate_prev: Number(r.reorder_rate_prev ?? 0),
-      guests:            Number(r.guests            ?? 0),
-      period:            `P${r.period} ${r.fiscal_year}`,
-      source:            r.source as 'instore' | '3pd_loyalty',
+async function readBikkySource(source: BikkySource): Promise<BikkyRowSortable[]> {
+  const entries = await listDir(`Data/Bikkydata/${bikkyFolderFor(source)}`);
+  const csvFiles = entries.filter(e => e.type === 'file' && e.name.toLowerCase().endsWith('.csv'));
+
+  const perFile = await Promise.all(csvFiles.map(async (entry): Promise<BikkyRowSortable[]> => {
+    const stem = entry.name.replace(/\.csv$/i, '');
+    const parsed = parseBikkyFileName(stem, source);
+    if (!parsed) return [];
+
+    const raw = await getFileRaw(entry.path);
+    if (!raw) return [];
+
+    let csvRows;
+    try {
+      csvRows = parseBikkyCsv(raw);
+    } catch (err) {
+      console.error(`getBikky: skipping malformed ${entry.path}:`, err);
+      return [];
+    }
+
+    return csvRows.map(r => ({
+      item_name:         r.item_name,
+      return_rate:       r.return_rate       ?? 0,
+      reorder_rate:      r.reorder_rate      ?? 0,
+      return_rate_prev:  r.return_rate_prev  ?? 0,
+      reorder_rate_prev: r.reorder_rate_prev ?? 0,
+      guests:            r.guests            ?? 0,
+      period:            `P${parsed.period} ${parsed.fiscalYear}`,
+      source,
       category:          '',
       revenue:           0,
       qty:               0,
+      _period:           parsed.period,
+      _fiscalYear:       parsed.fiscalYear,
+      _returnRateRaw:    r.return_rate,
     }));
+  }));
+
+  return perFile.flat();
+}
+
+export async function getBikky(): Promise<BikkyRow[]> {
+  try {
+    const [instoreRows, del3pdRows] = await Promise.all([
+      readBikkySource('instore'),
+      readBikkySource('3pd_loyalty'),
+    ]);
+
+    return [...instoreRows, ...del3pdRows]
+      .sort((a, b) =>
+        (b._fiscalYear - a._fiscalYear) ||
+        (b._period - a._period) ||
+        // mirrors ORDER BY return_rate DESC NULLS LAST
+        ((b._returnRateRaw ?? -Infinity) - (a._returnRateRaw ?? -Infinity)))
+      .map(({ _period, _fiscalYear, _returnRateRaw, ...row }) => row);
   } catch (err) {
     console.error('getBikky error:', err);
-    await db.end().catch(() => {}); // connection may already be broken; don't let cleanup crash the request
     return [];
   }
 }
@@ -2990,6 +3026,7 @@ export async function loadDashboardData(
 ) {
   'use cache';
   cacheLife('hours');
+  cacheTag('dashboard-data');
   // Get date range + periods first so we can compute prev range for comparison
   const [dr, periods] = await Promise.all([
     getDateRange(override),
