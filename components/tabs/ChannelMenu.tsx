@@ -2,7 +2,7 @@
 import { useState, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { CHANNEL_LABEL, CHANNEL_COLOR, normalizeCategory } from '@/lib/constants';
-import type { DashboardData } from '@/lib/types';
+import type { DashboardData, MakeItMealModifierRow } from '@/lib/types';
 
 const HBarChart = dynamic(() => import('../charts/HBarChart'), { ssr: false });
 
@@ -12,8 +12,11 @@ type SortKey = string; // 'total' or any channel code
 
 const CH_ORDER = ['IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP', 'CATERING', 'CATERING_3PD', 'OFFSITE', 'OPEN_ITEMS'];
 
-// These channels use menu_group as primary breakdown (vendor names) instead of category
-const MENU_GROUP_CHANNELS = new Set(['APP', 'CATERING', 'CATERING_3PD', 'OFFSITE']);
+// These channels use menu_group as primary breakdown (vendor names) instead of
+// category. APP (RASA Digital) was here too, but its menu_group values are
+// real menu categories (SIDES, DRINKS, CHEF CURATED BOWLS, ...), not vendor
+// names — so it now shows canonical item names like In-House/3PD instead.
+const MENU_GROUP_CHANNELS = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE']);
 
 const thC: React.CSSProperties = { textAlign: 'center', fontSize: 9, color: 'var(--muted)', fontWeight: 600, padding: '0 4px 6px' };
 const tdC: React.CSSProperties = { textAlign: 'center', padding: '4px' };
@@ -29,13 +32,14 @@ function SectionLabel({ label }: { label: string }) {
   );
 }
 
-export default function ChannelMenu({ data }: { data: DashboardData }) {
+export default function ChannelMenu({ data, makeItMealModifiers }: { data: DashboardData; makeItMealModifiers: MakeItMealModifierRow[] }) {
   const { channels, channelItems, channelCategories } = data;
 
   const [sort, setSort]       = useState<SortKey>('total');
   const [desc, setDesc]       = useState(true);
   const [topView, setTopView] = useState<'pct' | 'exact'>('pct');
   const [showBottom, setShowBottom] = useState(false);
+  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(false);
 
   function toggleSort(key: SortKey) {
     if (sort === key) setDesc(d => !d);
@@ -43,13 +47,31 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
   }
   const arrow = (key: SortKey) => sort === key ? (desc ? ' ↓' : ' ↑') : '';
 
+  // canonical_name|channel → make-it-a-meal qty + real price (fact_modifiers.price).
+  // `makeItMealModifiers` here is only location-filtered, not category-filtered
+  // (see Dashboard.tsx's locationFilteredMakeItMealModifiers), so this only ever
+  // adds price onto rows that already exist in channelItems/data.items — those are
+  // pre-scoped by category upstream. Unlike ItemMix/Overview, this tab does NOT
+  // synthesize new modifier-only rows, since it has no categoryFilter of its own
+  // to correctly scope one (a wrong category could otherwise leak through).
+  const makeItMealMap = useMemo(() => {
+    const m = new Map<string, { qty: number; price: number }>();
+    makeItMealModifiers.forEach(r => {
+      const key = `${r.canonical_name}|${r.channel}`;
+      const ex  = m.get(key) ?? { qty: 0, price: 0 };
+      m.set(key, { qty: ex.qty + r.qty, price: ex.price + r.price });
+    });
+    return m;
+  }, [makeItMealModifiers]);
+
   // Per-channel KPI aggregates from channelItems (already channel+category filtered by Dashboard)
   const kpiByChannel = useMemo(() => {
     const agg = new Map<string, { revenue: number; qty: number }>();
     channelItems.forEach(ci => {
+      const mm = includeMakeItMeal ? makeItMealMap.get(`${ci.canonical_name}|${ci.channel}`) : undefined;
       const e = agg.get(ci.channel) ?? { revenue: 0, qty: 0 };
-      e.revenue += ci.revenue;
-      e.qty     += ci.qty;
+      e.revenue += ci.revenue + (mm?.price ?? 0);
+      e.qty     += ci.qty     + (mm?.qty   ?? 0);
       agg.set(ci.channel, e);
     });
     const totalRev = [...agg.values()].reduce((s, v) => s + v.revenue, 0);
@@ -58,23 +80,39 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
       result.set(ch, { ...v, pct: totalRev > 0 ? ((v.revenue / totalRev) * 100).toFixed(1) : '0.0' });
     });
     return result;
-  }, [channelItems]);
+  }, [channelItems, makeItMealMap, includeMakeItMeal]);
+
+  // Per-channel modifier-pick qty total — purely for the KPI cards' "+X from
+  // Make It a Meal" note text. qty itself is already combined above/below
+  // (kpiByChannel, topByChannel, mgTopByChannel all fold it in directly), so
+  // this is never added a second time.
+  const channelMakeItMealQty = useMemo(() => {
+    const m = new Map<string, number>();
+    if (!includeMakeItMeal) return m;
+    makeItMealMap.forEach((v, key) => {
+      const channel = key.slice(key.lastIndexOf('|') + 1);
+      m.set(channel, (m.get(channel) ?? 0) + v.qty);
+    });
+    return m;
+  }, [makeItMealMap, includeMakeItMeal]);
 
   // Top items per channel — for non-MG channels
   const topByChannel = useMemo(() => {
     const chanRev: Record<string, number> = {};
     const chanQty: Record<string, number> = {};
     channelItems.forEach(r => {
-      chanRev[r.channel] = (chanRev[r.channel] ?? 0) + r.revenue;
-      chanQty[r.channel] = (chanQty[r.channel] ?? 0) + r.qty;
+      const mm = includeMakeItMeal ? makeItMealMap.get(`${r.canonical_name}|${r.channel}`) : undefined;
+      chanRev[r.channel] = (chanRev[r.channel] ?? 0) + r.revenue + (mm?.price ?? 0);
+      chanQty[r.channel] = (chanQty[r.channel] ?? 0) + r.qty     + (mm?.qty   ?? 0);
     });
 
     const grouped: Record<string, Record<string, { rev: number; qty: number }>> = {};
     channelItems.forEach(r => {
+      const mm = includeMakeItMeal ? makeItMealMap.get(`${r.canonical_name}|${r.channel}`) : undefined;
       if (!grouped[r.channel]) grouped[r.channel] = {};
       const e = grouped[r.channel][r.canonical_name] ?? { rev: 0, qty: 0 };
-      e.rev += r.revenue;
-      e.qty += r.qty;
+      e.rev += r.revenue + (mm?.price ?? 0);
+      e.qty += r.qty     + (mm?.qty   ?? 0);
       grouped[r.channel][r.canonical_name] = e;
     });
 
@@ -95,7 +133,7 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
         }));
     });
     return map;
-  }, [channelItems, showBottom]);
+  }, [channelItems, showBottom, makeItMealMap, includeMakeItMeal]);
 
   // Menu-group distribution for MG channels (uses data.items which has menu_group)
   const menuGroupByChannel = useMemo(() => {
@@ -103,15 +141,16 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
     data.items.forEach(item => {
       const ch = item.channel;
       if (!MENU_GROUP_CHANNELS.has(ch)) return;
+      const added = includeMakeItMeal ? (makeItMealMap.get(`${item.canonical_name}|${ch}`)?.price ?? 0) : 0;
       const g = item.menu_group || 'Other';
       if (!map[ch]) map[ch] = [];
       const existing = map[ch].find(e => e.name === g);
-      if (existing) existing.value += item.gross_sales;
-      else map[ch].push({ name: g, value: item.gross_sales });
+      if (existing) existing.value += item.gross_sales + added;
+      else map[ch].push({ name: g, value: item.gross_sales + added });
     });
     Object.values(map).forEach(groups => groups.sort((a, b) => b.value - a.value));
     return map;
-  }, [data.items]);
+  }, [data.items, makeItMealMap, includeMakeItMeal]);
 
   // Top menu-groups per MG channel (for the table section)
   const mgTopByChannel = useMemo(() => {
@@ -119,10 +158,11 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
     MENU_GROUP_CHANNELS.forEach(ch => {
       const groups: Record<string, { rev: number; qty: number }> = {};
       data.items.filter(i => i.channel === ch).forEach(item => {
+        const mm = includeMakeItMeal ? makeItMealMap.get(`${item.canonical_name}|${ch}`) : undefined;
         const g = item.menu_group || 'Other';
         const e = groups[g] ?? { rev: 0, qty: 0 };
-        e.rev += item.gross_sales;
-        e.qty += item.qty;
+        e.rev += item.gross_sales + (mm?.price ?? 0);
+        e.qty += item.qty         + (mm?.qty   ?? 0);
         groups[g] = e;
       });
       const totalRev = Object.values(groups).reduce((s, v) => s + v.rev, 0);
@@ -139,18 +179,23 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
         }));
     });
     return map;
-  }, [data.items, showBottom]);
+  }, [data.items, showBottom, makeItMealMap, includeMakeItMeal]);
 
   // Revenue by channel bar
   const menuRevBar = useMemo(() => {
     const map: Record<string, number> = {};
-    channelItems.forEach(r => { map[r.channel] = (map[r.channel] ?? 0) + r.revenue; });
+    channelItems.forEach(r => {
+      const added = includeMakeItMeal ? (makeItMealMap.get(`${r.canonical_name}|${r.channel}`)?.price ?? 0) : 0;
+      map[r.channel] = (map[r.channel] ?? 0) + r.revenue + added;
+    });
     return Object.entries(map)
       .sort((a, b) => b[1] - a[1])
       .map(([name, value]) => ({ name: CHANNEL_LABEL[name] ?? name, value }));
-  }, [channelItems]);
+  }, [channelItems, makeItMealMap, includeMakeItMeal]);
 
-  // Per-channel category breakdown (for non-MG channels)
+  // Per-channel category breakdown (for non-MG channels) — NOT adjusted for Make
+  // It a Meal: channelCategories has no canonical_name, so there's no join key
+  // to attach the modifier's price to (category totals stay revenue-as-loaded).
   const catByChannel = useMemo(() => {
     const map: Record<string, Array<{ name: string; value: number }>> = {};
     channelCategories.forEach(cc => {
@@ -190,12 +235,13 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
   const itemData = useMemo(() => {
     const map = new Map<string, { name: string; byChannel: Record<string, number>; total: number }>();
     channelItems.forEach(ci => {
+      const added = includeMakeItMeal ? (makeItMealMap.get(`${ci.canonical_name}|${ci.channel}`)?.price ?? 0) : 0;
       if (!map.has(ci.canonical_name)) {
         map.set(ci.canonical_name, { name: ci.canonical_name, byChannel: {}, total: 0 });
       }
       const item = map.get(ci.canonical_name)!;
-      item.byChannel[ci.channel] = (item.byChannel[ci.channel] ?? 0) + ci.revenue;
-      item.total += ci.revenue;
+      item.byChannel[ci.channel] = (item.byChannel[ci.channel] ?? 0) + ci.revenue + added;
+      item.total += ci.revenue + added;
     });
     return [...map.values()]
       .sort((a, b) => {
@@ -205,7 +251,7 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
         return mul * (av - bv);
       })
       .slice(0, 50);
-  }, [channelItems, sort, desc]);
+  }, [channelItems, sort, desc, makeItMealMap, includeMakeItMeal]);
 
   // Split activeChannels into rows of 3
   const topItemRows: typeof activeChannels[] = [];
@@ -217,11 +263,16 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
 
   return (
     <div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, cursor: 'pointer', marginBottom: 8 }}>
+        <input type="checkbox" checked={includeMakeItMeal} onChange={e => setIncludeMakeItMeal(e.target.checked)} />
+        Include &quot;Make It a Meal&quot; picks in Revenue (adds the modifier&apos;s own real price from fact_modifiers; category breakdown charts are unaffected — no per-item join key there)
+      </label>
 
       {/* ── Row 1: KPI cards ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 10 }}>
         {channels.map(ch => {
-          const kpi = kpiByChannel.get(ch.channel) ?? { revenue: 0, qty: 0, pct: '0.0' };
+          const kpi    = kpiByChannel.get(ch.channel) ?? { revenue: 0, qty: 0, pct: '0.0' };
+          const mimQty = channelMakeItMealQty.get(ch.channel) ?? 0;
           return (
             <div
               key={ch.channel}
@@ -231,6 +282,7 @@ export default function ChannelMenu({ data }: { data: DashboardData }) {
               <div className="kl">{CHANNEL_LABEL[ch.channel] ?? ch.channel}</div>
               <div className="kv">{fmt$(kpi.revenue)}</div>
               <div className="ks">{kpi.pct}% of total · {kpi.qty.toLocaleString()} sold</div>
+              {mimQty > 0 && <div className="ks">+{mimQty.toLocaleString()} from Make It a Meal</div>}
             </div>
           );
         })}

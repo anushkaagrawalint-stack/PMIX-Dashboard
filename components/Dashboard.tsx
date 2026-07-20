@@ -479,6 +479,21 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
     });
   }, [selectedChannels, categoryFilter, data.locationItems, itemMetaMap]);
 
+  // Same channel+category scoping as filteredLocationItems (NOT selectedLocations —
+  // LocationCompare compares across every location regardless of the global location
+  // filter, via its own selectedLocs UI state) — feeds LocationCompare's own Make It
+  // a Meal checkbox, which needs the same channel/category boundary its item rows already have.
+  const channelCategoryFilteredMakeItMealModifiers = useMemo(() => {
+    if (selectedChannels.length === 0 && categoryFilter === 'all') return data.makeItMealModifiers;
+    return data.makeItMealModifiers.filter(m => {
+      if (selectedChannels.length > 0 && !selectedChannels.includes(m.channel)) return false;
+      if (categoryFilter !== 'all') {
+        return normCat(itemMetaMap.get(m.canonical_name)?.category) === categoryFilter;
+      }
+      return true;
+    });
+  }, [selectedChannels, categoryFilter, data.makeItMealModifiers, itemMetaMap]);
+
   // ME items — channel-specific recompute following SOP formula chain. Also runs
   // (with the full IH+LO+3PD channel set) whenever a location filter is active, so
   // qty/net_sales/cost genuinely rescale to the location's share (via
@@ -651,8 +666,14 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
     return data.makeItMealModifiers.filter(m => selectedLocations.includes(m.location_code));
   }, [data.makeItMealModifiers, selectedLocations]);
 
-  // Find the most recent fiscal period that overlaps the selected date range
+  // Find the most recent fiscal period that overlaps the selected date range.
+  // DatePicker's fiscal YTD button sets dr.label to e.g. 'YTD 2026' directly —
+  // that already matches getBikky()'s bikkyPeriodLabel() for an uploaded YTD
+  // file 1:1, so use it as-is instead of computing period overlap (a YTD
+  // range spans every period in the year, so overlap would just pick the
+  // last one and miss the uploaded YTD row entirely).
   const activeBikkyPeriod = useMemo(() => {
+    if (/^YTD \d{4}$/.test(dr.label)) return dr.label;
     const overlapping = data.periods.filter(
       p => dr.start <= p.end_date && dr.end >= p.start_date,
     );
@@ -731,7 +752,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       <div className="fb">
         <div className="fb-r">
           <span className="fb-lbl">Date range</span>
-          <DatePicker dr={dr} periods={data.periods} />
+          <DatePicker dr={dr} periods={data.periods} periodsOnly={tab === 'bikky'} />
           {showCh && (
             <>
               <div className="fb-sep" />
@@ -857,14 +878,14 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       </div>{/* end sticky-bar */}
 
       {/* ── TAB CONTENT ── */}
-      {tab === 'overview'   && <Overview         data={filteredData} selectedChannels={selectedChannels} categoryFilter={categoryFilter} selectedLocations={selectedLocations} />}
+      {tab === 'overview'   && <Overview         data={filteredData} selectedChannels={selectedChannels} categoryFilter={categoryFilter} selectedLocations={selectedLocations} makeItMealModifiers={locationFilteredMakeItMealModifiers} />}
       {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} itemCosts={locationFilteredItemCosts} makeItMealModifiers={locationFilteredMakeItMealModifiers} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
       {/* entreemix/byo/meoverall/pinksheets: location dropdown commented out pending v2
           validation — always pass blended, all-location data here regardless of the
           global location filter (the location-scaled memos stay wired for itemmix). */}
       {tab === 'entreemix'  && <EntreeMix        pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} meItems={data.meItems} />}
-      {tab === 'loccompare' && <LocationCompare  data={filteredData} />}
-      {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} />}
+      {tab === 'loccompare' && <LocationCompare  data={filteredData} makeItMealModifiers={channelCategoryFilteredMakeItMealModifiers} />}
+      {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} makeItMealModifiers={locationFilteredMakeItMealModifiers} />}
       {tab === 'byo'        && visibleTabs.includes('byo')        && <BYOBreakdown modifiers={data.modifiers} items={data.items} pinkSheets={data.pinkSheets} meItems={data.meItems} selectedLocations={[]} />}
       {tab === 'payment'    && <PaymentSource    payments={data.payments} paymentsByLocation={data.paymentsByLocation} paymentSourcesByLocation={data.paymentSourcesByLocation} selectedLocations={selectedLocations} />}
       {tab === 'meoverall'  && <MEOverall meItems={data.meItems} pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} itemCosts={data.itemCosts} role={role} />}

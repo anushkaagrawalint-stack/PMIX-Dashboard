@@ -337,7 +337,13 @@ function LocationStatusGrid({
 // delete the existing period's file then upload the new one (two commits,
 // by design — see the plan doc).
 type BikkySource = 'instore' | '3pd_loyalty';
-interface BikkyFileRow { source: BikkySource; name: string; path: string; period: number; fiscalYear: number }
+interface BikkyFileRow { source: BikkySource; name: string; path: string; period: number | 'YTD'; fiscalYear: number }
+
+// 'YTD' sorts after every discrete period within its fiscal year — it's the
+// cumulative whole-year figure, shown as the "last" bucket. Mirrors the same
+// convention in lib/queries.ts's getBikky().
+const periodSortKey = (p: number | 'YTD') => p === 'YTD' ? 999 : p;
+const periodLabel    = (p: number | 'YTD') => p === 'YTD' ? 'YTD' : `P${p}`;
 
 const BIKKY_SOURCE_LABEL: Record<BikkySource, string> = { instore: 'In-Store', '3pd_loyalty': '3PD + Loyalty' };
 
@@ -346,6 +352,7 @@ function BikkyPanel() {
   const [listError, setListError] = useState('');
 
   const [uploadType, setUploadType]   = useState<BikkySource>('instore');
+  const [uploadIsYtd, setUploadIsYtd]   = useState(false);
   const [uploadPeriod, setUploadPeriod] = useState('');
   const [uploadYear, setUploadYear]     = useState('');
   const [uploadFile, setUploadFile]     = useState<File | null>(null);
@@ -360,7 +367,7 @@ function BikkyPanel() {
       .then(d => {
         if (d.error) throw new Error(d.error);
         const rows: BikkyFileRow[] = d.files;
-        rows.sort((a, b) => a.source.localeCompare(b.source) || b.fiscalYear - a.fiscalYear || b.period - a.period);
+        rows.sort((a, b) => a.source.localeCompare(b.source) || b.fiscalYear - a.fiscalYear || periodSortKey(b.period) - periodSortKey(a.period));
         setFiles(rows);
         setListError('');
       })
@@ -376,7 +383,7 @@ function BikkyPanel() {
     try {
       const form = new FormData();
       form.set('type', uploadType);
-      form.set('period', uploadPeriod);
+      form.set('period', uploadIsYtd ? 'YTD' : uploadPeriod);
       form.set('fiscal_year', uploadYear);
       form.set('file', uploadFile);
       const res = await fetch('/api/admin/bikky', { method: 'POST', body: form });
@@ -424,14 +431,19 @@ function BikkyPanel() {
           </div>
           <div style={{ width: 90 }}>
             <label style={lbl}>Period</label>
-            <input style={inp} type="number" min={1} max={13} value={uploadPeriod}
-              onChange={e => setUploadPeriod(e.target.value)} placeholder="6" required />
+            <input style={{ ...inp, opacity: uploadIsYtd ? 0.5 : 1 }} type="number" min={1} max={13} value={uploadPeriod}
+              onChange={e => setUploadPeriod(e.target.value)} placeholder="6" required={!uploadIsYtd} disabled={uploadIsYtd} />
           </div>
           <div style={{ width: 110 }}>
             <label style={lbl}>Fiscal Year</label>
             <input style={inp} type="number" value={uploadYear}
               onChange={e => setUploadYear(e.target.value)} placeholder="2026" required />
           </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)', paddingBottom: 8, cursor: 'pointer' }}>
+            <input type="checkbox" checked={uploadIsYtd}
+              onChange={e => setUploadIsYtd(e.target.checked)} />
+            YTD (cumulative, no period #)
+          </label>
           <div>
             <label style={lbl}>CSV file</label>
             <input type="file" accept=".csv" required
@@ -476,7 +488,7 @@ function BikkyPanel() {
                   <tbody>
                     {rows.map(f => (
                       <tr key={f.path} style={{ borderBottom: '1px solid var(--border)' }}>
-                        <td style={{ padding: '10px 10px', color: 'var(--text)' }}>P{f.period} {f.fiscalYear}</td>
+                        <td style={{ padding: '10px 10px', color: 'var(--text)' }}>{periodLabel(f.period)} {f.fiscalYear}</td>
                         <td style={{ padding: '10px 10px', color: 'var(--muted)', fontFamily: 'monospace', fontSize: 12 }}>{f.name}</td>
                         <td style={{ padding: '10px 10px' }}>
                           <button

@@ -144,24 +144,36 @@ export function parseBikkyCsv(raw: string): BikkyCsvRow[] {
   return rows;
 }
 
-// Matches the Python loader's period_pattern regexes exactly.
+// Matches the Python loader's period_pattern regexes exactly, plus a YTD
+// variant (cumulative year-to-date export, no period number) added for the
+// dashboard's own upload UI — the Python loader never handled these.
 const INSTORE_NAME_RE = /^P(\d{2})(\d{4})IS$/i;
 const DEL3PD_NAME_RE  = /^P(\d{2})(\d{4})Del$/i;
+const INSTORE_YTD_RE  = /^YTD(\d{4})IS$/i;
+const DEL3PD_YTD_RE   = /^YTD(\d{4})Del$/i;
 
 export type BikkySource = 'instore' | '3pd_loyalty';
+export type BikkyPeriod = { period: number; fiscalYear: number } | { period: 'YTD'; fiscalYear: number };
 
-export function bikkyFileNameFor(source: BikkySource, period: number, fiscalYear: number): string {
-  const pp = String(period).padStart(2, '0');
-  return source === 'instore' ? `P${pp}${fiscalYear}IS.csv` : `P${pp}${fiscalYear}Del.csv`;
+export function bikkyFileNameFor(source: BikkySource, period: number | 'YTD', fiscalYear: number): string {
+  const stem = period === 'YTD' ? `YTD${fiscalYear}` : `P${String(period).padStart(2, '0')}${fiscalYear}`;
+  return source === 'instore' ? `${stem}IS.csv` : `${stem}Del.csv`;
 }
 
 export function bikkyFolderFor(source: BikkySource): string {
   return source === 'instore' ? 'InStore' : '3PD+Loyalty';
 }
 
-/** Parses {period, fiscal_year} out of a Bikky filename stem (no extension). */
-export function parseBikkyFileName(stem: string, source: BikkySource): { period: number; fiscalYear: number } | null {
+/** Parses {period, fiscalYear} out of a Bikky filename stem (no extension). period is 'YTD' for the cumulative file. */
+export function parseBikkyFileName(stem: string, source: BikkySource): BikkyPeriod | null {
   const m = stem.match(source === 'instore' ? INSTORE_NAME_RE : DEL3PD_NAME_RE);
-  if (!m) return null;
-  return { period: Number(m[1]), fiscalYear: Number(m[2]) };
+  if (m) return { period: Number(m[1]), fiscalYear: Number(m[2]) };
+  const y = stem.match(source === 'instore' ? INSTORE_YTD_RE : DEL3PD_YTD_RE);
+  if (y) return { period: 'YTD', fiscalYear: Number(y[1]) };
+  return null;
+}
+
+/** Builds the BikkyRow.period display label for a parsed {period, fiscalYear} — 'P5 2026' or 'YTD 2026'. */
+export function bikkyPeriodLabel(p: BikkyPeriod): string {
+  return p.period === 'YTD' ? `YTD ${p.fiscalYear}` : `P${p.period} ${p.fiscalYear}`;
 }

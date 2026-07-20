@@ -14,6 +14,13 @@ function isValidSource(v: unknown): v is BikkySource {
   return typeof v === 'string' && (VALID_SOURCES as string[]).includes(v);
 }
 
+// 'YTD' (cumulative year-to-date export) or an integer fiscal period 1-13.
+function parsePeriodParam(raw: FormDataEntryValue | string | null): number | 'YTD' | null {
+  if (raw === 'YTD') return 'YTD';
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= 13 ? n : null;
+}
+
 async function requireAdmin(req: NextRequest) {
   const token   = req.cookies.get(COOKIE)?.value;
   const payload = token ? await verifyToken(token) : null;
@@ -55,15 +62,15 @@ export async function POST(req: NextRequest) {
 
   const form   = await req.formData().catch(() => null);
   const source = form?.get('type');
-  const period = Number(form?.get('period'));
+  const period = parsePeriodParam(form?.get('period') ?? null);
   const fiscalYear = Number(form?.get('fiscal_year'));
   const file   = form?.get('file');
 
   if (!isValidSource(source)) {
     return NextResponse.json({ error: 'type must be "instore" or "3pd_loyalty"' }, { status: 400 });
   }
-  if (!Number.isInteger(period) || period < 1 || period > 13) {
-    return NextResponse.json({ error: 'period must be an integer 1-13' }, { status: 400 });
+  if (period === null) {
+    return NextResponse.json({ error: 'period must be "YTD" or an integer 1-13' }, { status: 400 });
   }
   if (!Number.isInteger(fiscalYear) || fiscalYear < 2000) {
     return NextResponse.json({ error: 'fiscal_year must be a valid year' }, { status: 400 });
@@ -105,14 +112,14 @@ export async function DELETE(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const source = searchParams.get('type');
-  const period = Number(searchParams.get('period'));
+  const period = parsePeriodParam(searchParams.get('period'));
   const fiscalYear = Number(searchParams.get('fiscal_year'));
 
   if (!isValidSource(source)) {
     return NextResponse.json({ error: 'type must be "instore" or "3pd_loyalty"' }, { status: 400 });
   }
-  if (!Number.isInteger(period) || !Number.isInteger(fiscalYear)) {
-    return NextResponse.json({ error: 'period and fiscal_year are required' }, { status: 400 });
+  if (period === null || !Number.isInteger(fiscalYear)) {
+    return NextResponse.json({ error: 'period (\"YTD\" or 1-13) and fiscal_year are required' }, { status: 400 });
   }
 
   const path = `${BIKKY_ROOT}/${bikkyFolderFor(source)}/${bikkyFileNameFor(source, period, fiscalYear)}`;

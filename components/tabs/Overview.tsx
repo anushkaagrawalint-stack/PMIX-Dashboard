@@ -2,7 +2,7 @@
 import { useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { CHANNEL_LABEL, CHANNEL_COLOR, normalizeCategory } from '@/lib/constants';
-import type { DashboardData } from '@/lib/types';
+import type { DashboardData, MakeItMealModifierRow } from '@/lib/types';
 
 const WeeklyChart   = dynamic(() => import('../charts/WeeklyChart'),   { ssr: false });
 const ChannelDonut  = dynamic(() => import('../charts/ChannelDonut'),  { ssr: false });
@@ -17,6 +17,7 @@ interface Props {
   selectedChannels: string[];
   categoryFilter: string;
   selectedLocations: string[];
+  makeItMealModifiers: MakeItMealModifierRow[];
 }
 
 function DeltaBadge({
@@ -42,17 +43,48 @@ function DeltaBadge({
 
 const mapCat = normalizeCategory;
 
-export default function Overview({ data, selectedChannels, categoryFilter, selectedLocations }: Props) {
+export default function Overview({ data, selectedChannels, categoryFilter, selectedLocations, makeItMealModifiers }: Props) {
   const { summary, prevSummary, prevLabel, weekly, daily, periods, items, avgMargin,
           channelItems, weeklyByChannel, dailyByChannel,
           prevChannelItems, prevMEItems } = data;
 
+  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(false);
+  // isFiltered already forces every KPI onto the client-computed (kpiItems) path
+  // instead of the server-precomputed `summary` totals — Make It a Meal needs the
+  // same treatment, since `summary.net_revenue` has no per-item hook to add the
+  // modifier's price into. See ItemMix.tsx for the same qty-untouched, $-figures-
+  // only convention this mirrors.
   const isFiltered = selectedChannels.length > 0 || categoryFilter !== 'all';
+  const useComputedKpis = isFiltered || includeMakeItMeal;
   // channelItems/prevChannelItems/prevMEItems arrive from Dashboard.tsx already filtered
   // by the active channel/category/location selections, so deltas stay comparable
   // (filtered-vs-filtered) even while a filter is active.
   const showDelta = prevLabel !== null;
   const [showBottom, setShowBottom] = useState(false);
+
+  // canonical_name|channel → total "make it a meal" modifier-pick qty + the
+  // modifier's own real price (fact_modifiers.price) — same source/shape ItemMix uses.
+  const makeItMealMap = useMemo(() => {
+    const m = new Map<string, { qty: number; price: number }>();
+    makeItMealModifiers.forEach(r => {
+      const key = `${r.canonical_name}|${r.channel}`;
+      const ex  = m.get(key) ?? { qty: 0, price: 0 };
+      m.set(key, { qty: ex.qty + r.qty, price: ex.price + r.price });
+    });
+    return m;
+  }, [makeItMealModifiers]);
+
+  // Descriptive fields borrowed by canonical_name — needed for a synthetic row
+  // when a Make It a Meal pick has no standalone line of its own in that channel.
+  const descriptorByName = useMemo(() => {
+    const m = new Map<string, { menu_name: string; menu_group: string; category: string; sub_category: string }>();
+    items.forEach(i => {
+      if (!m.has(i.canonical_name)) {
+        m.set(i.canonical_name, { menu_name: i.menu_name, menu_group: i.menu_group, category: i.category, sub_category: i.sub_category });
+      }
+    });
+    return m;
+  }, [items]);
 
   // canonical_name → is_open_item, used to exclude open items from unique-item counts
   // (ChannelItemRow itself has no is_open_item field, so this comes from `items`).
@@ -103,7 +135,7 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
   }, [daily, dailyByChannel, selectedChannels, selectedLocations, categoryFilter]);
 
   // Top-8 items filtered by channel + category
-  const effectiveItems = useMemo(() => {
+  const baseEffectiveItems = useMemo(() => {
     if (selectedChannels.length === 0) return items;
     const meta = new Map(items.map(i => [i.canonical_name, i]));
     const agg  = new Map<string, { qty: number; revenue: number; refunds: number }>();
@@ -126,6 +158,53 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
       net_after_refunds: Math.round((revenue - refunds) * 100) / 100,
     }));
   }, [selectedChannels, items, channelItems]);
+
+  // Folds the Make It a Meal modifier price into revenue/net_after_refunds for
+  // matching (canonical_name, channel) rows, and — same as ItemMix — adds a
+  // synthetic row for a modifier-only pick that has no standalone line at all
+  // in that channel (e.g. Naan picked as a Catering meal add-on). qty is left
+  // untouched, matching ItemMix's convention that this is a $-figures-only toggle.
+  const effectiveItems = useMemo(() => {
+    const addedRevenue = (name: string, channel: string) =>
+      includeMakeItMeal ? (makeItMealMap.get(`${name}|${channel}`)?.price ?? 0) : 0;
+
+    const rows = baseEffectiveItems.map(i => {
+      const added = addedRevenue(i.canonical_name, i.channel);
+      return added === 0 ? i : {
+        ...i,
+        revenue: i.revenue + added,
+        net_after_refunds: i.net_after_refunds + added,
+      };
+    });
+
+    if (includeMakeItMeal) {
+      const existingKeys = new Set(baseEffectiveItems.map(i => `${i.canonical_name}|${i.channel}`));
+      makeItMealMap.forEach((mm, key) => {
+        if (existingKeys.has(key)) return;
+        const sep    = key.lastIndexOf('|');
+        const name   = key.slice(0, sep);
+        const channel = key.slice(sep + 1);
+        const desc   = descriptorByName.get(name);
+        rows.push({
+          canonical_name: name,
+          menu_name:      desc?.menu_name   ?? '',
+          menu_group:     desc?.menu_group  ?? '',
+          channel,
+          category:       desc?.category     ?? 'Other',
+          sub_category:   desc?.sub_category ?? '',
+          qty:            0,
+          revenue:        mm.price,
+          avg_price:      0,
+          revenue_pct:    0,
+          qty_pct:        0,
+          is_open_item:   false,
+          refunds:            0,
+          net_after_refunds:  mm.price,
+        });
+      });
+    }
+    return rows;
+  }, [baseEffectiveItems, makeItMealMap, includeMakeItMeal, descriptorByName]);
 
   const top8 = useMemo(() => {
     const seen = new Map<string, { revenue: number; qty: number; category: string }>();
@@ -178,6 +257,8 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
   // Derived from channelItems (already channel+category+location filtered by
   // Dashboard.tsx) rather than the coarser `channels` field, which has no category
   // dimension at all — that's what made this table ignore the category filter.
+  // Also folds in Make It a Meal revenue per channel (channelItems has no
+  // canonical_name-level view here, so the add-on is summed straight per channel).
   const effectiveChannels = useMemo(() => {
     const map = new Map<string, { qty: number; revenue: number }>();
     channelItems.forEach(ci => {
@@ -186,11 +267,20 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
       e.revenue += ci.revenue;
       map.set(ci.channel, e);
     });
+    if (includeMakeItMeal) {
+      makeItMealMap.forEach((mm, key) => {
+        const channel = key.slice(key.lastIndexOf('|') + 1);
+        const e = map.get(channel) ?? { qty: 0, revenue: 0 };
+        e.revenue += mm.price;
+        e.qty     += mm.qty;
+        map.set(channel, e);
+      });
+    }
     const total = [...map.values()].reduce((s, v) => s + v.revenue, 0);
     return [...map.entries()]
       .map(([channel, { qty, revenue }]) => ({ channel, qty, revenue, pct: total > 0 ? Math.round((revenue / total) * 1000) / 10 : 0 }))
       .sort((a, b) => b.revenue - a.revenue);
-  }, [channelItems]);
+  }, [channelItems, makeItMealMap, includeMakeItMeal]);
 
   // Items after both channel and category filter — basis for all KPI cards
   const kpiItems = useMemo(() => {
@@ -204,23 +294,44 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
   // exact per-item refunds too — total_revenue is intentionally left alone
   // elsewhere (other tabs still consume the pre-refund figure).
   const kpiRevenue = useMemo(() =>
-    isFiltered ? kpiItems.reduce((s, i) => s + i.net_after_refunds, 0) : summary.net_revenue,
-  [isFiltered, kpiItems, summary]);
+    useComputedKpis ? kpiItems.reduce((s, i) => s + i.net_after_refunds, 0) : summary.net_revenue,
+  [useComputedKpis, kpiItems, summary]);
 
   const kpiRefunds = useMemo(() =>
-    isFiltered ? kpiItems.reduce((s, i) => s + i.refunds, 0) : summary.refunds,
-  [isFiltered, kpiItems, summary]);
+    useComputedKpis ? kpiItems.reduce((s, i) => s + i.refunds, 0) : summary.refunds,
+  [useComputedKpis, kpiItems, summary]);
 
   const kpiQty = useMemo(() =>
-    isFiltered ? kpiItems.reduce((s, i) => s + i.qty, 0) : summary.total_qty,
-  [isFiltered, kpiItems, summary]);
+    useComputedKpis ? kpiItems.reduce((s, i) => s + i.qty, 0) : summary.total_qty,
+  [useComputedKpis, kpiItems, summary]);
 
+  // How much of kpiQty is Make It a Meal picks — kpiItems already includes any
+  // modifier-only synthetic rows (added in effectiveItems above) so this is a
+  // straight per-row lookup, not a separate re-derivation; used only for the
+  // "+X from Make It a Meal" note under the Items Sold KPI, kpiQty itself is
+  // already the combined total.
+  const kpiMakeItMealQty = useMemo(() => {
+    if (!includeMakeItMeal) return 0;
+    return kpiItems.reduce((s, i) => s + (makeItMealMap.get(`${i.canonical_name}|${i.channel}`)?.qty ?? 0), 0);
+  }, [includeMakeItMeal, kpiItems, makeItMealMap]);
+
+  // Deliberately keyed on isFiltered, NOT useComputedKpis: summary.unique_items
+  // (server) is COUNT(DISTINCT canonical_name) over everything, open items
+  // included, while the computed branch below excludes open items — two
+  // different definitions. Checking "Include Make It a Meal" alone has
+  // nothing to do with open items and shouldn't flip which one is shown
+  // (that previously only happened when a channel/category filter was also
+  // active, which is real, existing behavior — not what's being fixed here).
   const kpiUnique = useMemo(() =>
     isFiltered
       ? new Set(kpiItems.filter(i => !i.is_open_item).map(i => i.canonical_name)).size
       : summary.unique_items,
   [isFiltered, kpiItems, summary]);
 
+  // Margin isn't adjusted for Make It a Meal — it comes from data.meItems (a
+  // separate cost-modeling pipeline keyed off Pink Sheet/r365 costs, not raw
+  // ItemRow revenue), which has no visibility into a modifier's own price. Only
+  // isFiltered (not includeMakeItMeal) switches this off the blended default.
   const kpiAvgMargin = useMemo(() => {
     if (!isFiltered) return avgMargin;
     const totalSales = data.meItems.reduce((s, i) => s + i.net_sales, 0);
@@ -229,14 +340,14 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
   }, [isFiltered, data.meItems, avgMargin]);
 
   const kpiTopItem = useMemo(() => {
-    if (!isFiltered) return { name: summary.top_item, revenue: summary.top_item_revenue, mix: summary.top_item_mix };
+    if (!useComputedKpis) return { name: summary.top_item, revenue: summary.top_item_revenue, mix: summary.top_item_mix };
     const byRev = new Map<string, number>();
     kpiItems.forEach(i => byRev.set(i.canonical_name, (byRev.get(i.canonical_name) ?? 0) + i.revenue));
     const totalRev = kpiItems.reduce((s, i) => s + i.revenue, 0);
     let topName = '', topRev = 0;
     byRev.forEach((rev, name) => { if (rev > topRev) { topRev = rev; topName = name; } });
     return { name: topName || summary.top_item, revenue: topRev, mix: totalRev > 0 ? (topRev / totalRev) * 100 : 0 };
-  }, [isFiltered, kpiItems, summary]);
+  }, [useComputedKpis, kpiItems, summary]);
 
   // Prev-period equivalents of the KPI cards above, from prevChannelItems/prevMEItems
   // (already channel+category+location filtered by Dashboard.tsx) — the same shape as
@@ -282,28 +393,36 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
 
   return (
     <div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, cursor: 'pointer', marginBottom: 8 }}>
+        <input type="checkbox" checked={includeMakeItMeal} onChange={e => setIncludeMakeItMeal(e.target.checked)} />
+        Include &quot;Make It a Meal&quot; picks in Revenue / Refunds (adds the modifier&apos;s own real price from fact_modifiers)
+      </label>
+
       {/* KPI row */}
       <div className="krow" style={{ gridTemplateColumns: 'repeat(6, 1fr)' }}>
         <div className="kc a">
           <div className="kl">Items Sold</div>
-          <div className="kv">{Number(kpiQty).toLocaleString()}</div>
+          <div className="kv">{Number(kpiQty + kpiMakeItMealQty).toLocaleString()}</div>
           {showDelta
             ? <DeltaBadge curr={kpiQty} prev={prevKpi!.qty} vsLabel={prevLabel} />
-            : isFiltered && <div className="ks">filtered</div>}
+            : useComputedKpis && <div className="ks">filtered</div>}
+          {includeMakeItMeal && kpiMakeItMealQty > 0 && (
+            <div className="ks">+{kpiMakeItMealQty.toLocaleString()} from Make It a Meal</div>
+          )}
         </div>
         <div className="kc g">
           <div className="kl">Net Revenue</div>
           <div className="kv">{fmt$(kpiRevenue)}</div>
           {showDelta
             ? <DeltaBadge curr={kpiRevenue} prev={prevKpi!.revenue} vsLabel={prevLabel} />
-            : isFiltered && <div className="ks">filtered</div>}
+            : useComputedKpis && <div className="ks">filtered</div>}
         </div>
         <div className="kc r">
           <div className="kl">Refunds</div>
           <div className="kv">{fmt$(kpiRefunds)}</div>
           {showDelta
             ? <DeltaBadge curr={kpiRefunds} prev={prevKpi!.refunds} positiveGood={false} vsLabel={prevLabel} />
-            : isFiltered && <div className="ks">filtered</div>}
+            : useComputedKpis && <div className="ks">filtered</div>}
         </div>
         <div className="kc b">
           <div className="kl">Avg Margin</div>

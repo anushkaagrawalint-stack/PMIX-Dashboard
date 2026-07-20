@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
 } from 'recharts';
-import type { DashboardData } from '@/lib/types';
+import type { DashboardData, MakeItMealModifierRow } from '@/lib/types';
 import { normalizeCategory } from '@/lib/constants';
 
 const fmt$ = (v: number) =>
@@ -20,8 +20,78 @@ const METRIC_LABELS: Record<Metric, string> = {
   mix_pct: '% Mix',
 };
 
-export default function LocationCompare({ data }: { data: DashboardData }) {
+export default function LocationCompare({ data, makeItMealModifiers }: { data: DashboardData; makeItMealModifiers: MakeItMealModifierRow[] }) {
   const { locationItems, items, locations } = data;
+
+  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(false);
+
+  // canonical_name|channel|location_code → make-it-a-meal qty + real price.
+  // Unlike ItemMix/Overview (canonical_name|channel only), this tab attributes
+  // revenue PER LOCATION, so location_code must be part of the join key —
+  // MakeItMealModifierRow carries it (unlike ChannelItemRow), so this is exact,
+  // not an even split across locations.
+  const makeItMealMap = useMemo(() => {
+    const m = new Map<string, { qty: number; price: number }>();
+    makeItMealModifiers.forEach(r => {
+      const key = `${r.canonical_name}|${r.channel}|${r.location_code}`;
+      const ex  = m.get(key) ?? { qty: 0, price: 0 };
+      m.set(key, { qty: ex.qty + r.qty, price: ex.price + r.price });
+    });
+    return m;
+  }, [makeItMealModifiers]);
+
+  // Per-location modifier-pick qty total — purely for the KPI cards' "+X from
+  // Make It a Meal" note text. qty itself is already combined via
+  // effectiveLocationItems below (every table/chart in this tab reads that,
+  // not this map), so this is never added a second time.
+  const locMakeItMealQty = useMemo(() => {
+    const m = new Map<string, number>();
+    if (!includeMakeItMeal) return m;
+    makeItMealMap.forEach((v, key) => {
+      const location_code = key.split('|')[2];
+      m.set(location_code, (m.get(location_code) ?? 0) + v.qty);
+    });
+    return m;
+  }, [makeItMealMap, includeMakeItMeal]);
+
+  // Folds Make It a Meal qty + price into matching rows (qty combines, same
+  // as revenue/gross_sales/net_after_refunds), and adds a synthetic row for a
+  // modifier-only pick with no standalone line. Every chart/table in this tab
+  // (locStats, locCatData, dataMap, topByLocation, barData, the item
+  // comparison table) reads this single array, so they all inherit the
+  // combine automatically — mix_pct is the one exception, left as reported
+  // (a backend-computed % that would need the full location total to redo correctly).
+  const effectiveLocationItems = useMemo(() => {
+    if (!includeMakeItMeal) return locationItems;
+    const rows = locationItems.map(r => {
+      const mm = makeItMealMap.get(`${r.canonical_name}|${r.channel}|${r.location_code}`);
+      if (!mm || (mm.price === 0 && mm.qty === 0)) return r;
+      return {
+        ...r,
+        qty:               r.qty               + mm.qty,
+        revenue:           r.revenue           + mm.price,
+        gross_sales:       r.gross_sales       + mm.price,
+        net_after_refunds: r.net_after_refunds + mm.price,
+      };
+    });
+    const existingKeys = new Set(locationItems.map(r => `${r.canonical_name}|${r.channel}|${r.location_code}`));
+    makeItMealMap.forEach((mm, key) => {
+      if (existingKeys.has(key)) return;
+      const [name, channel, location_code] = key.split('|');
+      rows.push({
+        canonical_name: name,
+        location_code,
+        channel,
+        qty: mm.qty,
+        revenue: mm.price,
+        gross_sales: mm.price,
+        mix_pct: 0,
+        refunds: 0,
+        net_after_refunds: mm.price,
+      });
+    });
+    return rows;
+  }, [locationItems, makeItMealMap, includeMakeItMeal]);
 
   const locMeta = useMemo(
     () => locations.map((l, i) => ({ ...l, color: LOC_SHADES[i % LOC_SHADES.length] })),
@@ -74,7 +144,7 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
   const locStats = useMemo(() => {
     // Aggregate per (location, item) first so topItem reflects item totals, not channel-specific revenue
     const itemTotals: Record<string, Record<string, { revenue: number; qty: number }>> = {};
-    locationItems.forEach(r => {
+    effectiveLocationItems.forEach(r => {
       if (!itemTotals[r.location_code]) itemTotals[r.location_code] = {};
       const it = itemTotals[r.location_code];
       if (!it[r.canonical_name]) it[r.canonical_name] = { revenue: 0, qty: 0 };
@@ -92,13 +162,13 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
       stats[loc] = { revenue, qty, topItem, topRev };
     }
     return stats;
-  }, [locationItems]);
+  }, [effectiveLocationItems]);
 
   const locCatData = useMemo(() => {
     const meta: Record<string, string> = {};
     items.forEach(i => { if (!meta[i.canonical_name]) meta[i.canonical_name] = normalizeCategory(i.category); });
     const map: Record<string, Record<string, { revenue: number; qty: number }>> = {};
-    locationItems.forEach(r => {
+    effectiveLocationItems.forEach(r => {
       const cat = meta[r.canonical_name] ?? 'Other';
       if (!map[r.location_code]) map[r.location_code] = {};
       if (!map[r.location_code][cat]) map[r.location_code][cat] = { revenue: 0, qty: 0 };
@@ -106,12 +176,12 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
       map[r.location_code][cat].qty     += r.qty;
     });
     return map;
-  }, [locationItems, items]);
+  }, [effectiveLocationItems, items]);
 
   const dataMap = useMemo(() => {
     // Sum across channels for each (canonical_name, location_code) pair
     const m: Record<string, Record<string, { qty: number; revenue: number; mix_pct: number }>> = {};
-    locationItems.forEach(r => {
+    effectiveLocationItems.forEach(r => {
       if (!m[r.canonical_name]) m[r.canonical_name] = {};
       const existing = m[r.canonical_name][r.location_code];
       if (existing) {
@@ -123,7 +193,7 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
       }
     });
     return m;
-  }, [locationItems]);
+  }, [effectiveLocationItems]);
 
   const barData = useMemo(() =>
     activeMeta.map(l => ({
@@ -139,7 +209,7 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
     const map: Record<string, Array<{ name: string; rev: number; qty: number; revPct: number; qtyPct: number }>> = {};
     activeMeta.forEach(l => {
       const agg: Record<string, { rev: number; qty: number }> = {};
-      locationItems.filter(r => r.location_code === l.location_code).forEach(r => {
+      effectiveLocationItems.filter(r => r.location_code === l.location_code).forEach(r => {
         const e = agg[r.canonical_name] ?? { rev: 0, qty: 0 };
         e.rev += r.revenue;
         e.qty += r.qty;
@@ -158,7 +228,7 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
         }));
     });
     return map;
-  }, [locationItems, activeMeta, locShowBottom]);
+  }, [effectiveLocationItems, activeMeta, locShowBottom]);
 
   const topLocRows: typeof activeMeta[] = [];
   for (let i = 0; i < activeMeta.length; i += 3) topLocRows.push(activeMeta.slice(i, i + 3));
@@ -169,6 +239,15 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
     const names: string[] = [];
     for (const i of items) {
       if (!seen.has(i.canonical_name)) { seen.add(i.canonical_name); names.push(i.canonical_name); }
+    }
+    // A Make It a Meal pick with no standalone line anywhere has no entry in
+    // `items` at all — without this, it'd be counted in every aggregate above
+    // but invisible in this table. dataMap already has it (built off
+    // effectiveLocationItems), so pick up any name `items` didn't cover.
+    if (includeMakeItMeal) {
+      for (const name of Object.keys(dataMap)) {
+        if (!seen.has(name)) { seen.add(name); names.push(name); }
+      }
     }
     const mul = sortDir === 'asc' ? -1 : 1;
     return names
@@ -186,7 +265,7 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
         const li = activeMeta.findIndex(l => l.location_code === sortCol);
         return mul * ((b.primary[li] ?? 0) - (a.primary[li] ?? 0));
       });
-  }, [items, search, activeMeta, dataMap, metric, sortCol, sortDir]);
+  }, [items, search, activeMeta, dataMap, metric, sortCol, sortDir, includeMakeItMeal]);
 
   const visibleItems = limit === 'all' ? allItems : allItems.slice(0, limit);
 
@@ -238,6 +317,11 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
           <option value="qty">Qty Sold</option>
           <option value="mix_pct">% Mix</option>
         </select>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, cursor: 'pointer' }}>
+          <input type="checkbox" checked={includeMakeItMeal} onChange={e => setIncludeMakeItMeal(e.target.checked)} />
+          Include &quot;Make It a Meal&quot; picks
+        </label>
       </div>
 
       {/* ── KPI cards ── */}
@@ -245,6 +329,9 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
         {activeMeta.map(loc => {
           const s          = locStats[loc.location_code];
           const rev        = s?.revenue ?? 0;
+          // s.qty already includes Make It a Meal qty (locStats is built off
+          // effectiveLocationItems) — mimQty here is only for the note text below.
+          const mimQty     = locMakeItMealQty.get(loc.location_code) ?? 0;
           const qty        = s?.qty ?? 0;
           const useQty     = metric === 'qty' || metric === 'mix_pct';
           const totalGroup = activeMeta.reduce((sum, l) => sum + (useQty
@@ -258,6 +345,9 @@ export default function LocationCompare({ data }: { data: DashboardData }) {
               <div className="kv">{useQty ? qty.toLocaleString() : fmt$(rev)}</div>
               <div className="ks">{useQty ? 'items sold' : `${qty.toLocaleString()} items sold`}</div>
               <div className="ks">{share.toFixed(1)}% of category {useQty ? 'qty' : 'revenue'}</div>
+              {mimQty > 0 && (
+                <div className="ks">+{mimQty.toLocaleString()} from Make It a Meal</div>
+              )}
               {s?.topItem && (
                 <div className="ks" style={{ marginTop: 3, fontWeight: 700, color: 'var(--text)' }}>
                   ★ {s.topItem.slice(0, 22)}

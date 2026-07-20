@@ -6,7 +6,7 @@ import {
 } from './constants';
 import { modifierAliasCaseSQL } from './modifierCost';
 import { listDir, getFileRaw } from './github';
-import { parseBikkyCsv, bikkyFolderFor, parseBikkyFileName, type BikkySource } from './bikkyCsv';
+import { parseBikkyCsv, bikkyFolderFor, parseBikkyFileName, bikkyPeriodLabel, type BikkySource } from './bikkyCsv';
 import type {
   DateRange, Summary, ChannelRow, WeekRow, DailyRow,
   WeeklyChannelRow, DailyChannelRow,
@@ -1993,7 +1993,7 @@ export async function getPaymentSourcesByLocation(dr: DateRange): Promise<Paymen
 // filters/aggregates client-side. Invalidated via cacheTag('dashboard-data')
 // on loadDashboardData (this function has no cache directive of its own —
 // it inherits that scope) after an upload/delete in app/api/admin/bikky.
-type BikkyRowSortable = BikkyRow & { _period: number; _fiscalYear: number; _returnRateRaw: number | null };
+type BikkyRowSortable = BikkyRow & { _periodSort: number; _fiscalYear: number; _returnRateRaw: number | null };
 
 async function readBikkySource(source: BikkySource): Promise<BikkyRowSortable[]> {
   const entries = await listDir(`Data/Bikkydata/${bikkyFolderFor(source)}`);
@@ -2022,12 +2022,14 @@ async function readBikkySource(source: BikkySource): Promise<BikkyRowSortable[]>
       return_rate_prev:  r.return_rate_prev  ?? 0,
       reorder_rate_prev: r.reorder_rate_prev ?? 0,
       guests:            r.guests            ?? 0,
-      period:            `P${parsed.period} ${parsed.fiscalYear}`,
+      period:            bikkyPeriodLabel(parsed),
       source,
       category:          '',
       revenue:           0,
       qty:               0,
-      _period:           parsed.period,
+      // YTD sorts after every discrete period within its fiscal year (it's
+      // the cumulative whole-year figure, shown as the "final" bucket).
+      _periodSort:       parsed.period === 'YTD' ? 999 : parsed.period,
       _fiscalYear:       parsed.fiscalYear,
       _returnRateRaw:    r.return_rate,
     }));
@@ -2046,10 +2048,10 @@ export async function getBikky(): Promise<BikkyRow[]> {
     return [...instoreRows, ...del3pdRows]
       .sort((a, b) =>
         (b._fiscalYear - a._fiscalYear) ||
-        (b._period - a._period) ||
+        (b._periodSort - a._periodSort) ||
         // mirrors ORDER BY return_rate DESC NULLS LAST
         ((b._returnRateRaw ?? -Infinity) - (a._returnRateRaw ?? -Infinity)))
-      .map(({ _period, _fiscalYear, _returnRateRaw, ...row }) => row);
+      .map(({ _periodSort, _fiscalYear, _returnRateRaw, ...row }) => row);
   } catch (err) {
     console.error('getBikky error:', err);
     return [];

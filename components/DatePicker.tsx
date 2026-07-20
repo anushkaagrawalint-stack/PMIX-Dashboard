@@ -4,7 +4,17 @@ import { useRouter } from 'next/navigation';
 import type { DateRange, FiscalPeriodRow } from '@/lib/types';
 import CalendarPicker from './CalendarPicker';
 
-interface Props { dr: DateRange; periods: FiscalPeriodRow[] }
+interface Props {
+  dr: DateRange;
+  periods: FiscalPeriodRow[];
+  // Bikky/Customer Retention data only exists at period granularity (one CSV
+  // per period, no daily/weekly rows) — Dashboard.tsx's activeBikkyPeriod
+  // logic just snaps any selected range to whichever period overlaps it, so
+  // showing Quick-select/Quarter/Custom-range there is misleading (looks like
+  // finer control than the data actually supports). Restrict to Fiscal
+  // Periods only when true.
+  periodsOnly?: boolean;
+}
 
 function addDays(dateStr: string, n: number): string {
   const [y, m, d] = dateStr.split('-').map(Number);
@@ -14,10 +24,6 @@ function addDays(dateStr: string, n: number): string {
 function firstOfMonth(dateStr: string): string {
   const [y, m] = dateStr.split('-');
   return `${y}-${m}-01`;
-}
-
-function firstOfYear(dateStr: string): string {
-  return `${dateStr.slice(0, 4)}-01-01`;
 }
 
 // Quarters follow the FISCAL calendar (dim_fiscal_period.quarter, groups of
@@ -42,7 +48,7 @@ function fiscalQuarters(periods: FiscalPeriodRow[], fiscalYear: number) {
     });
 }
 
-export default function DatePicker({ dr, periods }: Props) {
+export default function DatePicker({ dr, periods, periodsOnly = false }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
@@ -62,12 +68,13 @@ export default function DatePicker({ dr, periods }: Props) {
   const anchor = dr.dbMax < today ? dr.dbMax : today;
   const year   = Number(anchor.slice(0, 4));
 
+  // 'YTD' lives as a fiscal-year button in the Fiscal Periods section below
+  // (start = that year's P1 start, not calendar Jan 1) — not duplicated here.
   const presets = [
     { label: 'Last 7 Days',  start: addDays(anchor, -6),  end: anchor },
     { label: 'Last 14 Days', start: addDays(anchor, -13), end: anchor },
     { label: 'Last 4 Weeks', start: addDays(anchor, -27), end: anchor },
     { label: 'This Month',   start: firstOfMonth(anchor), end: anchor },
-    { label: 'YTD',          start: firstOfYear(anchor),  end: anchor },
   ];
 
   const activePeriod = periods.find(p => dr.start === p.start_date && dr.end === p.end_date);
@@ -128,77 +135,110 @@ export default function DatePicker({ dr, periods }: Props) {
 
       <div className={`drm${open ? ' open' : ''}`} style={{ minWidth: 250 }}>
 
-        {/* Quick select */}
-        <div className="dr-sec">Quick select</div>
-        {presets.map(p => {
-          const active = !activePeriod && dr.start === p.start && dr.end === p.end;
-          return (
-            <div key={p.label} className={`dr-it${active ? ' on' : ''}`} onClick={() => go(p.start, p.end, p.label)}>
-              {active && <i className="ti ti-check" style={{ fontSize: 10 }} />}
-              {p.label}
-            </div>
-          );
-        })}
+        {!periodsOnly && (
+          <>
+            {/* Quick select */}
+            <div className="dr-sec">Quick select</div>
+            {presets.map(p => {
+              const active = !activePeriod && dr.start === p.start && dr.end === p.end;
+              return (
+                <div key={p.label} className={`dr-it${active ? ' on' : ''}`} onClick={() => go(p.start, p.end, p.label)}>
+                  {active && <i className="ti ti-check" style={{ fontSize: 10 }} />}
+                  {p.label}
+                </div>
+              );
+            })}
 
-        <div className="dr-div" />
+            <div className="dr-div" />
 
-        {/* Quarter (fiscal) */}
-        <div className="dr-sec">Quarter FY {fqYear}</div>
-        {fiscalQuarters(periods, fqYear).map(q => {
-          const active = dr.start === q.start && dr.end === q.end;
-          return (
-            <div key={q.label} className={`dr-it${active ? ' on' : ''}`} onClick={() => go(q.start, q.end, `${q.label} FY${fqYear}`)}>
-              {active && <i className="ti ti-check" style={{ fontSize: 10 }} />}
-              {q.label} FY{fqYear} ({q.sub})
-            </div>
-          );
-        })}
+            {/* Quarter (fiscal) */}
+            <div className="dr-sec">Quarter FY {fqYear}</div>
+            {fiscalQuarters(periods, fqYear).map(q => {
+              const active = dr.start === q.start && dr.end === q.end;
+              return (
+                <div key={q.label} className={`dr-it${active ? ' on' : ''}`} onClick={() => go(q.start, q.end, `${q.label} FY${fqYear}`)}>
+                  {active && <i className="ti ti-check" style={{ fontSize: 10 }} />}
+                  {q.label} FY{fqYear} ({q.sub})
+                </div>
+              );
+            })}
+          </>
+        )}
 
         {/* Fiscal Periods — all, grouped by year */}
         {yearGroups.length > 0 && (
           <>
-            <div className="dr-div" />
-            {yearGroups.map(({ year: fy, rows }) => (
-              <div key={fy}>
-                <div className="dr-sec">FY {fy}</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, padding: '2px 8px 6px' }}>
-                  {rows.map(p => {
-                    const active = activePeriod?.period === p.period && activePeriod?.fiscal_year === p.fiscal_year;
-                    return (
-                      <button
-                        key={`${p.period}-${p.fiscal_year}`}
-                        onClick={() => go(p.start_date, p.end_date, p.label)}
-                        title={`${p.start_date} → ${p.end_date}`}
-                        style={{
-                          padding: '3px 8px', borderRadius: 6, fontSize: 10, fontWeight: 700,
-                          cursor: 'pointer', border: '1px solid',
-                          borderColor: active ? 'transparent' : 'var(--border)',
-                          background: active ? '#381d7c' : 'var(--bg)',
-                          color: active ? '#fff' : 'var(--text)',
-                          fontFamily: 'inherit',
-                        }}
-                      >
-                        P{p.period}
-                      </button>
-                    );
-                  })}
+            {!periodsOnly && <div className="dr-div" />}
+            {yearGroups.map(({ year: fy, rows }) => {
+              // Fiscal YTD for this year — P1's start through whichever is
+              // earlier: today/dbMax (year still in progress) or the last
+              // period's end (year already closed). Matches the label an
+              // uploaded YTD Bikky file gets ('YTD 2026') — see bikkyPeriodLabel.
+              const ytdStart = rows[0].start_date;
+              const lastEnd  = rows[rows.length - 1].end_date;
+              const ytdEnd   = anchor < lastEnd ? anchor : lastEnd;
+              const ytdLabel = `YTD ${fy}`;
+              const ytdActive = dr.start === ytdStart && dr.end === ytdEnd;
+              return (
+                <div key={fy}>
+                  <div className="dr-sec">FY {fy}</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, padding: '2px 8px 6px' }}>
+                    <button
+                      onClick={() => go(ytdStart, ytdEnd, ytdLabel)}
+                      title={`${ytdStart} → ${ytdEnd}`}
+                      style={{
+                        padding: '3px 8px', borderRadius: 6, fontSize: 10, fontWeight: 700,
+                        cursor: 'pointer', border: '1px solid',
+                        borderColor: ytdActive ? 'transparent' : 'var(--accent)',
+                        background: ytdActive ? '#381d7c' : 'transparent',
+                        color: ytdActive ? '#fff' : 'var(--accent)',
+                        fontFamily: 'inherit',
+                      }}
+                    >
+                      YTD
+                    </button>
+                    {rows.map(p => {
+                      const active = activePeriod?.period === p.period && activePeriod?.fiscal_year === p.fiscal_year;
+                      return (
+                        <button
+                          key={`${p.period}-${p.fiscal_year}`}
+                          onClick={() => go(p.start_date, p.end_date, p.label)}
+                          title={`${p.start_date} → ${p.end_date}`}
+                          style={{
+                            padding: '3px 8px', borderRadius: 6, fontSize: 10, fontWeight: 700,
+                            cursor: 'pointer', border: '1px solid',
+                            borderColor: active ? 'transparent' : 'var(--border)',
+                            background: active ? '#381d7c' : 'var(--bg)',
+                            color: active ? '#fff' : 'var(--text)',
+                            fontFamily: 'inherit',
+                          }}
+                        >
+                          P{p.period}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </>
         )}
 
-        <div className="dr-div" />
+        {!periodsOnly && (
+          <>
+            <div className="dr-div" />
 
-        {/* Calendar */}
-        <div className="dr-sec">Custom range</div>
-        <CalendarPicker
-          startDate={dr.start}
-          endDate={dr.end}
-          dbMin={dr.dbMin}
-          dbMax={dr.dbMax}
-          onApply={(start, end) => go(start, end, `${start} → ${end}`)}
-        />
+            {/* Calendar */}
+            <div className="dr-sec">Custom range</div>
+            <CalendarPicker
+              startDate={dr.start}
+              endDate={dr.end}
+              dbMin={dr.dbMin}
+              dbMax={dr.dbMax}
+              onApply={(start, end) => go(start, end, `${start} → ${end}`)}
+            />
+          </>
+        )}
 
         <div className="dr-reset" onClick={() => { setOpen(false); startTransition(() => { router.push('/'); }); }}>
           Reset to default
