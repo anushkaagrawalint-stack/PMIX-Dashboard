@@ -176,14 +176,6 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
     }
   }, [channelDraft]);
 
-  const confirmChannel = useCallback(async (r: NeedsReviewRow) => {
-    const ok = await saveChannelRow(r);
-    if (ok) {
-      setChannelEditing(prev => { const n = new Set(prev); n.delete(r.order_guid); return n; });
-      window.location.reload();
-    }
-  }, [saveChannelRow]);
-
   // Orders the admin actually changed the channel dropdown for (channelTouched)
   // AND that still have a pending draft to save — an order the admin never
   // touched keeps its suggested-channel default in channelDraft forever, but
@@ -510,18 +502,9 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
                               <option key={c.code} value={c.code}>{c.label}</option>
                             ))}
                           </select>
-                          <button
-                            disabled={status === 'saving'}
-                            onClick={() => confirmChannel(r)}
-                            style={{
-                              padding: '4px 14px', borderRadius: 6, border: 'none',
-                              background: 'var(--accent)', color: '#fff',
-                              fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                              opacity: status === 'saving' ? 0.6 : 1,
-                            }}
-                          >
-                            {status === 'saving' ? 'Saving…' : '✓ Confirm'}
-                          </button>
+                          {status === 'saving' && (
+                            <span style={{ fontSize: 10, color: 'var(--muted)' }}>Saving…</span>
+                          )}
                           {status === 'error' && (
                             <span style={{ fontSize: 10, color: '#dc2626' }}>Save failed — try again</span>
                           )}
