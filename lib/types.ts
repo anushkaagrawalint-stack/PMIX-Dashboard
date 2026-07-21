@@ -421,6 +421,25 @@ export interface AttachmentData {
   modifiers:     AttachmentModifierRow[];
   items:         AttachmentItemRow[];
   categoryChecks: AttachmentCategoryRow[];
+  categoryModChecks: AttachmentCategoryRow[]; // subset of categoryChecks driven by a modifier pick (e.g. make it a meal)
+}
+
+export interface AttachmentTrendBucketRow {
+  week_start:    string;
+  location_code: string;
+  channel:       string;
+  main_checks:   number;
+}
+export interface AttachmentTrendCategoryRow {
+  week_start:    string;
+  location_code: string;
+  channel:       string;
+  category:      'Drink' | 'Sweet' | 'Side';
+  checks_with:   number; // distinct main checks with an item OR modifier attach of this category that week
+}
+export interface AttachmentTrendData {
+  buckets:    AttachmentTrendBucketRow[];
+  categories: AttachmentTrendCategoryRow[];
 }
 
 // Drinks sold as a modifier (e.g. a kids-meal drink choice) — qty only, since
@@ -487,6 +506,7 @@ export interface DashboardData {
   missingCosts:       MissingCostRow[];
   attachment:         AttachmentData; // tester-only tab; fetched for everyone like byo/pinksheets
   prevAttachment:     AttachmentData | null; // prev-period, for "vs previous" KPI deltas
+  attachmentTrend:    AttachmentTrendData; // weekly attach-rate trend within the selected date range
   beverageModifiers:  BeverageModifierRow[]; // drinks sold as a modifier (e.g. kids-meal drink choice), for the Analytics tab's Beverages section
   makeItMealModifiers: MakeItMealModifierRow[]; // fact_modifiers "Make it a Meal" picks, for Item Mix's admin/tester-only checkbox
 }

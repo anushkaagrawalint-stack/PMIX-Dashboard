@@ -19,6 +19,7 @@ import type {
   FiscalPeriodRow, VendorRow, PinkSheetRow, PinkSheetDetailRow,
   ItemCostRow, MissingCostRow,
   AttachmentData, AttachmentBucketRow, AttachmentModifierRow, AttachmentItemRow, AttachmentCategoryRow,
+  AttachmentTrendData, AttachmentTrendBucketRow, AttachmentTrendCategoryRow,
   BeverageModifierRow, MakeItMealModifierRow,
 } from './types';
 
@@ -3031,11 +3032,6 @@ export async function getAttachmentData(dr: DateRange): Promise<AttachmentData> 
       FROM item_lines
       GROUP BY 1, 2, 3, 4
     ),
-    category_checks AS (
-      SELECT location_code, channel, category, COUNT(DISTINCT check_guid)::int AS n
-      FROM item_lines
-      GROUP BY 1, 2, 3
-    ),
     -- fact_modifiers.parent_selection joins 100% to fact_order_lines.selection_guid
     -- (verified: no fallback to order_guid needed, unlike the original reference tool).
     mod_lines AS (
@@ -3050,6 +3046,31 @@ export async function getAttachmentData(dr: DateRange): Promise<AttachmentData> 
       SELECT location_code, channel, name, COUNT(DISTINCT check_guid)::int AS n
       FROM mod_lines
       GROUP BY 1, 2, 3
+    ),
+    -- Modifier picks don't carry their own category (fact_modifiers has no
+    -- menu_group) — matched against item_lines by name, same merge-by-name
+    -- convention as the per-item report below.
+    name_category AS (
+      SELECT DISTINCT name, category FROM item_lines
+    ),
+    mod_cat_lines AS (
+      SELECT ml.check_guid, ml.location_code, ml.channel, nc.category
+      FROM mod_lines ml
+      JOIN name_category nc ON nc.name = ml.name
+    ),
+    category_checks AS (
+      SELECT location_code, channel, category, COUNT(DISTINCT check_guid)::int AS n
+      FROM (
+        SELECT check_guid, location_code, channel, category FROM item_lines
+        UNION ALL
+        SELECT check_guid, location_code, channel, category FROM mod_cat_lines
+      ) combined
+      GROUP BY 1, 2, 3
+    ),
+    category_mod_checks AS (
+      SELECT location_code, channel, category, COUNT(DISTINCT check_guid)::int AS n
+      FROM mod_cat_lines
+      GROUP BY 1, 2, 3
     )
     SELECT 'bucket' AS kind, location_code, channel, NULL::text AS category, NULL::text AS name, n FROM buckets
     UNION ALL
@@ -3058,6 +3079,8 @@ export async function getAttachmentData(dr: DateRange): Promise<AttachmentData> 
     SELECT 'modifier', location_code, channel, NULL::text, name, n FROM modifiers
     UNION ALL
     SELECT 'category', location_code, channel, category, NULL::text, n FROM category_checks
+    UNION ALL
+    SELECT 'category_mod', location_code, channel, category, NULL::text, n FROM category_mod_checks
   `, [dr.start, dr.end]);
   await db.end();
 
@@ -3065,6 +3088,7 @@ export async function getAttachmentData(dr: DateRange): Promise<AttachmentData> 
   const items: AttachmentItemRow[] = [];
   const modifiers: AttachmentModifierRow[] = [];
   const categoryChecks: AttachmentCategoryRow[] = [];
+  const categoryModChecks: AttachmentCategoryRow[] = [];
   for (const r of rows) {
     const location_code = r.location_code as string;
     const channel        = r.channel as string;
@@ -3075,11 +3099,106 @@ export async function getAttachmentData(dr: DateRange): Promise<AttachmentData> 
       items.push({ location_code, channel, category: r.category as AttachmentItemRow['category'], item: r.name as string, checks_with: n });
     } else if (r.kind === 'modifier') {
       modifiers.push({ location_code, channel, modifier: r.name as string, checks_with: n });
-    } else {
+    } else if (r.kind === 'category') {
       categoryChecks.push({ location_code, channel, category: r.category as AttachmentCategoryRow['category'], checks: n });
+    } else {
+      categoryModChecks.push({ location_code, channel, category: r.category as AttachmentCategoryRow['category'], checks: n });
     }
   }
-  return { buckets, items, modifiers, categoryChecks };
+  return { buckets, items, modifiers, categoryChecks, categoryModChecks };
+}
+
+// ─── Attachment trend (weekly, within the selected date range) ────────────────
+// Same main-checks/item/modifier logic as getAttachmentData, bucketed by week
+// instead of collapsed to one total — category only (no per-item breakdown,
+// a trend line doesn't need it). name_category maps a modifier's canonical
+// name to a category by matching it against item_lines within this same date
+// range, exactly like getAttachmentData's merged-by-name approach.
+export async function getAttachmentTrend(dr: DateRange): Promise<AttachmentTrendData> {
+  const db = pool();
+  const { rows } = await db.query(`
+    WITH
+    main_lines AS (
+      SELECT fol.check_guid, fol.location_code, fol.business_date, fol.selection_guid, (${CHO}) AS channel
+      FROM public.fact_order_lines fol
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE NOT fol.is_voided AND NOT fol.is_deferred
+        AND fol.menu_group IN (${ATTACH_MAIN_LIST})
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+    ),
+    main_checks AS (
+      SELECT DISTINCT ON (check_guid) check_guid, location_code, channel, business_date
+      FROM main_lines
+      ORDER BY check_guid
+    ),
+    buckets AS (
+      SELECT DATE_TRUNC('week', business_date)::DATE AS week_start, location_code, channel, COUNT(*)::int AS n
+      FROM main_checks
+      GROUP BY 1, 2, 3
+    ),
+    item_lines AS (
+      SELECT
+        mc.check_guid, mc.location_code, mc.channel, mc.business_date,
+        CASE
+          WHEN fol.menu_group IN (${ATTACH_DRINK_LIST}) AND fol.menu_name <> 'CATERING' THEN 'Drink'
+          WHEN fol.menu_group = 'SWEETS' THEN 'Sweet'
+          WHEN fol.menu_group = 'SIDES'  THEN 'Side'
+        END AS category,
+        fol.canonical_name AS name
+      FROM public.fact_order_lines fol
+      JOIN main_checks mc ON mc.check_guid = fol.check_guid
+      WHERE NOT fol.is_voided AND NOT fol.is_deferred
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+        AND (
+          (fol.menu_group IN (${ATTACH_DRINK_LIST}) AND fol.menu_name <> 'CATERING')
+          OR fol.menu_group = 'SWEETS'
+          OR fol.menu_group = 'SIDES'
+        )
+    ),
+    name_category AS (
+      SELECT DISTINCT name, category FROM item_lines
+    ),
+    mod_lines AS (
+      SELECT fm.canonical_name AS name, mc.check_guid, mc.location_code, mc.channel, mc.business_date
+      FROM public.fact_modifiers fm
+      JOIN public.fact_order_lines fol ON fol.selection_guid = fm.parent_selection
+      JOIN main_checks mc ON mc.check_guid = fol.check_guid
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE NOT fm.is_voided AND NOT fol.is_voided AND NOT fol.is_deferred
+        AND fm.business_date BETWEEN $1::DATE AND $2::DATE
+    ),
+    attach_lines AS (
+      SELECT check_guid, location_code, channel, business_date, category FROM item_lines
+      UNION ALL
+      SELECT ml.check_guid, ml.location_code, ml.channel, ml.business_date, nc.category
+      FROM mod_lines ml
+      JOIN name_category nc ON nc.name = ml.name
+    ),
+    categories AS (
+      SELECT DATE_TRUNC('week', business_date)::DATE AS week_start, location_code, channel, category, COUNT(DISTINCT check_guid)::int AS n
+      FROM attach_lines
+      GROUP BY 1, 2, 3, 4
+    )
+    SELECT 'bucket' AS kind, week_start::TEXT, location_code, channel, NULL::text AS category, n FROM buckets
+    UNION ALL
+    SELECT 'category', week_start::TEXT, location_code, channel, category, n FROM categories
+  `, [dr.start, dr.end]);
+  await db.end();
+
+  const buckets: AttachmentTrendBucketRow[] = [];
+  const categories: AttachmentTrendCategoryRow[] = [];
+  for (const r of rows) {
+    const week_start    = r.week_start    as string;
+    const location_code = r.location_code as string;
+    const channel        = r.channel        as string;
+    const n               = Number(r.n);
+    if (r.kind === 'bucket') {
+      buckets.push({ week_start, location_code, channel, main_checks: n });
+    } else {
+      categories.push({ week_start, location_code, channel, category: r.category as AttachmentTrendCategoryRow['category'], checks_with: n });
+    }
+  }
+  return { buckets, categories };
 }
 
 // ─── Master loader ────────────────────────────────────────────────────────────
@@ -3112,7 +3231,7 @@ export async function loadDashboardData(
     cateringVendors, offsiteVendors,
     itemCosts, missingCosts,
     prevChannelItems, prevLocationItems, prevMEItems,
-    attachment, prevAttachment,
+    attachment, prevAttachment, attachmentTrend,
     beverageModifiers, makeItMealModifiers,
   ] = await Promise.all([
     getSummary(dr),
@@ -3153,6 +3272,7 @@ export async function loadDashboardData(
     prevDr ? getMEItems(prevDr)       : Promise.resolve([]),
     getAttachmentData(dr),
     prevDr ? getAttachmentData(prevDr) : Promise.resolve(null),
+    getAttachmentTrend(dr),
     getBeverageModifiers(dr),
     getMakeItMealModifiers(dr),
   ]);
@@ -3180,7 +3300,7 @@ export async function loadDashboardData(
     periods,
     cateringVendors, offsiteVendors,
     itemCosts, missingCosts,
-    attachment, prevAttachment,
+    attachment, prevAttachment, attachmentTrend,
     beverageModifiers, makeItMealModifiers,
   };
 }

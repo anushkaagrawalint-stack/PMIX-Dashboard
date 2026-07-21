@@ -2,8 +2,9 @@
 import { Fragment, useMemo, useState } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+  LineChart, Line, Legend,
 } from 'recharts';
-import type { AttachmentData, LocationRow, ItemRow, BeverageModifierRow } from '@/lib/types';
+import type { AttachmentData, AttachmentTrendData, LocationRow, ItemRow, BeverageModifierRow } from '@/lib/types';
 import type { Role } from '@/lib/auth';
 
 const fmtInt = (v: number) => v.toLocaleString();
@@ -100,6 +101,9 @@ function aggregate(ad: AttachmentData, filter: (loc: string, ch: string) => bool
   const catMap = new Map<string, number>();
   for (const c of ad.categoryChecks) if (filter(c.location_code, c.channel)) catMap.set(c.category, (catMap.get(c.category) ?? 0) + c.checks);
 
+  const catModMap = new Map<string, number>();
+  for (const c of ad.categoryModChecks) if (filter(c.location_code, c.channel)) catModMap.set(c.category, (catModMap.get(c.category) ?? 0) + c.checks);
+
   const catItemMap = new Map<string, { category: string; checksWith: number }>();
   for (const r of ad.items) {
     if (!filter(r.location_code, r.channel)) continue;
@@ -143,15 +147,16 @@ function aggregate(ad: AttachmentData, filter: (loc: string, ch: string) => bool
     .reduce((s, r) => s + r.totals, 0);
   const overallRate = mainChecks ? (totalAttach / mainChecks) * 100 : 0;
 
-  return { mainChecks, catMap, merged, catItems, totalAttach, overallRate };
+  return { mainChecks, catMap, catModMap, merged, catItems, totalAttach, overallRate };
 }
 
 export default function AttachmentAnalytics({
-  data, prevData, prevLabel, locations, selectedLocations, selectedChannels, items, beverageModifiers, role,
+  data, prevData, prevLabel, trendData, locations, selectedLocations, selectedChannels, items, beverageModifiers, role,
 }: {
   data: AttachmentData;
   prevData: AttachmentData | null;
   prevLabel: string | null;
+  trendData: AttachmentTrendData;
   locations: LocationRow[];
   selectedLocations: string[];
   selectedChannels: string[];
@@ -253,6 +258,39 @@ export default function AttachmentAnalytics({
   const EMPTY_ROW = { checksItem: 0, checksMod: 0, totals: 0, rate: 0 };
 
   const chartData = useMemo(() => [...merged].sort((a, b) => b.rate - a.rate).slice(0, 12).reverse(), [merged]);
+
+  // Weekly attach-rate trend within the selected date range — respects the
+  // same location/channel filters as everything else on this tab (bucketMatches).
+  // "Overall" mirrors aggregate()'s totalAttach/overallRate: Sweet+Side+Drink
+  // summed (Main excluded), so a check with two attaches can push it past 100%,
+  // same convention as the rest of the tab.
+  const weeklyTrend = useMemo(() => {
+    const map = new Map<string, { mainChecks: number; drink: number; sweet: number; side: number }>();
+    trendData.buckets.forEach(b => {
+      if (!bucketMatches(b.location_code, b.channel)) return;
+      const e = map.get(b.week_start) ?? { mainChecks: 0, drink: 0, sweet: 0, side: 0 };
+      e.mainChecks += b.main_checks;
+      map.set(b.week_start, e);
+    });
+    trendData.categories.forEach(c => {
+      if (!bucketMatches(c.location_code, c.channel)) return;
+      const e = map.get(c.week_start) ?? { mainChecks: 0, drink: 0, sweet: 0, side: 0 };
+      if (c.category === 'Drink') e.drink += c.checks_with;
+      else if (c.category === 'Sweet') e.sweet += c.checks_with;
+      else if (c.category === 'Side') e.side += c.checks_with;
+      map.set(c.week_start, e);
+    });
+    return [...map.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([week_start, v]) => ({
+        week_start,
+        drinkRate:   v.mainChecks ? (v.drink / v.mainChecks) * 100 : 0,
+        sweetRate:   v.mainChecks ? (v.sweet / v.mainChecks) * 100 : 0,
+        sideRate:    v.mainChecks ? (v.side  / v.mainChecks) * 100 : 0,
+        overallRate: v.mainChecks ? ((v.drink + v.sweet + v.side) / v.mainChecks) * 100 : 0,
+        mainChecks:  v.mainChecks,
+      }));
+  }, [trendData, selectedLocations, selectedChannels]);
 
   const tableRows = useMemo(() => {
     const q = tableSearch.trim().toLowerCase();
@@ -447,16 +485,43 @@ export default function AttachmentAnalytics({
       <div className="krow k3">
         {ATTACH_CATEGORIES.map(cat => {
           const curr = current.catMap.get(cat) ?? 0;
+          const modCurr = current.catModMap.get(cat) ?? 0;
           const prevVal = prev?.catMap.get(cat);
           return (
             <div key={cat} className="kc" style={{ borderLeftColor: CAT_COLOR[cat], borderLeftWidth: 3, borderLeftStyle: 'solid' }}>
               <div className="kl" style={{ color: CAT_COLOR[cat] }}>{cat} Checks</div>
               <div className="kv">{fmtInt(curr)}</div>
               <div className="ks">{totalMainChecks ? fmtPct((curr / totalMainChecks) * 100) : '—'} of main checks</div>
+              {modCurr > 0 && <div className="ks">among above, {fmtInt(modCurr)} are mod checks</div>}
               <DeltaBadge curr={curr} prev={prevVal} vsLabel={prevLabel} />
             </div>
           );
         })}
+      </div>
+
+      {/* ── Attachment rate trend ── */}
+      <div className="cc">
+        <h3>Attachment rate trend (weekly)</h3>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>
+          % of main checks in that week with a Drink/Sweet/Side attach (item or make-it-a-meal modifier) — respects the channel/location filters above
+        </div>
+        {weeklyTrend.length === 0 ? (
+          <div style={{ padding: 30, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No data in the selected range.</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={weeklyTrend} margin={{ top: 5, right: 20, left: 5, bottom: 5 }}>
+              <CartesianGrid stroke="#f3f4f6" vertical={false} />
+              <XAxis dataKey="week_start" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
+              <YAxis tickFormatter={v => `${v}%`} tick={{ fontSize: 9 }} tickLine={false} axisLine={false} width={44} />
+              <Tooltip formatter={(v, name) => [`${Number(v).toFixed(1)}%`, name]} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
+              <Legend wrapperStyle={{ fontSize: 10 }} />
+              <Line type="monotone" dataKey="overallRate" name="Overall" stroke="#111827" strokeWidth={2} dot={{ r: 2 }} />
+              <Line type="monotone" dataKey="drinkRate"   name="Drink"   stroke={CAT_COLOR.Drink} strokeWidth={2} dot={{ r: 2 }} />
+              <Line type="monotone" dataKey="sweetRate"   name="Sweet"  stroke={CAT_COLOR.Sweet} strokeWidth={2} dot={{ r: 2 }} />
+              <Line type="monotone" dataKey="sideRate"    name="Side"   stroke={CAT_COLOR.Side}  strokeWidth={2} dot={{ r: 2 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
       </div>
 
       {/* ── Chart ── */}
