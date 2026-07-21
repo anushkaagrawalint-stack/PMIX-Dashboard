@@ -105,47 +105,30 @@ function CheckboxDropdown({ label, options, selected, onChange }: {
 }
 
 function Top10List({ rows, color }: {
-  rows: { name: string; value: number; prev: number | null; guests: number }[];
+  rows: { name: string; value: number; guests: number }[];
   color: string;
 }) {
   const max = Math.max(...rows.map(r => r.value), 1);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-      {rows.map((r, i) => {
-        const delta = r.prev != null ? r.value - r.prev : null;
-        const up    = delta != null && delta >= 0;
-        return (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ width: 18, textAlign: 'right', fontSize: 9, color: 'var(--muted)', flexShrink: 0 }}>
-              {i + 1}
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 10, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {r.name} <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· {r.guests.toLocaleString()} guests</span>
-              </div>
-              <div style={{ height: 5, borderRadius: 3, background: 'var(--border)', marginTop: 3 }}>
-                <div style={{ height: '100%', borderRadius: 3, background: color, width: `${(r.value / max) * 100}%` }} />
-              </div>
-            </div>
-            <div style={{ fontSize: 11, fontWeight: 700, color, flexShrink: 0, minWidth: 38, textAlign: 'right' }}>
-              {r.value.toFixed(1)}%
-            </div>
-            {delta != null ? (
-              <div style={{
-                fontSize: 9, fontWeight: 600, flexShrink: 0, minWidth: 42, textAlign: 'right',
-                color: up ? '#16a34a' : '#dc2626',
-              }}>
-                {up ? '↑' : '↓'}{Math.abs(delta).toFixed(1)}pp
-              </div>
-            ) : (
-              <div style={{ minWidth: 42 }} />
-            )}
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ width: 18, textAlign: 'right', fontSize: 9, color: 'var(--muted)', flexShrink: 0 }}>
+            {i + 1}
           </div>
-        );
-      })}
-      <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 4 }}>
-        pp = percentage point vs prev period
-      </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 10, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {r.name} <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· {r.guests.toLocaleString()} guests</span>
+            </div>
+            <div style={{ height: 5, borderRadius: 3, background: 'var(--border)', marginTop: 3 }}>
+              <div style={{ height: '100%', borderRadius: 3, background: color, width: `${(r.value / max) * 100}%` }} />
+            </div>
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 700, color, flexShrink: 0, minWidth: 38, textAlign: 'right' }}>
+            {r.value.toFixed(1)}%
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -256,32 +239,23 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
   const byItem = useMemo(() => {
     const map: Record<string, {
       return_rate: number; reorder_rate: number;
-      return_rate_prev: number; reorder_rate_prev: number;
-      guests: number; count: number; prev_count: number;
+      guests: number; count: number;
     }> = {};
     filteredSourceRows.forEach(r => {
       if (!map[r.item_name]) map[r.item_name] = {
         return_rate: 0, reorder_rate: 0,
-        return_rate_prev: 0, reorder_rate_prev: 0,
-        guests: 0, count: 0, prev_count: 0,
+        guests: 0, count: 0,
       };
       map[r.item_name].return_rate  += r.return_rate;
       map[r.item_name].reorder_rate += r.reorder_rate;
       map[r.item_name].guests       += r.guests;
       map[r.item_name].count        += 1;
-      if (r.return_rate_prev > 0 || r.reorder_rate_prev > 0) {
-        map[r.item_name].return_rate_prev  += r.return_rate_prev;
-        map[r.item_name].reorder_rate_prev += r.reorder_rate_prev;
-        map[r.item_name].prev_count        += 1;
-      }
     });
     return Object.entries(map).map(([name, v]) => ({
       name,
-      return_rate:       v.return_rate  / v.count,
-      reorder_rate:      v.reorder_rate / v.count,
-      return_rate_prev:  v.prev_count > 0 ? v.return_rate_prev  / v.prev_count : null,
-      reorder_rate_prev: v.prev_count > 0 ? v.reorder_rate_prev / v.prev_count : null,
-      guests:            v.guests,
+      return_rate:  v.return_rate  / v.count,
+      reorder_rate: v.reorder_rate / v.count,
+      guests:       v.guests,
     }));
   }, [filteredSourceRows]);
 
@@ -309,14 +283,12 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
   const topReorder = significantItems.length > 0 ? [...significantItems].sort((a, b) => b.reorder_rate - a.reorder_rate)[0] : null;
   const topReturn  = significantItems.length > 0 ? [...significantItems].sort((a, b) => b.return_rate  - a.return_rate )[0] : null;
 
-  // Top-10 data with prev-period delta
   const top10Reorder = useMemo(() =>
     [...significantItems].sort((a, b) => showBottom ? a.reorder_rate - b.reorder_rate : b.reorder_rate - a.reorder_rate)
       .slice(0, 10)
       .map(r => ({
         name:   r.name.slice(0, 28),
         value:  Math.round(r.reorder_rate * 1000) / 10,
-        prev:   r.reorder_rate_prev != null ? Math.round(r.reorder_rate_prev * 1000) / 10 : null,
         guests: r.guests,
       })),
   [significantItems, showBottom]);
@@ -327,7 +299,6 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
       .map(r => ({
         name:   r.name.slice(0, 28),
         value:  Math.round(r.return_rate * 1000) / 10,
-        prev:   r.return_rate_prev != null ? Math.round(r.return_rate_prev * 1000) / 10 : null,
         guests: r.guests,
       })),
   [significantItems, showBottom]);
