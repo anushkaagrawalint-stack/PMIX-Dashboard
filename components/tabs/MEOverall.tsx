@@ -854,7 +854,7 @@ export default function MEOverall({
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{overallFlatRows.length} rows</span>
             {showExport && <button onClick={exportOverallCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>}
           </div>
-          <div className="tw freeze-col"><div className="tscroll">
+          <div className="tw"><div className="tscroll">
             <table>
               <thead><tr>
                 <th style={{ minWidth: 160, cursor: 'pointer' }} onClick={() => handleSort('name')}>Item Name{sortArrow('name')}</th>
@@ -941,7 +941,7 @@ export default function MEOverall({
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{blendedTableRows.length} items</span>
             {showExport && <button onClick={exportBlendedCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>}
           </div>
-          <div className="tw freeze-col"><div className="tscroll">
+          <div className="tw"><div className="tscroll">
             <table>
               <thead><tr>
                 <th style={{ minWidth: 160, cursor: 'pointer' }} onClick={() => handleSort('name')}>Item Name{sortArrow('name')}</th>
@@ -1024,7 +1024,7 @@ export default function MEOverall({
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{filtered.length} items</span>
             {showExport && <button onClick={exportSingleCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>}
           </div>
-          <div className="tw freeze-col"><div className="tscroll">
+          <div className="tw"><div className="tscroll">
             <table>
               <thead><tr>
                 <th style={{ minWidth: 160, cursor: 'pointer' }} onClick={() => handleSort('name')}>Item Name{sortArrow('name')}</th>

@@ -131,7 +131,7 @@ body {
 .gr3  { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px; }
 
 /* ── Chart cards ── */
-.cc { background: var(--card); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+.cc { background: var(--card); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); margin-bottom: 10px; }
 .cc h3 { font-size: 10px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 10px; }
 
 /* ── Table wrappers ── */
@@ -147,30 +147,42 @@ thead th {
   letter-spacing: .04em; text-align: center; white-space: nowrap; cursor: pointer;
   position: sticky; top: 0; z-index: 2;
 }
-thead th:first-child { text-align: left; }
-thead th:hover { color: var(--text); }
-tbody td { padding: 7px 10px; border-bottom: 1px solid #f3f4f6; font-size: 11px; vertical-align: middle; text-align: center; }
-tbody td:first-child { text-align: left; }
-tbody tr:last-child td { border-bottom: none; }
-tbody tr:hover { background: #faf9fd; }
-
-/* ── Frozen first column (Menu Engineering tables) ── */
-.freeze-col thead th:first-child {
+thead th:first-child {
+  text-align: left;
   position: sticky; left: 0; z-index: 3;
   background: #f9fafb;
   box-shadow: 1px 0 0 0 var(--border);
 }
-.freeze-col tbody td:first-child {
+thead th:hover { color: var(--text); }
+tbody td { padding: 7px 10px; border-bottom: 1px solid #f3f4f6; font-size: 11px; vertical-align: middle; text-align: center; }
+tbody td:first-child {
+  text-align: left;
   position: sticky; left: 0; z-index: 1;
   background: var(--card);
   box-shadow: 1px 0 0 0 var(--border);
 }
-.freeze-col tbody tr:hover td:first-child { background: #faf9fd; }
-.freeze-col tfoot td:first-child {
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: #faf9fd; }
+tbody tr:hover td:first-child { background: #faf9fd; }
+tfoot td:first-child {
   position: sticky; left: 0; z-index: 1;
   background: var(--border);
   box-shadow: 1px 0 0 0 var(--border);
 }
+
+/* ── Freeze Category + Item/Modifier (Analytics tab's item table) ──
+   left offset matches the Category column's own minWidth (90px). */
+.freeze-2col thead th:nth-child(2) {
+  position: sticky; left: 90px; z-index: 2;
+  background: #f9fafb;
+  box-shadow: 1px 0 0 0 var(--border);
+}
+.freeze-2col tbody td:nth-child(2) {
+  position: sticky; left: 90px; z-index: 1;
+  background: var(--card);
+  box-shadow: 1px 0 0 0 var(--border);
+}
+.freeze-2col tbody tr:hover td:nth-child(2) { background: #faf9fd; }
 
 /* ── Search ── */
 .srch { padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 11px; width: 160px; font-family: inherit; outline: none; }

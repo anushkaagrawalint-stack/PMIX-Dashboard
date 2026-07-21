@@ -2,16 +2,12 @@
 import { Fragment, useMemo, useState } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-  LineChart, Line, Legend, Cell,
+  LineChart, Line, Legend,
 } from 'recharts';
 import type { AttachmentData, AttachmentTrendData, LocationRow, ItemRow, BeverageModifierRow, FiscalPeriodRow } from '@/lib/types';
 import type { Role } from '@/lib/auth';
 import { CHANNEL_LABEL } from '@/lib/constants';
 import { fiscalWeekLabel } from '@/lib/fiscal';
-
-// Same palette/assignment convention as LocationCompare.tsx's locMeta, so a
-// given location reads as the same color across both tabs.
-const LOC_SHADES = ['#4f46e5', '#7c3aed', '#2563eb', '#6d28d9', '#1d4ed8', '#5b21b6'];
 
 const fmtInt = (v: number) => v.toLocaleString();
 const fmtPct = (v: number) => `${v.toFixed(2)}%`;
@@ -213,23 +209,21 @@ export default function AttachmentAnalytics({
   }, [data, prevData, selectedChannels]);
   const bestLocation = [...locStats].sort((a, b) => b.rate - a.rate)[0];
 
-  // Stable per-location color, keyed off `locations`' own order (not locStats',
-  // which can drop/reorder locations with zero main checks) — same convention
-  // as LocationCompare.tsx's locMeta so a location's color matches across tabs.
-  const locColor = useMemo(() => {
-    const m = new Map<string, string>();
-    locations.forEach((l, i) => m.set(l.location_code, LOC_SHADES[i % LOC_SHADES.length]));
-    return m;
-  }, [locations]);
-
-  // Overall attachment rate per location, for the chart below — reuses
-  // locStats (already ignores the location filter, respects the channel
-  // filter, same as "Best Performing Location" above).
-  const locationChartData = useMemo(() =>
-    [...locStats].sort((a, b) => b.rate - a.rate).map(s => ({
-      name: locName(s.code), rate: s.rate, color: locColor.get(s.code) ?? LOC_SHADES[0],
-    })),
-  [locStats, locColor]);
+  // Per-location Drink/Side/Sweet + Overall breakdown for the chart below —
+  // built the same way as `breakdownRows`' location mode (buildBreakdownRow,
+  // defined further down — function declarations hoist, so this is safe),
+  // but independent of the `breakdownView` toggle so this chart always shows
+  // every location regardless of which view the table below is set to.
+  // Ignores the location filter (so every location stays comparable) but
+  // respects the channel filter, same convention as `locStats` above.
+  const locationChartData = useMemo(() => {
+    const codes = [...new Set(data.buckets.map(b => b.location_code))];
+    return codes
+      .map(code => buildBreakdownRow(code, locName(code),
+        (l, ch) => l === code && (selectedChannels.length === 0 || selectedChannels.includes(ch))))
+      .filter(r => r.mainChecks > 0)
+      .sort((a, b) => b.rate - a.rate);
+  }, [data, prevData, selectedChannels, locations]);
 
   // Unified location/channel/overall breakdown table — one row per location,
   // per channel, or a single combined row, depending on `breakdownView`. Each
@@ -299,7 +293,15 @@ export default function AttachmentAnalytics({
   // respect the OTHER dimension's filter — same convention as the summary
   // breakdown table above.
   const tableCols = useMemo(() => {
-    if (tableBreakdown === 'overall') return [];
+    if (tableBreakdown === 'overall') {
+      // 'Percentage' mode already shows the Overall Rate via the base column
+      // (below), so an extra column here would just duplicate it — but
+      // 'Number of Attaches' mode has nothing else to expand into a detail
+      // breakdown, so it needs this one synthetic "Overall" column group.
+      if (tableMode !== 'detail') return [];
+      return [{ code: 'overall', label: 'Overall', mainChecks: current.mainChecks,
+                rowMap: new Map(current.merged.map(r => [r.name, r])) }];
+    }
     if (tableBreakdown === 'channel') {
       const inScope = selectedChannels.length > 0
         ? selectedChannels
@@ -320,7 +322,7 @@ export default function AttachmentAnalytics({
       const rowMap = new Map(agg.merged.map(r => [r.name, r]));
       return { code, label: locName(code), mainChecks: agg.mainChecks, rowMap };
     });
-  }, [data, selectedLocations, selectedChannels, tableBreakdown]);
+  }, [data, selectedLocations, selectedChannels, tableBreakdown, tableMode, current]);
 
   const EMPTY_ROW = { checksItem: 0, checksMod: 0, totals: 0, rate: 0 };
 
@@ -610,20 +612,22 @@ export default function AttachmentAnalytics({
       <div className="cc">
         <h3>Attachment rate by location</h3>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>
-          Overall (Drink+Side+Sweet) attachment rate per location — ignores the location filter above so every location stays comparable, respects the channel filter
+          Overall and Drink/Sweet/Side attachment rate per location — ignores the location filter above so every location stays comparable, respects the channel filter
         </div>
         {locationChartData.length === 0 ? (
           <div style={{ padding: 30, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No data in the selected range.</div>
         ) : (
-          <ResponsiveContainer width="100%" height={240}>
+          <ResponsiveContainer width="100%" height={260}>
             <BarChart data={locationChartData} margin={{ top: 5, right: 20, left: 5, bottom: 5 }}>
               <CartesianGrid stroke="#f3f4f6" vertical={false} />
               <XAxis dataKey="name" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
               <YAxis tickFormatter={v => `${v}%`} tick={{ fontSize: 9 }} tickLine={false} axisLine={false} width={44} />
-              <Tooltip formatter={(v) => [`${Number(v).toFixed(2)}%`, 'Attachment Rate']} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
-              <Bar dataKey="rate" radius={[6, 6, 0, 0]}>
-                {locationChartData.map((e, i) => <Cell key={i} fill={e.color} />)}
-              </Bar>
+              <Tooltip formatter={(v, name) => [`${Number(v).toFixed(2)}%`, name]} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
+              <Legend wrapperStyle={{ fontSize: 10 }} />
+              <Bar dataKey="rate"       name="Overall" fill="#4c1d95" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="drinkRate"  name="Drink"   fill="#7c3aed" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="sweetRate"  name="Sweet"   fill="#d1d5db" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="sideRate"   name="Side"    fill="#c4b5fd" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         )}
@@ -693,7 +697,7 @@ export default function AttachmentAnalytics({
       </div>
 
       {/* ── Unified item/category/location attachment table ── */}
-      <div className="tw">
+      <div className="tw freeze-2col">
         <div className="th2">
           <h3>Attachment Rate by Item &amp; {tableBreakdown === 'channel' ? 'Channel' : tableBreakdown === 'overall' ? 'Overall' : 'Location'}</h3>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
