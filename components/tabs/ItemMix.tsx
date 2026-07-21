@@ -7,8 +7,8 @@ import { normalizeCategory } from '@/lib/constants';
 const fmt$  = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 const fmt$2 = (v: number) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-type ItemSortKey = 'qty' | 'revenue' | 'gross_sales' | 'avg_price';
-type SortKey     = ItemSortKey | 'avg_cost' | 'cogs';
+type ItemSortKey = 'qty' | 'revenue' | 'gross_sales' | 'avg_price' | 'refunds' | 'net_after_refunds';
+type SortKey     = ItemSortKey | 'avg_cost' | 'cogs' | 'qty_mix' | 'gross_mix' | 'gross_mix_all';
 
 // Extends ItemRow with "Make It a Meal" modifier-pick figures — local to this
 // tab, not part of the shared ItemRow type. When the (admin/tester-only)
@@ -332,6 +332,15 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
       if (sortKey === 'cogs') {
         return mul * ((getCogsPct(b) ?? 0) - (getCogsPct(a) ?? 0));
       }
+      // Mix % columns are a positive-constant-denominator scaling of qty/gross_sales
+      // within the group being sorted (same category/channel), so sorting by the
+      // raw figure gives an identical order without recomputing the % here.
+      if (sortKey === 'qty_mix') {
+        return mul * (b.qty - a.qty);
+      }
+      if (sortKey === 'gross_mix' || sortKey === 'gross_mix_all') {
+        return mul * (b.gross_sales - a.gross_sales);
+      }
       return mul * (b[sortKey as ItemSortKey] - a[sortKey as ItemSortKey]);
     });
   }
@@ -526,12 +535,19 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
 
   const thBase: React.CSSProperties = { position: 'sticky', top: 0, zIndex: 2, background: 'var(--card)' };
 
-  function thSort(key: SortKey, label: string, formulaTitle?: string) {
+  function thSort(key: SortKey, label: string, formulaTitle?: string, opts?: { wrap?: boolean; fontSize?: number }) {
     const active = sortKey === key;
     return (
       <th
         onClick={() => { setSortKey(key); setSortDir(d => active ? (d === 'desc' ? 'asc' : 'desc') : 'desc'); }}
-        style={{ ...thBase, cursor: 'pointer', color: active ? 'var(--accent)' : undefined, whiteSpace: 'nowrap', textAlign: 'center' }}
+        style={{
+          ...thBase,
+          cursor: 'pointer',
+          color: active ? 'var(--accent)' : undefined,
+          whiteSpace: opts?.wrap ? 'normal' : 'nowrap',
+          textAlign: 'center',
+          ...(opts?.fontSize ? { fontSize: opts.fontSize } : {}),
+        }}
         title={formulaTitle}
       >
         {label}{active ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''}
@@ -562,9 +578,14 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
           onChange={e => { setSortKey(e.target.value as SortKey); setSortDir('desc'); }}
           style={{ marginLeft: 'auto' }}
         >
-          <option value="gross_sales">Gross Sales</option>
-          <option value="revenue">Net Sales</option>
           <option value="qty">Qty</option>
+          <option value="qty_mix">Mix % (Qty)</option>
+          <option value="gross_sales">Gross Sales</option>
+          <option value="gross_mix">Mix % Revenue by Category</option>
+          <option value="revenue">Net Sales</option>
+          <option value="refunds">Refunds</option>
+          <option value="net_after_refunds">Net after Refunds</option>
+          <option value="gross_mix_all">Mix % Revenue Overall</option>
           <option value="avg_price">Avg Price</option>
           <option value="avg_cost">Avg Cost</option>
           <option value="cogs">COGS%</option>
@@ -616,13 +637,13 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
                     <th style={{ ...thBase, textAlign: 'center', fontSize: 10 }} title="QTY + Make It a Meal Qty">Combined Qty</th>
                   </>
                 )}
-                <th style={{ ...thBase, textAlign: 'center' }} title="Item qty ÷ category total qty">Mix % (Qty)</th>
+                {thSort('qty_mix', 'Mix % (Qty)', 'Item qty ÷ category total qty')}
                 {thSort('gross_sales', 'Gross Sales', 'SUM of pre-discount revenue (ties to Toast gross sales reports)')}
-                <th style={{ ...thBase, textAlign: 'center', whiteSpace: 'normal' }} title="Item gross sales ÷ category gross sales (pre-discount, ties to Toast)">Mix % Revenue by Category</th>
+                {thSort('gross_mix', 'Mix % Revenue by Category', 'Item gross sales ÷ category gross sales (pre-discount, ties to Toast)', { wrap: true })}
                 {thSort('revenue', 'Net Sales', 'Net sales after discounts (line_total)')}
-                <th style={{ ...thBase, textAlign: 'center', fontSize: 10 }} title="analytics.refund_sales, exact — joined by selection_guid">Refunds</th>
-                <th style={{ ...thBase, textAlign: 'center', fontSize: 10, whiteSpace: 'normal' }} title="Net Sales − Refunds — matches Toast's Net item amt">Net after Refunds</th>
-                <th style={{ ...thBase, textAlign: 'center', whiteSpace: 'normal' }} title="Item gross sales ÷ total gross sales across every filtered item, across all categories (not just its own category)">Mix % Revenue Overall</th>
+                {thSort('refunds', 'Refunds', 'analytics.refund_sales, exact — joined by selection_guid', { fontSize: 10 })}
+                {thSort('net_after_refunds', 'Net after Refunds', "Net Sales − Refunds — matches Toast's Net item amt", { wrap: true, fontSize: 10 })}
+                {thSort('gross_mix_all', 'Mix % Revenue Overall', 'Item gross sales ÷ total gross sales across every filtered item, across all categories (not just its own category)', { wrap: true })}
                 {thSort('avg_price', 'Avg Price', 'Gross Sales ÷ Qty (pre-discount average selling price)')}
                 {thSort('avg_cost', 'Avg Cost', 'Pink Sheet "Final Avg Cost With Modifier" for this channel; falls back to r365 Item Cost Lookup when no Pink Sheet cost exists')}
                 {thSort('cogs', 'COGS%', '(Avg Cost × Qty) ÷ (Avg Price × Qty) — cost of goods sold as a % of price')}

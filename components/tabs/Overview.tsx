@@ -210,8 +210,8 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
     const seen = new Map<string, { revenue: number; qty: number; category: string }>();
     for (const i of effectiveItems) {
       const e = seen.get(i.canonical_name);
-      if (e) { e.revenue += i.revenue; e.qty += i.qty; }
-      else seen.set(i.canonical_name, { revenue: i.revenue, qty: i.qty, category: mapCat(i.category ?? 'Other') });
+      if (e) { e.revenue += i.net_after_refunds; e.qty += i.qty; }
+      else seen.set(i.canonical_name, { revenue: i.net_after_refunds, qty: i.qty, category: mapCat(i.category ?? 'Other') });
     }
     let entries = [...seen.entries()];
     if (categoryFilter !== 'all') entries = entries.filter(([, v]) => v.category === categoryFilter);
@@ -229,7 +229,7 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
     effectiveItems.forEach(i => {
       const cat = mapCat(i.category ?? 'Other');
       const e = map[cat] ?? { revenue: 0, qty: 0 };
-      e.revenue += i.revenue; e.qty += i.qty;
+      e.revenue += i.net_after_refunds; e.qty += i.qty;
       map[cat] = e;
     });
     let entries = Object.entries(map).sort((a, b) => b[1].revenue - a[1].revenue);
@@ -245,7 +245,7 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
       if (mapCat(i.category ?? 'Other') === categoryFilter) {
         const sub = i.sub_category || categoryFilter;
         const e = map[sub] ?? { revenue: 0, qty: 0 };
-        e.revenue += i.revenue; e.qty += i.qty;
+        e.revenue += i.net_after_refunds; e.qty += i.qty;
         map[sub] = e;
       }
     });
@@ -264,7 +264,7 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
     channelItems.forEach(ci => {
       const e = map.get(ci.channel) ?? { qty: 0, revenue: 0 };
       e.qty     += ci.qty;
-      e.revenue += ci.revenue;
+      e.revenue += ci.revenue - ci.refunds;
       map.set(ci.channel, e);
     });
     if (includeMakeItMeal) {

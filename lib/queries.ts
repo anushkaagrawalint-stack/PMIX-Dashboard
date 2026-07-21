@@ -311,11 +311,22 @@ export async function getChannels(dr: DateRange): Promise<ChannelRow[]> {
 export async function getWeekly(dr: DateRange): Promise<WeekRow[]> {
   const db = pool();
   const { rows } = await db.query(`
+    WITH refund_totals AS (
+      SELECT
+        DATE_TRUNC('week', fol.business_date)::DATE AS week_start,
+        SUM(rs.sales_refund)                        AS refunds
+      FROM analytics.refund_sales rs
+      JOIN public.fact_order_lines fol ON fol.selection_guid = rs.selection_guid
+      WHERE ${BASE_WHERE}
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY 1
+    )
     SELECT
       DATE_TRUNC('week', fol.business_date)::DATE::TEXT AS week_start,
-      ROUND(SUM(fol.line_total)::NUMERIC, 0)            AS revenue,
+      ROUND(SUM(fol.line_total)::NUMERIC - COALESCE(MAX(rt.refunds), 0), 0) AS revenue,
       SUM(fol.quantity)::BIGINT                         AS qty
     FROM public.fact_order_lines fol
+    LEFT JOIN refund_totals rt ON rt.week_start = DATE_TRUNC('week', fol.business_date)::DATE
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY 1
@@ -332,11 +343,22 @@ export async function getWeekly(dr: DateRange): Promise<WeekRow[]> {
 export async function getDaily(dr: DateRange): Promise<DailyRow[]> {
   const db = pool();
   const { rows } = await db.query(`
+    WITH refund_totals AS (
+      SELECT
+        fol.business_date    AS date,
+        SUM(rs.sales_refund) AS refunds
+      FROM analytics.refund_sales rs
+      JOIN public.fact_order_lines fol ON fol.selection_guid = rs.selection_guid
+      WHERE ${BASE_WHERE}
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY 1
+    )
     SELECT
       fol.business_date::TEXT                          AS date,
-      ROUND(SUM(fol.line_total)::NUMERIC, 0)          AS revenue,
+      ROUND(SUM(fol.line_total)::NUMERIC - COALESCE(MAX(rt.refunds), 0), 0) AS revenue,
       SUM(fol.quantity)::BIGINT                        AS qty
     FROM public.fact_order_lines fol
+    LEFT JOIN refund_totals rt ON rt.date = fol.business_date
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY 1
@@ -353,15 +375,34 @@ export async function getDaily(dr: DateRange): Promise<DailyRow[]> {
 export async function getWeeklyByChannel(dr: DateRange): Promise<WeeklyChannelRow[]> {
   const db = pool();
   const { rows } = await db.query(`
+    WITH refund_totals AS (
+      SELECT
+        DATE_TRUNC('week', fol.business_date)::DATE AS week_start,
+        (${CHO})                                    AS channel,
+        COALESCE(fol.location_code, '')             AS location_code,
+        (${CAT1})                                   AS category,
+        SUM(rs.sales_refund)                        AS refunds
+      FROM analytics.refund_sales rs
+      JOIN public.fact_order_lines fol ON fol.selection_guid = rs.selection_guid
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE ${BASE_WHERE}
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY 1, 2, 3, 4
+    )
     SELECT
       DATE_TRUNC('week', fol.business_date)::DATE::TEXT AS week_start,
       (${CHO})                                          AS channel,
       COALESCE(fol.location_code, '')                   AS location_code,
       (${CAT1})                                         AS category,
-      ROUND(SUM(fol.line_total)::NUMERIC, 0)            AS revenue,
+      ROUND(SUM(fol.line_total)::NUMERIC - COALESCE(MAX(rt.refunds), 0), 0) AS revenue,
       SUM(fol.quantity)::BIGINT                         AS qty
     FROM public.fact_order_lines fol
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+    LEFT JOIN refund_totals rt
+      ON rt.week_start = DATE_TRUNC('week', fol.business_date)::DATE
+      AND rt.channel = (${CHO})
+      AND rt.location_code = COALESCE(fol.location_code, '')
+      AND rt.category = (${CAT1})
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY 1, 2, 3, 4
@@ -381,15 +422,34 @@ export async function getWeeklyByChannel(dr: DateRange): Promise<WeeklyChannelRo
 export async function getDailyByChannel(dr: DateRange): Promise<DailyChannelRow[]> {
   const db = pool();
   const { rows } = await db.query(`
+    WITH refund_totals AS (
+      SELECT
+        fol.business_date               AS date,
+        (${CHO})                        AS channel,
+        COALESCE(fol.location_code, '') AS location_code,
+        (${CAT1})                       AS category,
+        SUM(rs.sales_refund)            AS refunds
+      FROM analytics.refund_sales rs
+      JOIN public.fact_order_lines fol ON fol.selection_guid = rs.selection_guid
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE ${BASE_WHERE}
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY 1, 2, 3, 4
+    )
     SELECT
       fol.business_date::TEXT                          AS date,
       (${CHO})                                         AS channel,
       COALESCE(fol.location_code, '')                  AS location_code,
       (${CAT1})                                        AS category,
-      ROUND(SUM(fol.line_total)::NUMERIC, 0)          AS revenue,
+      ROUND(SUM(fol.line_total)::NUMERIC - COALESCE(MAX(rt.refunds), 0), 0) AS revenue,
       SUM(fol.quantity)::BIGINT                        AS qty
     FROM public.fact_order_lines fol
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+    LEFT JOIN refund_totals rt
+      ON rt.date = fol.business_date
+      AND rt.channel = (${CHO})
+      AND rt.location_code = COALESCE(fol.location_code, '')
+      AND rt.category = (${CAT1})
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY 1, 2, 3, 4

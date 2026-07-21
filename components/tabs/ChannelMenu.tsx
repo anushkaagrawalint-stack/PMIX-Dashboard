@@ -104,7 +104,7 @@ export default function ChannelMenu({ data, makeItMealModifiers }: { data: Dashb
     const chanQty: Record<string, number> = {};
     channelItems.forEach(r => {
       const mm = includeMakeItMeal ? makeItMealMap.get(`${r.canonical_name}|${r.channel}`) : undefined;
-      chanRev[r.channel] = (chanRev[r.channel] ?? 0) + r.revenue + (mm?.price ?? 0);
+      chanRev[r.channel] = (chanRev[r.channel] ?? 0) + r.revenue - r.refunds + (mm?.price ?? 0);
       chanQty[r.channel] = (chanQty[r.channel] ?? 0) + r.qty     + (mm?.qty   ?? 0);
     });
 
@@ -113,7 +113,7 @@ export default function ChannelMenu({ data, makeItMealModifiers }: { data: Dashb
       const mm = includeMakeItMeal ? makeItMealMap.get(`${r.canonical_name}|${r.channel}`) : undefined;
       if (!grouped[r.channel]) grouped[r.channel] = {};
       const e = grouped[r.channel][r.canonical_name] ?? { rev: 0, qty: 0 };
-      e.rev += r.revenue + (mm?.price ?? 0);
+      e.rev += r.revenue - r.refunds + (mm?.price ?? 0);
       e.qty += r.qty     + (mm?.qty   ?? 0);
       grouped[r.channel][r.canonical_name] = e;
     });
@@ -147,8 +147,8 @@ export default function ChannelMenu({ data, makeItMealModifiers }: { data: Dashb
       const g = item.menu_group || 'Other';
       if (!map[ch]) map[ch] = [];
       const existing = map[ch].find(e => e.name === g);
-      if (existing) existing.value += item.gross_sales + added;
-      else map[ch].push({ name: g, value: item.gross_sales + added });
+      if (existing) existing.value += item.gross_sales - item.refunds + added;
+      else map[ch].push({ name: g, value: item.gross_sales - item.refunds + added });
     });
     Object.values(map).forEach(groups => groups.sort((a, b) => b.value - a.value));
     return map;
@@ -163,7 +163,7 @@ export default function ChannelMenu({ data, makeItMealModifiers }: { data: Dashb
         const mm = includeMakeItMeal ? makeItMealMap.get(`${item.canonical_name}|${ch}`) : undefined;
         const g = item.menu_group || 'Other';
         const e = groups[g] ?? { rev: 0, qty: 0 };
-        e.rev += item.gross_sales + (mm?.price ?? 0);
+        e.rev += item.gross_sales - item.refunds + (mm?.price ?? 0);
         e.qty += item.qty         + (mm?.qty   ?? 0);
         groups[g] = e;
       });

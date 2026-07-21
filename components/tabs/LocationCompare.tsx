@@ -175,7 +175,7 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
       const cat = meta[r.canonical_name] ?? 'Other';
       if (!map[r.location_code]) map[r.location_code] = {};
       if (!map[r.location_code][cat]) map[r.location_code][cat] = { revenue: 0, qty: 0 };
-      map[r.location_code][cat].revenue += r.revenue;
+      map[r.location_code][cat].revenue += r.revenue - (r.refunds ?? 0);
       map[r.location_code][cat].qty     += r.qty;
     });
     return map;
@@ -189,10 +189,10 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
       const existing = m[r.canonical_name][r.location_code];
       if (existing) {
         existing.qty     += r.qty;
-        existing.revenue += r.revenue;
+        existing.revenue += r.revenue - (r.refunds ?? 0);
         existing.mix_pct += r.mix_pct;
       } else {
-        m[r.canonical_name][r.location_code] = { qty: r.qty, revenue: r.revenue, mix_pct: r.mix_pct };
+        m[r.canonical_name][r.location_code] = { qty: r.qty, revenue: r.revenue - (r.refunds ?? 0), mix_pct: r.mix_pct };
       }
     });
     return m;
@@ -214,7 +214,7 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
       const agg: Record<string, { rev: number; qty: number }> = {};
       effectiveLocationItems.filter(r => r.location_code === l.location_code).forEach(r => {
         const e = agg[r.canonical_name] ?? { rev: 0, qty: 0 };
-        e.rev += r.revenue;
+        e.rev += r.revenue - (r.refunds ?? 0);
         e.qty += r.qty;
         agg[r.canonical_name] = e;
       });
