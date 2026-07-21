@@ -3034,10 +3034,15 @@ export async function getAttachmentData(dr: DateRange): Promise<AttachmentData> 
     ),
     -- fact_modifiers.parent_selection joins 100% to fact_order_lines.selection_guid
     -- (verified: no fallback to order_guid needed, unlike the original reference tool).
+    -- Restricted to main_checks (like item_lines) so a modifier on a check that
+    -- doesn't even have a qualifying entree line (e.g. a catering order whose
+    -- menu_group naming isn't in ATTACH_MAIN_LIST) can't leak into the
+    -- attachment count — the whole metric is "entree-tickets that also got X".
     mod_lines AS (
       SELECT fol.check_guid, fol.location_code, (${CHO}) AS channel, fm.canonical_name AS name
       FROM public.fact_modifiers fm
       JOIN public.fact_order_lines fol ON fol.selection_guid = fm.parent_selection
+      JOIN main_checks mc ON mc.check_guid = fol.check_guid
       ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fm.is_voided AND NOT fol.is_voided AND NOT fol.is_deferred
         AND fm.business_date BETWEEN $1::DATE AND $2::DATE

@@ -71,6 +71,7 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
   );
   const [costValue,  setCostValue]  = useState<Record<string, string>>({});
   const [costStatus, setCostStatus] = useState<Record<string, 'idle' | 'saving' | 'done' | 'error'>>({});
+  const [costBulkSaving, setCostBulkSaving] = useState(false);
 
   const saveCost = useCallback(async (r: MissingCostRow) => {
     const key    = costKey(r);
@@ -100,6 +101,24 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
 
   const doneCosts = Object.values(costStatus).filter(s => s === 'done').length;
 
+  // Rows the admin actually entered a cost for and hasn't saved yet — the
+  // ONLY rows "Confirm All Changes" is allowed to touch. A row with no value
+  // typed in (still blank, i.e. never touched) is never included here, so
+  // clicking the bulk button can't accidentally write a cost for a row the
+  // admin skipped past.
+  const costPendingRows = useMemo(() => missingCosts.filter(r => {
+    const key = costKey(r);
+    const cost = Number(costValue[key]);
+    return Number.isFinite(cost) && cost > 0 && costStatus[key] !== 'done' && costStatus[key] !== 'saving';
+  }), [missingCosts, costValue, costStatus]);
+
+  const confirmAllCosts = useCallback(async () => {
+    if (costPendingRows.length === 0) return;
+    setCostBulkSaving(true);
+    await Promise.all(costPendingRows.map(r => saveCost(r)));
+    setCostBulkSaving(false);
+  }, [costPendingRows, saveCost]);
+
   // ── Channel correction state ──────────────────────────────────────────────
   // channelDraft[order_guid] = selected channel value (not yet confirmed).
   // Pre-fills from a persisted override if one already exists (survives reload),
@@ -109,6 +128,12 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
   );
   const [channelStatus,  setChannelStatus]   = useState<Record<string, 'idle' | 'saving' | 'done' | 'undoing' | 'error'>>({});
   const [channelEditing, setChannelEditing]  = useState<Set<string>>(new Set());
+  // Marked only by the dropdown's own onChange — NOT pre-filled just because
+  // channelDraft already holds the suggested channel as its default value.
+  // "Confirm All Changes" must only ever touch orders the admin actually
+  // interacted with; every other order is left exactly as the server has it.
+  const [channelTouched, setChannelTouched]  = useState<Set<string>>(new Set());
+  const [channelBulkSaving, setChannelBulkSaving] = useState(false);
   const [expandedOrders, setExpandedOrders]  = useState<Set<string>>(new Set());
   const toggleExpanded = (order_guid: string) =>
     setExpandedOrders(prev => {
@@ -123,12 +148,14 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
   const [itemStatus, setItemStatus] = useState<Record<string, 'idle' | 'saving' | 'done' | 'error'>>({});
   const [itemEditing,setItemEditing]= useState<Set<string>>(new Set());
 
-  // ── Channel confirm — only ever touches THIS order's flagged line(s), never
+  // ── Channel save — only ever touches THIS order's flagged line(s), never
   // the whole order, so already-correct lines (e.g. a Catering-3PD line sitting
-  // next to a mistracked In-House one) are never rewritten. ───────────────────
-  const confirmChannel = useCallback(async (r: NeedsReviewRow) => {
+  // next to a mistracked In-House one) are never rewritten. Returns success so
+  // both the single-row and bulk confirm flows can share this without either
+  // one reloading mid-batch. ──────────────────────────────────────────────────
+  const saveChannelRow = useCallback(async (r: NeedsReviewRow) => {
     const channel = channelDraft[r.order_guid];
-    if (!channel) return;
+    if (!channel) return false;
     setChannelStatus(s => ({ ...s, [r.order_guid]: 'saving' }));
     try {
       const res = await fetch('/api/review/update-channel', {
@@ -142,12 +169,42 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
       });
       if (!res.ok) throw new Error(await res.text());
       setChannelStatus(s => ({ ...s, [r.order_guid]: 'done' }));
-      setChannelEditing(prev => { const n = new Set(prev); n.delete(r.order_guid); return n; });
-      window.location.reload();
+      return true;
     } catch {
       setChannelStatus(s => ({ ...s, [r.order_guid]: 'error' }));
+      return false;
     }
   }, [channelDraft]);
+
+  const confirmChannel = useCallback(async (r: NeedsReviewRow) => {
+    const ok = await saveChannelRow(r);
+    if (ok) {
+      setChannelEditing(prev => { const n = new Set(prev); n.delete(r.order_guid); return n; });
+      window.location.reload();
+    }
+  }, [saveChannelRow]);
+
+  // Orders the admin actually changed the channel dropdown for (channelTouched)
+  // AND that still have a pending draft to save — an order the admin never
+  // touched keeps its suggested-channel default in channelDraft forever, but
+  // is never in channelTouched, so "Confirm All Changes" can never pick it up.
+  const channelPendingRows = useMemo(() => needsReview.filter(r =>
+    channelTouched.has(r.order_guid) &&
+    channelDraft[r.order_guid] &&
+    channelStatus[r.order_guid] !== 'saving' &&
+    (r.override_channel === null || channelEditing.has(r.order_guid))
+  ), [needsReview, channelTouched, channelDraft, channelStatus, channelEditing]);
+
+  const confirmAllChannels = useCallback(async () => {
+    if (channelPendingRows.length === 0) return;
+    setChannelBulkSaving(true);
+    const results = await Promise.all(channelPendingRows.map(r => saveChannelRow(r)));
+    setChannelBulkSaving(false);
+    if (results.some(Boolean)) {
+      setChannelEditing(new Set());
+      window.location.reload();
+    }
+  }, [channelPendingRows, saveChannelRow]);
 
   // ── Channel undo — removes the override for THIS order's flagged line(s)
   // only, so those specific lines revert to whatever they naturally derive to
@@ -268,6 +325,30 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {channelPendingRows.length > 0 && (
+                <div style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '8px 12px', marginBottom: 2,
+                  background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: 8,
+                }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>
+                    {channelPendingRows.length} order{channelPendingRows.length !== 1 ? 's' : ''} changed, not yet confirmed
+                    — every other order is left as-is
+                  </span>
+                  <button
+                    disabled={channelBulkSaving}
+                    onClick={confirmAllChannels}
+                    style={{
+                      padding: '5px 16px', borderRadius: 6, border: 'none',
+                      background: 'var(--accent)', color: '#fff',
+                      fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                      opacity: channelBulkSaving ? 0.6 : 1,
+                    }}
+                  >
+                    {channelBulkSaving ? 'Saving…' : `✓ Confirm All Changes (${channelPendingRows.length})`}
+                  </button>
+                </div>
+              )}
               {needsReview.map((r) => {
                 const status    = channelStatus[r.order_guid] ?? 'idle';
                 // Persisted (survives reload) — this is the real source of truth once the
@@ -419,7 +500,10 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
                           <select
                             className="fb-sel"
                             value={draft}
-                            onChange={e => setChannelDraft(prev => ({ ...prev, [r.order_guid]: e.target.value }))}
+                            onChange={e => {
+                              setChannelDraft(prev => ({ ...prev, [r.order_guid]: e.target.value }));
+                              setChannelTouched(prev => new Set(prev).add(r.order_guid));
+                            }}
                             style={{ fontSize: 11, padding: '3px 6px' }}
                           >
                             {ASSIGNABLE_CHANNELS.map(c => (
@@ -686,6 +770,30 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
             </div>
           ) : (
             <div className="tw">
+              {costPendingRows.length > 0 && (
+                <div style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '8px 12px', borderBottom: '1px solid var(--border)',
+                  background: 'rgba(99,102,241,0.06)',
+                }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)' }}>
+                    {costPendingRows.length} cost{costPendingRows.length !== 1 ? 's' : ''} entered, not yet saved
+                    — every row with no value typed in is left as-is
+                  </span>
+                  <button
+                    disabled={costBulkSaving}
+                    onClick={confirmAllCosts}
+                    style={{
+                      padding: '5px 16px', borderRadius: 6, border: 'none',
+                      background: 'var(--accent)', color: '#fff',
+                      fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                      opacity: costBulkSaving ? 0.6 : 1,
+                    }}
+                  >
+                    {costBulkSaving ? 'Saving…' : `✓ Confirm All Changes (${costPendingRows.length})`}
+                  </button>
+                </div>
+              )}
               <div className="tscroll">
                 <table style={{ fontSize: 12 }}>
                   <thead>

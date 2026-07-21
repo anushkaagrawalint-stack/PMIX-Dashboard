@@ -2,10 +2,16 @@
 import { Fragment, useMemo, useState } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-  LineChart, Line, Legend,
+  LineChart, Line, Legend, Cell,
 } from 'recharts';
-import type { AttachmentData, AttachmentTrendData, LocationRow, ItemRow, BeverageModifierRow } from '@/lib/types';
+import type { AttachmentData, AttachmentTrendData, LocationRow, ItemRow, BeverageModifierRow, FiscalPeriodRow } from '@/lib/types';
 import type { Role } from '@/lib/auth';
+import { CHANNEL_LABEL } from '@/lib/constants';
+import { fiscalWeekLabel } from '@/lib/fiscal';
+
+// Same palette/assignment convention as LocationCompare.tsx's locMeta, so a
+// given location reads as the same color across both tabs.
+const LOC_SHADES = ['#4f46e5', '#7c3aed', '#2563eb', '#6d28d9', '#1d4ed8', '#5b21b6'];
 
 const fmtInt = (v: number) => v.toLocaleString();
 const fmtPct = (v: number) => `${v.toFixed(2)}%`;
@@ -151,7 +157,7 @@ function aggregate(ad: AttachmentData, filter: (loc: string, ch: string) => bool
 }
 
 export default function AttachmentAnalytics({
-  data, prevData, prevLabel, trendData, locations, selectedLocations, selectedChannels, items, beverageModifiers, role,
+  data, prevData, prevLabel, trendData, locations, selectedLocations, selectedChannels, items, beverageModifiers, role, periods,
 }: {
   data: AttachmentData;
   prevData: AttachmentData | null;
@@ -163,16 +169,19 @@ export default function AttachmentAnalytics({
   items: ItemRow[];
   beverageModifiers: BeverageModifierRow[];
   role: Role;
+  periods: FiscalPeriodRow[];
 }) {
   const showExport = role !== 'user';
   const [tableCategory, setTableCategory] = useState('');
   const [tableSearch, setTableSearch]     = useState('');
   const [tableLimit, setTableLimit]       = useState<10 | 25 | 50 | 100 | 'all'>(25);
   const [tableMode, setTableMode]         = useState<'percent' | 'detail'>('percent');
+  const [tableBreakdown, setTableBreakdown] = useState<'location' | 'channel' | 'overall'>('location');
   const [tableSortCol, setTableSortCol]   = useState<string>('overall');
   const [tableSortDir, setTableSortDir]   = useState<'desc' | 'asc'>('desc');
-  const [locSortCol, setLocSortCol]       = useState<string>('rate');
-  const [locSortDir, setLocSortDir]       = useState<'desc' | 'asc'>('desc');
+  const [breakdownView, setBreakdownView] = useState<'location' | 'channel' | 'overall'>('location');
+  const [bdSortCol, setBdSortCol]         = useState<string>('rate');
+  const [bdSortDir, setBdSortDir]         = useState<'desc' | 'asc'>('desc');
 
   const locName = (code: string) => locations.find(l => l.location_code === code)?.display_name ?? code;
 
@@ -204,31 +213,73 @@ export default function AttachmentAnalytics({
   }, [data, prevData, selectedChannels]);
   const bestLocation = [...locStats].sort((a, b) => b.rate - a.rate)[0];
 
-  // Per-location breakdown — one row per location currently in scope
-  // (all locations if none selected, otherwise just the selected ones), plus
-  // a combined "Overall" row so multi-location selections can be compared at a glance.
-  const locationBreakdown = useMemo(() => {
-    const inScope = selectedLocations.length > 0
-      ? selectedLocations
-      : [...new Set(data.buckets.map(b => b.location_code))];
-    return inScope.map(code => {
-      const filter = (l: string, ch: string) => l === code && (selectedChannels.length === 0 || selectedChannels.includes(ch));
-      const agg = aggregate(data, filter);
-      const prevAgg = prevData ? aggregate(prevData, filter) : null;
-      return { code, name: locName(code), mainChecks: agg.mainChecks, totalAttach: agg.totalAttach, rate: agg.overallRate, prevRate: prevAgg?.overallRate };
-    }).sort((a, b) => {
-      const mul = locSortDir === 'asc' ? -1 : 1;
-      const key = locSortCol as 'name' | 'mainChecks' | 'totalAttach' | 'rate';
-      return cmp(a[key], b[key], mul);
-    });
-  }, [data, prevData, selectedLocations, selectedChannels, locSortCol, locSortDir]);
-  const overallAttach = current.totalAttach;
+  // Stable per-location color, keyed off `locations`' own order (not locStats',
+  // which can drop/reorder locations with zero main checks) — same convention
+  // as LocationCompare.tsx's locMeta so a location's color matches across tabs.
+  const locColor = useMemo(() => {
+    const m = new Map<string, string>();
+    locations.forEach((l, i) => m.set(l.location_code, LOC_SHADES[i % LOC_SHADES.length]));
+    return m;
+  }, [locations]);
 
-  function handleLocSort(col: string) {
-    if (locSortCol === col) setLocSortDir(d => d === 'desc' ? 'asc' : 'desc');
-    else { setLocSortCol(col); setLocSortDir('desc'); }
+  // Overall attachment rate per location, for the chart below — reuses
+  // locStats (already ignores the location filter, respects the channel
+  // filter, same as "Best Performing Location" above).
+  const locationChartData = useMemo(() =>
+    [...locStats].sort((a, b) => b.rate - a.rate).map(s => ({
+      name: locName(s.code), rate: s.rate, color: locColor.get(s.code) ?? LOC_SHADES[0],
+    })),
+  [locStats, locColor]);
+
+  // Unified location/channel/overall breakdown table — one row per location,
+  // per channel, or a single combined row, depending on `breakdownView`. Each
+  // row carries its own Drink/Side/Sweet rate (via catMap, already item+modifier
+  // merged — see aggregate()) alongside the blended Overall rate, so there's no
+  // need for three separate tables.
+  interface BreakdownRow {
+    code: string; name: string; mainChecks: number; totalAttach: number;
+    drinkRate: number; sideRate: number; sweetRate: number; rate: number; prevRate?: number;
   }
-  const locSortArrow = (col: string) => locSortCol === col ? (locSortDir === 'desc' ? ' ↓' : ' ↑') : '';
+  function buildBreakdownRow(code: string, name: string, filter: (l: string, ch: string) => boolean): BreakdownRow {
+    const agg = aggregate(data, filter);
+    const prevAgg = prevData ? aggregate(prevData, filter) : null;
+    const catRate = (cat: string) => agg.mainChecks ? ((agg.catMap.get(cat) ?? 0) / agg.mainChecks) * 100 : 0;
+    return {
+      code, name, mainChecks: agg.mainChecks, totalAttach: agg.totalAttach,
+      drinkRate: catRate('Drink'), sideRate: catRate('Side'), sweetRate: catRate('Sweet'),
+      rate: agg.overallRate, prevRate: prevAgg?.overallRate,
+    };
+  }
+  const breakdownRows = useMemo(() => {
+    let rows: BreakdownRow[];
+    if (breakdownView === 'overall') {
+      rows = [buildBreakdownRow('overall', 'Overall', bucketMatches)];
+    } else if (breakdownView === 'channel') {
+      const inScope = selectedChannels.length > 0
+        ? selectedChannels
+        : [...new Set(data.buckets.map(b => b.channel))];
+      rows = inScope.map(ch => buildBreakdownRow(ch, CHANNEL_LABEL[ch] ?? ch,
+        (l, c) => c === ch && (selectedLocations.length === 0 || selectedLocations.includes(l))));
+    } else {
+      const inScope = selectedLocations.length > 0
+        ? selectedLocations
+        : [...new Set(data.buckets.map(b => b.location_code))];
+      rows = inScope.map(code => buildBreakdownRow(code, locName(code),
+        (l, ch) => l === code && (selectedChannels.length === 0 || selectedChannels.includes(ch))));
+    }
+    return rows.sort((a, b) => {
+      const mul = bdSortDir === 'asc' ? -1 : 1;
+      const key = bdSortCol as keyof BreakdownRow;
+      return cmp(a[key] as string | number, b[key] as string | number, mul);
+    });
+  }, [data, prevData, selectedLocations, selectedChannels, breakdownView, bdSortCol, bdSortDir]);
+
+  function handleBdSort(col: string) {
+    if (bdSortCol === col) setBdSortDir(d => d === 'desc' ? 'asc' : 'desc');
+    else { setBdSortCol(col); setBdSortDir('desc'); }
+  }
+  const bdSortArrow = (col: string) => bdSortCol === col ? (bdSortDir === 'desc' ? ' ↓' : ' ↑') : '';
+  const breakdownLabel = breakdownView === 'channel' ? 'Channel' : breakdownView === 'overall' ? 'Scope' : 'Location';
 
   // name → category, sourced from the item-side breakdown. Every row in
   // `merged` is by construction a Main/Sweet/Side/Drink item (see aggregate()),
@@ -240,10 +291,26 @@ export default function AttachmentAnalytics({
   }, [current.catItems]);
   const categoryOf = (name: string) => nameCategory.get(name) ?? '';
 
-  // One column-group per in-scope location, so a single name's actual attachment
-  // rate (and its underlying counts) can be compared across locations at a
-  // glance, alongside its overall (all-scope) figure — no averaging.
-  const tableLocs = useMemo(() => {
+  // One column-group per in-scope location/channel (or none, in 'overall' mode),
+  // so a single name's actual attachment rate (and its underlying counts) can
+  // be compared side-by-side, alongside its overall (all-scope) figure — no
+  // averaging. Location and Channel modes each ignore their OWN dimension's
+  // global filter (so every location/channel stays comparable) but still
+  // respect the OTHER dimension's filter — same convention as the summary
+  // breakdown table above.
+  const tableCols = useMemo(() => {
+    if (tableBreakdown === 'overall') return [];
+    if (tableBreakdown === 'channel') {
+      const inScope = selectedChannels.length > 0
+        ? selectedChannels
+        : [...new Set(data.buckets.map(b => b.channel))];
+      return inScope.map(code => {
+        const filter = (l: string, ch: string) => ch === code && (selectedLocations.length === 0 || selectedLocations.includes(l));
+        const agg = aggregate(data, filter);
+        const rowMap = new Map(agg.merged.map(r => [r.name, r]));
+        return { code, label: CHANNEL_LABEL[code] ?? code, mainChecks: agg.mainChecks, rowMap };
+      });
+    }
     const inScope = selectedLocations.length > 0
       ? selectedLocations
       : [...new Set(data.buckets.map(b => b.location_code))];
@@ -251,9 +318,9 @@ export default function AttachmentAnalytics({
       const filter = (l: string, ch: string) => l === code && (selectedChannels.length === 0 || selectedChannels.includes(ch));
       const agg = aggregate(data, filter);
       const rowMap = new Map(agg.merged.map(r => [r.name, r]));
-      return { code, mainChecks: agg.mainChecks, rowMap };
+      return { code, label: locName(code), mainChecks: agg.mainChecks, rowMap };
     });
-  }, [data, selectedLocations, selectedChannels]);
+  }, [data, selectedLocations, selectedChannels, tableBreakdown]);
 
   const EMPTY_ROW = { checksItem: 0, checksMod: 0, totals: 0, rate: 0 };
 
@@ -284,13 +351,14 @@ export default function AttachmentAnalytics({
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([week_start, v]) => ({
         week_start,
+        label:       fiscalWeekLabel(week_start, periods),
         drinkRate:   v.mainChecks ? (v.drink / v.mainChecks) * 100 : 0,
         sweetRate:   v.mainChecks ? (v.sweet / v.mainChecks) * 100 : 0,
         sideRate:    v.mainChecks ? (v.side  / v.mainChecks) * 100 : 0,
         overallRate: v.mainChecks ? ((v.drink + v.sweet + v.side) / v.mainChecks) * 100 : 0,
         mainChecks:  v.mainChecks,
       }));
-  }, [trendData, selectedLocations, selectedChannels]);
+  }, [trendData, selectedLocations, selectedChannels, periods]);
 
   const tableRows = useMemo(() => {
     const q = tableSearch.trim().toLowerCase();
@@ -301,21 +369,21 @@ export default function AttachmentAnalytics({
         name: r.name,
         category: categoryOf(r.name),
         overall: r,
-        perLoc: tableLocs.map(l => l.rowMap.get(r.name) ?? EMPTY_ROW),
+        perCol: tableCols.map(l => l.rowMap.get(r.name) ?? EMPTY_ROW),
       }))
       .sort((a, b) => {
         if (tableSortCol === 'category') return cmp(a.category, b.category, mul);
         if (tableSortCol === 'name') return cmp(a.name, b.name, mul);
         if (tableSortCol === 'overall') return cmp(a.overall.rate, b.overall.rate, mul);
-        const [locCode, metric] = tableSortCol.split(':');
-        const li = tableLocs.findIndex(l => l.code === locCode);
+        const [colCode, metric] = tableSortCol.split(':');
+        const li = tableCols.findIndex(l => l.code === colCode);
         if (li < 0) return 0;
         const val = (row: typeof a) => metric === 'mainChecks'
-          ? tableLocs[li].mainChecks
-          : (row.perLoc[li]?.[metric as 'checksItem' | 'checksMod' | 'totals' | 'rate'] ?? 0);
+          ? tableCols[li].mainChecks
+          : (row.perCol[li]?.[metric as 'checksItem' | 'checksMod' | 'totals' | 'rate'] ?? 0);
         return cmp(val(a), val(b), mul);
       });
-  }, [merged, tableLocs, tableSearch, tableCategory, tableSortCol, tableSortDir, nameCategory]);
+  }, [merged, tableCols, tableSearch, tableCategory, tableSortCol, tableSortDir, nameCategory]);
   const visibleTable = tableLimit === 'all' ? tableRows : tableRows.slice(0, tableLimit);
 
   function handleTableSort(col: string) {
@@ -326,12 +394,12 @@ export default function AttachmentAnalytics({
 
   function exportTableCsv() {
     const headers = ['Category', 'Item / Modifier', 'Overall Attachment Rate (%)'];
-    tableLocs.forEach(l => headers.push(`${locName(l.code)} Attachment Rate (%)`));
+    tableCols.forEach(l => headers.push(`${l.label} Attachment Rate (%)`));
     const rows = tableRows.map(r => [
       r.category, r.name, r.overall.rate.toFixed(2),
-      ...r.perLoc.map(v => v.rate.toFixed(2)),
+      ...r.perCol.map(v => v.rate.toFixed(2)),
     ]);
-    csvDownload('attachment_rate_by_item_and_location.csv', headers, rows);
+    csvDownload(`attachment_rate_by_item_and_${tableBreakdown}.csv`, headers, rows);
   }
 
   // ── Unified Item Mix (Entree / Drink / Side / Sweet) — one table switchable
@@ -511,7 +579,7 @@ export default function AttachmentAnalytics({
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={weeklyTrend} margin={{ top: 5, right: 20, left: 5, bottom: 5 }}>
               <CartesianGrid stroke="#f3f4f6" vertical={false} />
-              <XAxis dataKey="week_start" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
+              <XAxis dataKey="label" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
               <YAxis tickFormatter={v => `${v}%`} tick={{ fontSize: 9 }} tickLine={false} axisLine={false} width={44} />
               <Tooltip formatter={(v, name) => [`${Number(v).toFixed(1)}%`, name]} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
               <Legend wrapperStyle={{ fontSize: 10 }} />
@@ -538,45 +606,87 @@ export default function AttachmentAnalytics({
         </ResponsiveContainer>
       </div>
 
-      {/* ── Per-location breakdown ── */}
+      {/* ── Attachment rate by location ── */}
+      <div className="cc">
+        <h3>Attachment rate by location</h3>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>
+          Overall (Drink+Side+Sweet) attachment rate per location — ignores the location filter above so every location stays comparable, respects the channel filter
+        </div>
+        {locationChartData.length === 0 ? (
+          <div style={{ padding: 30, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No data in the selected range.</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={locationChartData} margin={{ top: 5, right: 20, left: 5, bottom: 5 }}>
+              <CartesianGrid stroke="#f3f4f6" vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
+              <YAxis tickFormatter={v => `${v}%`} tick={{ fontSize: 9 }} tickLine={false} axisLine={false} width={44} />
+              <Tooltip formatter={(v) => [`${Number(v).toFixed(2)}%`, 'Attachment Rate']} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
+              <Bar dataKey="rate" radius={[6, 6, 0, 0]}>
+                {locationChartData.map((e, i) => <Cell key={i} fill={e.color} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
+      {/* ── Unified location / channel / overall breakdown ── */}
       <div className="tw">
         <div className="th2">
-          <h3>Attachment rate by location</h3>
+          <h3>Attachment rate breakdown</h3>
+          <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
+            {(['location', 'channel', 'overall'] as const).map(v => (
+              <button key={v} onClick={() => setBreakdownView(v)} style={{
+                fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                background: breakdownView === v ? 'var(--accent)' : 'transparent',
+                color: breakdownView === v ? '#fff' : '#6b7280',
+                boxShadow: breakdownView === v ? '0 1px 4px rgba(99,102,241,.35)' : 'none',
+                transition: 'all .15s',
+              }}>{v === 'location' ? 'Location' : v === 'channel' ? 'Channel' : 'Overall'}</button>
+            ))}
+          </div>
         </div>
         <div className="tscroll">
           <table>
             <thead>
               <tr>
-                <th style={{ textAlign: 'left', cursor: 'pointer' }} onClick={() => handleLocSort('name')}>Location{locSortArrow('name')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleLocSort('mainChecks')}>Main Checks{locSortArrow('mainChecks')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleLocSort('totalAttach')}>Total Attachment (Side/Sweet/Drink){locSortArrow('totalAttach')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleLocSort('rate')}>Attachment Rate{locSortArrow('rate')}</th>
+                <th style={{ textAlign: 'left', cursor: 'pointer' }} onClick={() => handleBdSort('name')}>{breakdownLabel}{bdSortArrow('name')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleBdSort('mainChecks')}>Main Checks{bdSortArrow('mainChecks')}</th>
+                <th style={{ cursor: 'pointer', color: CAT_COLOR.Drink }} onClick={() => handleBdSort('drinkRate')}>Drink %{bdSortArrow('drinkRate')}</th>
+                <th style={{ cursor: 'pointer', color: CAT_COLOR.Side }} onClick={() => handleBdSort('sideRate')}>Side %{bdSortArrow('sideRate')}</th>
+                <th style={{ cursor: 'pointer', color: CAT_COLOR.Sweet }} onClick={() => handleBdSort('sweetRate')}>Sweet %{bdSortArrow('sweetRate')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleBdSort('rate')}>Overall Rate{bdSortArrow('rate')}</th>
               </tr>
             </thead>
             <tbody>
-              {locationBreakdown.map(r => (
+              {breakdownRows.map(r => (
                 <tr key={r.code}>
                   <td style={{ fontWeight: 600 }}>{r.name}</td>
                   <td>{fmtInt(r.mainChecks)}</td>
-                  <td>{fmtInt(r.totalAttach)}</td>
+                  <td>{fmtPct(r.drinkRate)}</td>
+                  <td>{fmtPct(r.sideRate)}</td>
+                  <td>{fmtPct(r.sweetRate)}</td>
                   <td style={{ fontWeight: 700 }}>
                     {fmtPct(r.rate)}
                     <DeltaBadge curr={r.rate} prev={r.prevRate} vsLabel={prevLabel} />
                   </td>
                 </tr>
               ))}
-              {locationBreakdown.length === 0 && (
-                <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>No matching rows</td></tr>
+              {breakdownRows.length === 0 && (
+                <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>No matching rows</td></tr>
               )}
-              <tr style={{ borderTop: '2px solid var(--border)' }}>
-                <td style={{ fontWeight: 700 }}>Overall (selected locations)</td>
-                <td style={{ fontWeight: 700 }}>{fmtInt(totalMainChecks)}</td>
-                <td style={{ fontWeight: 700 }}>{fmtInt(overallAttach)}</td>
-                <td style={{ fontWeight: 700 }}>
-                  {fmtPct(current.overallRate)}
-                  <DeltaBadge curr={current.overallRate} prev={prev?.overallRate} vsLabel={prevLabel} />
-                </td>
-              </tr>
+              {breakdownView !== 'overall' && (
+                <tr style={{ borderTop: '2px solid var(--border)' }}>
+                  <td style={{ fontWeight: 700 }}>Overall (selected {breakdownView === 'channel' ? 'channels' : 'locations'})</td>
+                  <td style={{ fontWeight: 700 }}>{fmtInt(totalMainChecks)}</td>
+                  <td style={{ fontWeight: 700 }}>{fmtPct(totalMainChecks ? ((current.catMap.get('Drink') ?? 0) / totalMainChecks) * 100 : 0)}</td>
+                  <td style={{ fontWeight: 700 }}>{fmtPct(totalMainChecks ? ((current.catMap.get('Side') ?? 0) / totalMainChecks) * 100 : 0)}</td>
+                  <td style={{ fontWeight: 700 }}>{fmtPct(totalMainChecks ? ((current.catMap.get('Sweet') ?? 0) / totalMainChecks) * 100 : 0)}</td>
+                  <td style={{ fontWeight: 700 }}>
+                    {fmtPct(current.overallRate)}
+                    <DeltaBadge curr={current.overallRate} prev={prev?.overallRate} vsLabel={prevLabel} />
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -585,8 +695,19 @@ export default function AttachmentAnalytics({
       {/* ── Unified item/category/location attachment table ── */}
       <div className="tw">
         <div className="th2">
-          <h3>Attachment Rate by Item &amp; Location</h3>
+          <h3>Attachment Rate by Item &amp; {tableBreakdown === 'channel' ? 'Channel' : tableBreakdown === 'overall' ? 'Overall' : 'Location'}</h3>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 1, background: '#e5e7eb', borderRadius: 7, padding: 3, border: '1px solid #d1d5db' }}>
+              {(['location', 'channel', 'overall'] as const).map(v => (
+                <button key={v} onClick={() => setTableBreakdown(v)} style={{
+                  fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                  background: tableBreakdown === v ? 'var(--accent)' : 'transparent',
+                  color: tableBreakdown === v ? '#fff' : '#6b7280',
+                  boxShadow: tableBreakdown === v ? '0 1px 4px rgba(99,102,241,.35)' : 'none',
+                  transition: 'all .15s',
+                }}>{v === 'location' ? 'Location' : v === 'channel' ? 'Channel' : 'Overall'}</button>
+              ))}
+            </div>
             <select className="fb-sel" value={tableCategory} onChange={e => setTableCategory(e.target.value)}>
               <option value="">All categories</option>
               {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
@@ -631,19 +752,19 @@ export default function AttachmentAnalytics({
                 <th rowSpan={tableMode === 'detail' ? 2 : 1} style={{ cursor: 'pointer', minWidth: 90, verticalAlign: 'bottom', borderLeft: '2px solid var(--border)', zIndex: 3 }} onClick={() => handleTableSort('overall')}>
                   Overall Rate{tableSortArrow('overall')}
                 </th>
-                {tableLocs.map(l => tableMode === 'percent' ? (
+                {tableCols.map(l => tableMode === 'percent' ? (
                   <th key={l.code} style={{ cursor: 'pointer', minWidth: 100, borderLeft: '2px solid var(--border)', zIndex: 3 }} onClick={() => handleTableSort(`${l.code}:rate`)}>
-                    {locName(l.code)}{tableSortArrow(`${l.code}:rate`)}
+                    {l.label}{tableSortArrow(`${l.code}:rate`)}
                   </th>
                 ) : (
                   <th key={l.code} colSpan={5} style={{ textAlign: 'center', borderLeft: '2px solid var(--border)', top: 0, zIndex: 3, background: '#f0f0f4' }}>
-                    {locName(l.code)}
+                    {l.label}
                   </th>
                 ))}
               </tr>
               {tableMode === 'detail' && (
                 <tr>
-                  {tableLocs.map(l => (
+                  {tableCols.map(l => (
                     <Fragment key={l.code}>
                       <th style={{ minWidth: 70, cursor: 'pointer', borderLeft: '2px solid var(--border)', top: HEADER_ROW_H, zIndex: 2 }} onClick={() => handleTableSort(`${l.code}:mainChecks`)}>
                         Total Main Checks{tableSortArrow(`${l.code}:mainChecks`)}
@@ -667,7 +788,7 @@ export default function AttachmentAnalytics({
             </thead>
             <tbody>
               {visibleTable.map(row => {
-                const maxRate = Math.max(...row.perLoc.map(v => v.rate), 0);
+                const maxRate = Math.max(...row.perCol.map(v => v.rate), 0);
                 return (
                   <tr key={row.name}>
                     <td>
@@ -680,14 +801,14 @@ export default function AttachmentAnalytics({
                       {fmtPct(row.overall.rate)}
                     </td>
                     {tableMode === 'percent'
-                      ? row.perLoc.map((v, i) => (
+                      ? row.perCol.map((v, i) => (
                         <td key={i} style={{ fontWeight: v.rate === maxRate && v.rate > 0 ? 700 : 400, color: v.rate === 0 ? 'var(--muted)' : v.rate > 100 ? '#dc2626' : 'inherit', borderLeft: '2px solid var(--border)' }}>
                           {v.rate > 0 ? fmtPct(v.rate) : '—'}
                         </td>
                       ))
-                      : row.perLoc.map((v, i) => (
+                      : row.perCol.map((v, i) => (
                         <Fragment key={i}>
-                          <td style={{ borderLeft: '2px solid var(--border)' }}>{fmtInt(tableLocs[i].mainChecks)}</td>
+                          <td style={{ borderLeft: '2px solid var(--border)' }}>{fmtInt(tableCols[i].mainChecks)}</td>
                           <td>{v.checksItem ? fmtInt(v.checksItem) : '—'}</td>
                           <td>{v.checksMod ? fmtInt(v.checksMod) : '—'}</td>
                           <td>{v.totals ? fmtInt(v.totals) : '—'}</td>
@@ -700,14 +821,14 @@ export default function AttachmentAnalytics({
                 );
               })}
               {visibleTable.length === 0 && (
-                <tr><td colSpan={3 + tableLocs.length * (tableMode === 'detail' ? 5 : 1)} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>No matching rows</td></tr>
+                <tr><td colSpan={3 + tableCols.length * (tableMode === 'detail' ? 5 : 1)} style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>No matching rows</td></tr>
               )}
             </tbody>
           </table>
         </div>
         <div style={{ padding: '6px 14px', borderTop: '1px solid var(--border)', fontSize: 10, color: 'var(--muted)', display: 'flex', justifyContent: 'space-between' }}>
           <span>Showing {visibleTable.length} of {tableRows.length} rows · {merged.filter(r => r.rate > 100).length} with overall rate over 100%</span>
-          <span>Bold = highest rate for that name across locations</span>
+          <span>Bold = highest rate for that name across {tableBreakdown === 'channel' ? 'channels' : tableBreakdown === 'overall' ? 'the overall figure' : 'locations'}</span>
         </div>
       </div>
 

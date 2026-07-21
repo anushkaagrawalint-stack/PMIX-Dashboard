@@ -219,7 +219,7 @@ export default function MenuEngineering({ meItems, pinkSheets }: { meItems: MERo
           </div>
 
           {/* Table */}
-          <div className="tw">
+          <div className="tw freeze-col">
             <div className="tscroll">
               <table>
                 <thead><tr>

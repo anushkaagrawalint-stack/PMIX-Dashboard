@@ -154,6 +154,24 @@ tbody td:first-child { text-align: left; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: #faf9fd; }
 
+/* ── Frozen first column (Menu Engineering tables) ── */
+.freeze-col thead th:first-child {
+  position: sticky; left: 0; z-index: 3;
+  background: #f9fafb;
+  box-shadow: 1px 0 0 0 var(--border);
+}
+.freeze-col tbody td:first-child {
+  position: sticky; left: 0; z-index: 1;
+  background: var(--card);
+  box-shadow: 1px 0 0 0 var(--border);
+}
+.freeze-col tbody tr:hover td:first-child { background: #faf9fd; }
+.freeze-col tfoot td:first-child {
+  position: sticky; left: 0; z-index: 1;
+  background: var(--border);
+  box-shadow: 1px 0 0 0 var(--border);
+}
+
 /* ── Search ── */
 .srch { padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 11px; width: 160px; font-family: inherit; outline: none; }
 .srch:focus { border-color: var(--accent); }
