@@ -158,7 +158,57 @@ const BYO_FIX_CTE = `byo_fix(raw, clean) AS (VALUES
   ('Saag Chole - In House',                       'Saag Chole'),
   ('Pick 2 Combo Plate - In House',               'Pick 2 Combo Plate'),
   ('Tandoori Paneer Burrito - In House',          'Tandoori Paneer Burrito'),
-  ('Butter Chicken Burrito - In House',           'Butter Chicken Burrito')
+  ('Butter Chicken Burrito - In House',           'Butter Chicken Burrito'),
+  -- Vendor-prefix consolidation (dashboard-display-only — fact_order_lines.canonical_name
+  -- keeps the original vendor-labeled name; this layer normalizes for reporting only).
+  -- Rule: same dish sold under 2+ vendor labels -> bare name. Single-vendor items left alone.
+  ('HUNGRY Chicken Tikka Bowl',                   'Chicken Tikka Bowl'),
+  ('Sharebite Chicken Tikka Bowl',                'Chicken Tikka Bowl'),
+  ('HUNGRY Chicken Tikka + Avocado Salad',        'Chicken Tikka + Avocado Salad'),
+  ('HUNGRY Lamb Kebab Bowl',                      'Lamb Kebab Bowl'),
+  ('HUNGRY GO Lamb Kebab Bowl',                   'Lamb Kebab Bowl'),
+  ('Sharebite Grain Bowl',                        'BYO Grain Bowl'),
+  ('Sharebite Tandoori Paneer Bowl',              'Tandoori Paneer Bowl'),
+  ('Cureate Tandoori Paneer Bowl',                'Tandoori Paneer Bowl'),
+  ('Fooda Tandoori Paneer Bowl',                  'Tandoori Paneer Bowl'),
+  ('Aramark Tandoori Paneer Bowl',                'Tandoori Paneer Bowl'),
+  ('Aramark Marriott Tandoori Paneer Bowl',       'Tandoori Paneer Bowl'),
+  ('HUNGRY Garlic Naan',                          'Garlic Naan'),
+  ('HUNGRY Naan',                                 'Naan'),
+  ('Offsite Pop-Up Mango Lassi',                  'Mango Lassi'),
+  ('Aramark Mango Lassi',                         'Mango Lassi'),
+  ('Eurest APL Mango Lassi',                      'Mango Lassi'),
+  ('Aramark Marriott Chicken Tikka Masala',       'Chicken Tikka Masala'),
+  ('Offsite Masala Chai Cookies',                 'Masala Chai Cookies'),
+  ('Fooda BYO Spicy Chicken Bowl',                'BYO Spicy Chicken Bowl'),
+  ('Aramark Marriott BYO Spicy Chicken Bowl',     'BYO Spicy Chicken Bowl'),
+  ('Fooda Chicken Curry Bowl',                    'Chicken Curry Bowl'),
+  ('Aramark Marriott Chicken Curry Bowl',         'Chicken Curry Bowl'),
+  ('Fooda BYO Chicken Bowl',                      'BYO Chicken Bowl'),
+  ('Aramark Marriott BYO Chicken Bowl',           'BYO Chicken Bowl'),
+  ('Fooda BYO Harvest Veg Bowl',                  'BYO Harvest Veg Bowl'),
+  ('Aramark Marriott BYO Harvest Veg Bowl',       'BYO Harvest Veg Bowl'),
+  ('Aramark Chicken Bowl',                        'Chicken Bowl'),
+  ('Cureate Chicken Bowl',                        'Chicken Bowl'),
+  ('Fooda BYO Paneer Bowl',                       'BYO Paneer Bowl'),
+  ('Aramark Marriott BYO Paneer Bowl',            'BYO Paneer Bowl'),
+  ('Fooda Extra Chicken',                         'Extra Chicken'),
+  ('Aramark Marriott Extra Chicken',              'Extra Chicken'),
+  ('Fooda Extra Spicy Chicken',                   'Extra Spicy Chicken'),
+  ('Aramark Marriott Extra Spicy Chicken',        'Extra Spicy Chicken'),
+  ('Fooda Extra Paneer',                          'Extra Paneer'),
+  ('Aramark Marriott Extra Paneer',               'Extra Paneer'),
+  ('Eurest Premium Bowl',                         'Premium Bowl'),
+  ('Eurest APL Premium Bowl',                     'Premium Bowl'),
+  ('Eurest Bowl',                                 'Bowl'),
+  ('Eurest APL Bowl',                             'Bowl'),
+  ('Aramark Harvest Vegetables Bowl',             'Harvest Vegetables Bowl'),
+  ('Cureate Harvest Vegetables Bowl',             'Harvest Vegetables Bowl'),
+  ('Aramark Marriott Spicy Chicken Avocado Bowl', 'Spicy Chicken Avocado Bowl'),
+  ('Fooda Guarantee',                             'Guarantee'),
+  ('HUNGRY Guarantee',                            'Guarantee'),
+  ('Aramark Marriott Avocado',                    'Avocado'),
+  ('Fooda MOD Spicy Chili Chicken',               'Spicy Chili Chicken')
 )`;
 
 // Base WHERE for all main metric queries:
@@ -833,16 +883,7 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
   const db = pool();
   const { rows } = await db.query(`
     WITH
-    -- BYO_NAME_MAP: DB short names → PMIX clean names (AppScript Step 3 Clean MB)
-    byo_fix(raw, clean) AS (VALUES
-      ('Grain Bowl',                'BYO Grain Bowl'),
-      ('Salad Bowl',                'BYO Salad Bowl'),
-      ('Greens + Grains Bowl',      'BYO Greens + Grains Bowl'),
-      ('Cauliflower + Quinoa',      'Spiced Cauli + Quinoa Bowl'),
-      ('Cauliflower + Quinoa Bowl', 'Spiced Cauli + Quinoa Bowl'),
-      ('Kids BYO',                  'Kids Meal'),
-      ('Burrito',                   'BYO Indian Burrito')
-    ),
+    ${BYO_FIX_CTE},
 
     -- Step 1/3: Channel-tagged sales per item × period
     -- Only known menu_names → channels IH / LO / 3PD
@@ -1301,38 +1342,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
   const db = pool();
   const { rows } = await db.query(`
     WITH
-    byo_fix(raw, clean) AS (VALUES
-      -- Online short names → canonical PMIX name
-      ('Grain Bowl',                                  'BYO Grain Bowl'),
-      ('Salad Bowl',                                  'BYO Salad Bowl'),
-      ('Greens + Grains Bowl',                        'BYO Greens + Grains Bowl'),
-      ('Cauliflower + Quinoa',                        'Spiced Cauli + Quinoa Bowl'),
-      ('Cauliflower + Quinoa Bowl',                   'Spiced Cauli + Quinoa Bowl'),
-      ('Kids BYO',                                    'Kids Meal'),
-      ('Burrito',                                     'BYO Indian Burrito'),
-      -- IH variants (AppScript rawIH) → same canonical name as online
-      ('Grain Bowl - In House',                       'BYO Grain Bowl'),
-      ('Salad Bowl - In House',                       'BYO Salad Bowl'),
-      ('Greens + Grains Bowl - In House',             'BYO Greens + Grains Bowl'),
-      ('Cauliflower + Quinoa - In House',             'Spiced Cauli + Quinoa Bowl'),
-      ('Burrito - In House',                          'BYO Indian Burrito'),
-      ('Kids BYO - In House',                         'Kids Meal'),
-      ('Homemade Juice - In House',                   'Homemade Juice'),
-      ('Chicken Tikka Bowl - In House',               'Chicken Tikka Bowl'),
-      ('Spicy Chili Chicken Bowl - In House',         'Spicy Chili Chicken Bowl'),
-      ('Paneer Tikka Bowl - In House',                'Paneer Tikka Bowl'),
-      ('Lamb Kebab Bowl - In House',                  'Lamb Kebab Bowl'),
-      ('Chicken Tikka + Avocado Salad - In House',    'Chicken Tikka + Avocado Salad'),
-      ('Butter Chicken - In House',                   'Butter Chicken'),
-      ('Chicken Tikka Masala - In House',             'Chicken Tikka Masala'),
-      ('Aloo Gobhi - In House',                       'Aloo Gobhi'),
-      ('Saag Paneer - In House',                      'Saag Paneer'),
-      ('Paneer Butter Masala - In House',             'Paneer Butter Masala'),
-      ('Saag Chole - In House',                       'Saag Chole'),
-      ('Pick 2 Combo Plate - In House',               'Pick 2 Combo Plate'),
-      ('Tandoori Paneer Burrito - In House',          'Tandoori Paneer Burrito'),
-      ('Butter Chicken Burrito - In House',           'Butter Chicken Burrito')
-    ),
+    ${BYO_FIX_CTE},
     -- True online order qty per parent item — NOT from the modifier join (that overcounts)
     online_orders AS (
       SELECT
@@ -1639,38 +1649,7 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
   const db = pool();
   const { rows } = await db.query(`
     WITH
-    byo_fix(raw, clean) AS (VALUES
-      -- Online short names → canonical PMIX name
-      ('Grain Bowl',                                  'BYO Grain Bowl'),
-      ('Salad Bowl',                                  'BYO Salad Bowl'),
-      ('Greens + Grains Bowl',                        'BYO Greens + Grains Bowl'),
-      ('Cauliflower + Quinoa',                        'Spiced Cauli + Quinoa Bowl'),
-      ('Cauliflower + Quinoa Bowl',                   'Spiced Cauli + Quinoa Bowl'),
-      ('Kids BYO',                                    'Kids Meal'),
-      ('Burrito',                                     'BYO Indian Burrito'),
-      -- IH variants (AppScript rawIH) → same canonical name as online
-      ('Grain Bowl - In House',                       'BYO Grain Bowl'),
-      ('Salad Bowl - In House',                       'BYO Salad Bowl'),
-      ('Greens + Grains Bowl - In House',             'BYO Greens + Grains Bowl'),
-      ('Cauliflower + Quinoa - In House',             'Spiced Cauli + Quinoa Bowl'),
-      ('Burrito - In House',                          'BYO Indian Burrito'),
-      ('Kids BYO - In House',                         'Kids Meal'),
-      ('Homemade Juice - In House',                   'Homemade Juice'),
-      ('Chicken Tikka Bowl - In House',               'Chicken Tikka Bowl'),
-      ('Spicy Chili Chicken Bowl - In House',         'Spicy Chili Chicken Bowl'),
-      ('Paneer Tikka Bowl - In House',                'Paneer Tikka Bowl'),
-      ('Lamb Kebab Bowl - In House',                  'Lamb Kebab Bowl'),
-      ('Chicken Tikka + Avocado Salad - In House',    'Chicken Tikka + Avocado Salad'),
-      ('Butter Chicken - In House',                   'Butter Chicken'),
-      ('Chicken Tikka Masala - In House',             'Chicken Tikka Masala'),
-      ('Aloo Gobhi - In House',                       'Aloo Gobhi'),
-      ('Saag Paneer - In House',                      'Saag Paneer'),
-      ('Paneer Butter Masala - In House',             'Paneer Butter Masala'),
-      ('Saag Chole - In House',                       'Saag Chole'),
-      ('Pick 2 Combo Plate - In House',               'Pick 2 Combo Plate'),
-      ('Tandoori Paneer Burrito - In House',          'Tandoori Paneer Burrito'),
-      ('Butter Chicken Burrito - In House',           'Butter Chicken Burrito')
-    ),
+    ${BYO_FIX_CTE},
     -- Most recent fiscal period overlapping the date range (§2.4 display rule) —
     -- detail rows are costed at this period so they reconcile with the summary.
     sp AS (
@@ -2656,6 +2635,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
   const db = pool();
   const { rows } = await db.query(`
     WITH
+    ${BYO_FIX_CTE},
     max_pk AS (
       SELECT COALESCE(
         (SELECT fiscal_year * 100 + period
@@ -2672,18 +2652,11 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         canonical AS name, avg_cost AS cost
       FROM (
         SELECT
-          CASE item_name_updated
-            WHEN 'Salad Bowl'           THEN 'BYO Salad Bowl'
-            WHEN 'Grain Bowl'           THEN 'BYO Grain Bowl'
-            WHEN 'Greens + Grains Bowl' THEN 'BYO Greens + Grains Bowl'
-            WHEN 'Cauliflower + Quinoa' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Cauliflower + Quinoa Bowl' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Kids BYO'            THEN 'Kids Meal'
-            WHEN 'Burrito'             THEN 'BYO Indian Burrito'
-            ELSE item_name_updated
-          END AS canonical,
+          COALESCE(bf.clean, item_name_updated) AS canonical,
           avg_cost, period
-        FROM analytics.r365_item_cost, max_pk
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN max_pk
         WHERE menu IN ('FOOD - IN HOUSE','DRINKS - IN HOUSE') AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
@@ -2695,18 +2668,11 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         canonical AS name, avg_cost AS cost
       FROM (
         SELECT
-          CASE item_name_updated
-            WHEN 'Salad Bowl'           THEN 'BYO Salad Bowl'
-            WHEN 'Grain Bowl'           THEN 'BYO Grain Bowl'
-            WHEN 'Greens + Grains Bowl' THEN 'BYO Greens + Grains Bowl'
-            WHEN 'Cauliflower + Quinoa' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Cauliflower + Quinoa Bowl' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Kids BYO'            THEN 'Kids Meal'
-            WHEN 'Burrito'             THEN 'BYO Indian Burrito'
-            ELSE item_name_updated
-          END AS canonical,
+          COALESCE(bf.clean, item_name_updated) AS canonical,
           avg_cost, period
-        FROM analytics.r365_item_cost, max_pk
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN max_pk
         WHERE menu IN ('DELIVERY','3PD OPEN MARKUP') AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
@@ -2718,18 +2684,11 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         canonical AS name, avg_cost AS cost
       FROM (
         SELECT
-          CASE item_name_updated
-            WHEN 'Salad Bowl'           THEN 'BYO Salad Bowl'
-            WHEN 'Grain Bowl'           THEN 'BYO Grain Bowl'
-            WHEN 'Greens + Grains Bowl' THEN 'BYO Greens + Grains Bowl'
-            WHEN 'Cauliflower + Quinoa' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Cauliflower + Quinoa Bowl' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Kids BYO'            THEN 'Kids Meal'
-            WHEN 'Burrito'             THEN 'BYO Indian Burrito'
-            ELSE item_name_updated
-          END AS canonical,
+          COALESCE(bf.clean, item_name_updated) AS canonical,
           avg_cost, period
-        FROM analytics.r365_item_cost, max_pk
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN max_pk
         WHERE avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
@@ -2741,18 +2700,11 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         canonical AS name, cost_per_portion AS cost
       FROM (
         SELECT
-          CASE clean_name
-            WHEN 'Salad Bowl'           THEN 'BYO Salad Bowl'
-            WHEN 'Grain Bowl'           THEN 'BYO Grain Bowl'
-            WHEN 'Greens + Grains Bowl' THEN 'BYO Greens + Grains Bowl'
-            WHEN 'Cauliflower + Quinoa' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Cauliflower + Quinoa Bowl' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Kids BYO'            THEN 'Kids Meal'
-            WHEN 'Burrito'             THEN 'BYO Indian Burrito'
-            ELSE clean_name
-          END AS canonical,
+          COALESCE(bf.clean, clean_name) AS canonical,
           cost_per_portion, period
-        FROM analytics.r365_modifier_cost, max_pk
+        FROM analytics.r365_modifier_cost
+        LEFT JOIN byo_fix bf ON bf.raw = clean_name
+        CROSS JOIN max_pk
         WHERE recipe_name LIKE 'MI %' AND cost_per_portion > 0
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
@@ -2769,18 +2721,11 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         canonical AS name, avg_cost AS cost
       FROM (
         SELECT
-          CASE item_name_updated
-            WHEN 'Salad Bowl'           THEN 'BYO Salad Bowl'
-            WHEN 'Grain Bowl'           THEN 'BYO Grain Bowl'
-            WHEN 'Greens + Grains Bowl' THEN 'BYO Greens + Grains Bowl'
-            WHEN 'Cauliflower + Quinoa' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Cauliflower + Quinoa Bowl' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Kids BYO'            THEN 'Kids Meal'
-            WHEN 'Burrito'             THEN 'BYO Indian Burrito'
-            ELSE item_name_updated
-          END AS canonical,
+          COALESCE(bf.clean, item_name_updated) AS canonical,
           avg_cost, period
-        FROM analytics.r365_item_cost, max_pk
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN max_pk
         WHERE menu = 'CATERING' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
@@ -2792,18 +2737,11 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         canonical AS name, avg_cost AS cost
       FROM (
         SELECT
-          CASE item_name_updated
-            WHEN 'Salad Bowl'           THEN 'BYO Salad Bowl'
-            WHEN 'Grain Bowl'           THEN 'BYO Grain Bowl'
-            WHEN 'Greens + Grains Bowl' THEN 'BYO Greens + Grains Bowl'
-            WHEN 'Cauliflower + Quinoa' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Cauliflower + Quinoa Bowl' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Kids BYO'            THEN 'Kids Meal'
-            WHEN 'Burrito'             THEN 'BYO Indian Burrito'
-            ELSE item_name_updated
-          END AS canonical,
+          COALESCE(bf.clean, item_name_updated) AS canonical,
           avg_cost, period
-        FROM analytics.r365_item_cost, max_pk
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN max_pk
         WHERE menu = 'CATERING - 3PD' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
@@ -2815,18 +2753,11 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         canonical AS name, avg_cost AS cost
       FROM (
         SELECT
-          CASE item_name_updated
-            WHEN 'Salad Bowl'           THEN 'BYO Salad Bowl'
-            WHEN 'Grain Bowl'           THEN 'BYO Grain Bowl'
-            WHEN 'Greens + Grains Bowl' THEN 'BYO Greens + Grains Bowl'
-            WHEN 'Cauliflower + Quinoa' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Cauliflower + Quinoa Bowl' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Kids BYO'            THEN 'Kids Meal'
-            WHEN 'Burrito'             THEN 'BYO Indian Burrito'
-            ELSE item_name_updated
-          END AS canonical,
+          COALESCE(bf.clean, item_name_updated) AS canonical,
           avg_cost, period
-        FROM analytics.r365_item_cost, max_pk
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN max_pk
         WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
@@ -2838,18 +2769,11 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         canonical AS name, avg_cost AS cost
       FROM (
         SELECT
-          CASE item_name_updated
-            WHEN 'Salad Bowl'           THEN 'BYO Salad Bowl'
-            WHEN 'Grain Bowl'           THEN 'BYO Grain Bowl'
-            WHEN 'Greens + Grains Bowl' THEN 'BYO Greens + Grains Bowl'
-            WHEN 'Cauliflower + Quinoa' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Cauliflower + Quinoa Bowl' THEN 'Spiced Cauli + Quinoa Bowl'
-            WHEN 'Kids BYO'            THEN 'Kids Meal'
-            WHEN 'Burrito'             THEN 'BYO Indian Burrito'
-            ELSE item_name_updated
-          END AS canonical,
+          COALESCE(bf.clean, item_name_updated) AS canonical,
           avg_cost, period
-        FROM analytics.r365_item_cost, max_pk
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN max_pk
         WHERE menu = 'Open items' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t

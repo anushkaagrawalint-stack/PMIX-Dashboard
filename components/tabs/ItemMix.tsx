@@ -496,8 +496,12 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
     const grossMixAll = totalGrossSales > 0 ? (item.gross_sales / totalGrossSales * 100) : 0;
     const avgCost  = getAvgCost(item);
     const cogsPct  = getCogsPct(item);
+    // Same uniqueness key dedupedFiltered already guarantees (canonical_name +
+    // channel + category + sub_category) — menu_name/menu_group alone can repeat
+    // across different channels for the same item, causing duplicate React keys.
+    const sub = (VENDOR_CH.has(item.channel) || item.channel === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
     return (
-      <tr key={`${item.canonical_name}||${item.menu_name}||${item.menu_group}`}>
+      <tr key={`${item.canonical_name}||${item.channel}||${cat}||${sub}`}>
         <td style={{ paddingLeft: 60, fontWeight: 500 }}>{item.canonical_name}</td>
         <td style={{ fontSize: 10, color: 'var(--muted)' }}>{item.menu_group}</td>
         <td style={{ textAlign: 'center' }}>{item.qty.toLocaleString()}</td>
