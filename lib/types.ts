@@ -201,29 +201,32 @@ export interface ModifierRow {
 
 // ─── Payments ────────────────────────────────────────────────────────────────
 export interface PaymentRow {
-  payment_source: string;
-  payment_count:  number;
-  total_amount:   number;
-  pct:            number;
-  category:       string;  // 'Card' | 'Alt Payment'
+  payment_source:   string;
+  payment_count:    number;
+  total_amount:     number;
+  refunded_amount:  number;
+  pct:              number;
+  category:         string;  // 'Card' | 'Alt Payment'
 }
 
 export interface PaymentByLocationRow {
-  location_code: string;
-  display_name:  string;
-  payment_count: number;
-  total_amount:  number;
-  card_amount:   number;
-  alt_amount:    number;
+  location_code:    string;
+  display_name:     string;
+  payment_count:    number;
+  total_amount:     number;
+  card_amount:      number;
+  alt_amount:       number;
+  refunded_amount:  number;
 }
 
 export interface PaymentSourceLocationRow {
-  location_code:  string;
-  display_name:   string;
-  payment_source: string;
-  payment_count:  number;
-  total_amount:   number;
-  category:       string;  // 'Card' | 'Alt Payment'
+  location_code:    string;
+  display_name:     string;
+  payment_source:   string;
+  payment_count:    number;
+  total_amount:     number;
+  refunded_amount:  number;
+  category:         string;  // 'Card' | 'Alt Payment'
 }
 
 // ─── Bikky retention ─────────────────────────────────────────────────────────

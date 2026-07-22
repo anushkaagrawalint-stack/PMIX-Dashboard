@@ -1951,167 +1951,112 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
 }
 
 // ─── Payments ─────────────────────────────────────────────────────────────────
-// Reconciling against a raw Toast Payments export requires two adjustments the
-// old version skipped (unlike every other revenue query in this file):
-//   1. Exclude voided/deferred orders — `valid_orders` mirrors BASE_WHERE's
-//      void/deferred check, but deliberately WITHOUT its menu_name/sales_category
-//      restriction (that scopes to food/drink lines only, which would wrongly
-//      drop retail-only orders' payments from a payment-source reconciliation).
-//   2. Net refunds — analytics.refund_sales has no payment-row granularity, so
-//      a multi-tender (split-payment) order's refund is attributed to just its
-//      single largest payment row (via ROW_NUMBER), never split across every
-//      row — otherwise a split-tender order's refund would get subtracted once
-//      per tender and net revenue would be under-counted.
+// PAYMENT_STATUS_SPEC.md: exclude DENIED/VOIDED payment attempts (never
+// actually collected — a denied card swipe or a voided payment has no bearing
+// on real revenue, regardless of the underlying order's own state) and surface
+// refunds as their own figure rather than silently netting them out of the
+// total (so "collected" and "refunded later" stay distinguishable). Superseds
+// the earlier is_voided/is_deferred + analytics.refund_sales approach — that
+// was a proxy for a problem this directly-sourced payment status and
+// pipeline-populated refund_amount solve more precisely.
 export async function getPayments(dr: DateRange): Promise<PaymentRow[]> {
   const db = pool();
   const { rows } = await db.query(`
-    WITH valid_orders AS (
-      SELECT DISTINCT order_guid
-      FROM public.fact_order_lines
+    WITH grand AS (
+      SELECT SUM(amount) AS total
+      FROM public.br_order_payment
       WHERE business_date BETWEEN $1::DATE AND $2::DATE
-        AND NOT is_voided AND NOT is_deferred
-    ),
-    order_refunds AS (
-      SELECT rs.order_guid, SUM(rs.sales_refund) AS refund_amt
-      FROM analytics.refund_sales rs
-      JOIN valid_orders vo ON vo.order_guid = rs.order_guid
-      GROUP BY rs.order_guid
-    ),
-    payments_ranked AS (
-      SELECT p.*, ROW_NUMBER() OVER (PARTITION BY p.order_guid ORDER BY p.amount DESC) AS rn
-      FROM public.br_order_payment p
-      WHERE p.business_date BETWEEN $1::DATE AND $2::DATE
-    ),
-    netted AS (
-      SELECT
-        pr.payment_type,
-        pr.alt_payment_name,
-        pr.amount - CASE WHEN pr.rn = 1 THEN COALESCE(r.refund_amt, 0) ELSE 0 END AS net_amount
-      FROM payments_ranked pr
-      JOIN valid_orders vo ON vo.order_guid = pr.order_guid
-      LEFT JOIN order_refunds r ON r.order_guid = pr.order_guid
-    ),
-    grand AS (SELECT SUM(net_amount) AS total FROM netted)
+        AND COALESCE(paid_status, 'CAPTURED') NOT IN ('DENIED', 'VOIDED')
+    )
     SELECT
       COALESCE(NULLIF(TRIM(alt_payment_name),''), payment_type, 'Unknown') AS payment_source,
       payment_type,
       COUNT(*)::INT                                                          AS payment_count,
-      ROUND(SUM(net_amount)::NUMERIC, 2)                                    AS total_amount,
-      ROUND(SUM(net_amount)*100.0/NULLIF(g.total,0)::NUMERIC, 1)            AS pct
-    FROM netted, grand g
+      ROUND(SUM(amount)::NUMERIC, 2)                                        AS total_amount,
+      ROUND(COALESCE(SUM(refund_amount), 0)::NUMERIC, 2)                    AS refunded_amount,
+      ROUND(SUM(amount)*100.0/NULLIF(g.total,0)::NUMERIC, 1)               AS pct
+    FROM public.br_order_payment, grand g
+    WHERE business_date BETWEEN $1::DATE AND $2::DATE
+      AND COALESCE(paid_status, 'CAPTURED') NOT IN ('DENIED', 'VOIDED')
     GROUP BY 1, 2, g.total
     ORDER BY total_amount DESC
     LIMIT 30
   `, [dr.start, dr.end]);
   await db.end();
   return rows.map(r => ({
-    payment_source: r.payment_source as string,
-    payment_count:  Number(r.payment_count),
-    total_amount:   Number(r.total_amount),
-    pct:            Number(r.pct),
-    category:       (r.payment_type as string) === 'CREDIT' ? 'Card' : 'Alt Payment',
+    payment_source:  r.payment_source as string,
+    payment_count:   Number(r.payment_count),
+    total_amount:    Number(r.total_amount),
+    refunded_amount: Number(r.refunded_amount),
+    pct:             Number(r.pct),
+    category:        (r.payment_type as string) === 'CREDIT' ? 'Card' : 'Alt Payment',
   }));
 }
 
 // ─── Payments by location ────────────────────────────────────────────────────
-// Same void/deferred + refund-netting adjustments as getPayments above.
+// Same DENIED/VOIDED exclusion as getPayments above. location_code already
+// lives on br_order_payment itself (populated from the same order every line/
+// check/payment of it shares), so this no longer needs a fact_order_lines join
+// just to attach it.
 export async function getPaymentsByLocation(dr: DateRange): Promise<PaymentByLocationRow[]> {
   const db = pool();
   const { rows } = await db.query(`
-    WITH valid_orders AS (
-      SELECT DISTINCT order_guid, location_code
-      FROM public.fact_order_lines
-      WHERE business_date BETWEEN $1::DATE AND $2::DATE
-        AND NOT is_voided AND NOT is_deferred
-    ),
-    order_refunds AS (
-      SELECT rs.order_guid, SUM(rs.sales_refund) AS refund_amt
-      FROM analytics.refund_sales rs
-      JOIN valid_orders vo ON vo.order_guid = rs.order_guid
-      GROUP BY rs.order_guid
-    ),
-    payments_ranked AS (
-      SELECT p.*, ROW_NUMBER() OVER (PARTITION BY p.order_guid ORDER BY p.amount DESC) AS rn
-      FROM public.br_order_payment p
-      WHERE p.business_date BETWEEN $1::DATE AND $2::DATE
-    ),
-    netted AS (
-      SELECT
-        vo.location_code,
-        pr.order_guid,
-        pr.payment_type,
-        pr.amount - CASE WHEN pr.rn = 1 THEN COALESCE(r.refund_amt, 0) ELSE 0 END AS net_amount
-      FROM payments_ranked pr
-      JOIN valid_orders vo ON vo.order_guid = pr.order_guid
-      LEFT JOIN order_refunds r ON r.order_guid = pr.order_guid
-    )
     SELECT
-      n.location_code,
-      COALESCE(dl.display_name, n.location_code)            AS display_name,
-      COUNT(DISTINCT n.order_guid)::INT                      AS payment_count,
-      ROUND(SUM(n.net_amount)::NUMERIC, 2)                   AS total_amount,
-      ROUND(SUM(CASE WHEN n.payment_type = 'CREDIT' THEN n.net_amount ELSE 0 END)::NUMERIC, 2) AS card_amount,
-      ROUND(SUM(CASE WHEN n.payment_type != 'CREDIT' THEN n.net_amount ELSE 0 END)::NUMERIC, 2) AS alt_amount
-    FROM netted n
-    LEFT JOIN public.dim_location dl ON dl.location_code = n.location_code
-    GROUP BY n.location_code, dl.display_name
+      p.location_code,
+      COALESCE(dl.display_name, p.location_code)            AS display_name,
+      COUNT(DISTINCT p.order_guid)::INT                      AS payment_count,
+      ROUND(SUM(p.amount)::NUMERIC, 2)                       AS total_amount,
+      ROUND(SUM(CASE WHEN p.payment_type = 'CREDIT' THEN p.amount ELSE 0 END)::NUMERIC, 2) AS card_amount,
+      ROUND(SUM(CASE WHEN p.payment_type != 'CREDIT' THEN p.amount ELSE 0 END)::NUMERIC, 2) AS alt_amount,
+      ROUND(COALESCE(SUM(p.refund_amount), 0)::NUMERIC, 2)   AS refunded_amount
+    FROM public.br_order_payment p
+    LEFT JOIN public.dim_location dl ON dl.location_code = p.location_code
+    WHERE p.business_date BETWEEN $1::DATE AND $2::DATE
+      AND COALESCE(p.paid_status, 'CAPTURED') NOT IN ('DENIED', 'VOIDED')
+    GROUP BY p.location_code, dl.display_name
     ORDER BY total_amount DESC
   `, [dr.start, dr.end]);
   await db.end();
   return rows.map(r => ({
-    location_code: r.location_code as string,
-    display_name:  r.display_name  as string,
-    payment_count: Number(r.payment_count),
-    total_amount:  Number(r.total_amount),
-    card_amount:   Number(r.card_amount),
-    alt_amount:    Number(r.alt_amount),
+    location_code:   r.location_code as string,
+    display_name:    r.display_name  as string,
+    payment_count:   Number(r.payment_count),
+    total_amount:    Number(r.total_amount),
+    card_amount:     Number(r.card_amount),
+    alt_amount:      Number(r.alt_amount),
+    refunded_amount: Number(r.refunded_amount),
   }));
 }
 
 // ─── Payments by location × source ──────────────────────────────────────────
-// Same void/deferred + refund-netting adjustments as getPayments above.
+// Same DENIED/VOIDED exclusion and location_code simplification as above.
 export async function getPaymentSourcesByLocation(dr: DateRange): Promise<PaymentSourceLocationRow[]> {
   const db = pool();
   const { rows } = await db.query(`
-    WITH valid_orders AS (
-      SELECT DISTINCT order_guid, location_code
-      FROM public.fact_order_lines
-      WHERE business_date BETWEEN $1::DATE AND $2::DATE
-        AND NOT is_voided AND NOT is_deferred
-    ),
-    order_refunds AS (
-      SELECT rs.order_guid, SUM(rs.sales_refund) AS refund_amt
-      FROM analytics.refund_sales rs
-      JOIN valid_orders vo ON vo.order_guid = rs.order_guid
-      GROUP BY rs.order_guid
-    ),
-    payments_ranked AS (
-      SELECT p.*, ROW_NUMBER() OVER (PARTITION BY p.order_guid ORDER BY p.amount DESC) AS rn
-      FROM public.br_order_payment p
-      WHERE p.business_date BETWEEN $1::DATE AND $2::DATE
-    )
     SELECT
-      vo.location_code,
-      COALESCE(dl.display_name, vo.location_code)                              AS display_name,
-      COALESCE(NULLIF(TRIM(pr.alt_payment_name),''), pr.payment_type, 'Unknown') AS payment_source,
-      pr.payment_type,
-      COUNT(*)::INT                                                             AS payment_count,
-      ROUND(SUM(pr.amount - CASE WHEN pr.rn = 1 THEN COALESCE(r.refund_amt, 0) ELSE 0 END)::NUMERIC, 2) AS total_amount
-    FROM payments_ranked pr
-    JOIN valid_orders vo ON vo.order_guid = pr.order_guid
-    LEFT JOIN public.dim_location dl ON dl.location_code = vo.location_code
-    LEFT JOIN order_refunds r ON r.order_guid = pr.order_guid
-    GROUP BY vo.location_code, dl.display_name, 3, pr.payment_type
-    ORDER BY vo.location_code, total_amount DESC
+      p.location_code,
+      COALESCE(dl.display_name, p.location_code)                              AS display_name,
+      COALESCE(NULLIF(TRIM(p.alt_payment_name),''), p.payment_type, 'Unknown') AS payment_source,
+      p.payment_type,
+      COUNT(*)::INT                                                           AS payment_count,
+      ROUND(SUM(p.amount)::NUMERIC, 2)                                       AS total_amount,
+      ROUND(COALESCE(SUM(p.refund_amount), 0)::NUMERIC, 2)                   AS refunded_amount
+    FROM public.br_order_payment p
+    LEFT JOIN public.dim_location dl ON dl.location_code = p.location_code
+    WHERE p.business_date BETWEEN $1::DATE AND $2::DATE
+      AND COALESCE(p.paid_status, 'CAPTURED') NOT IN ('DENIED', 'VOIDED')
+    GROUP BY p.location_code, dl.display_name, 3, p.payment_type
+    ORDER BY p.location_code, total_amount DESC
   `, [dr.start, dr.end]);
   await db.end();
   return rows.map(r => ({
-    location_code:  r.location_code  as string,
-    display_name:   r.display_name   as string,
-    payment_source: r.payment_source as string,
-    payment_count:  Number(r.payment_count),
-    total_amount:   Number(r.total_amount),
-    category:       (r.payment_type as string) === 'CREDIT' ? 'Card' : 'Alt Payment',
+    location_code:   r.location_code  as string,
+    display_name:    r.display_name   as string,
+    payment_source:  r.payment_source as string,
+    payment_count:   Number(r.payment_count),
+    total_amount:    Number(r.total_amount),
+    refunded_amount: Number(r.refunded_amount),
+    category:        (r.payment_type as string) === 'CREDIT' ? 'Card' : 'Alt Payment',
   }));
 }
 

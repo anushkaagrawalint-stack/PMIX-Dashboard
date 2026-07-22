@@ -21,22 +21,24 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
   const effectivePayments = useMemo<PaymentRow[]>(() => {
     if (selectedLocations.length === 0) return payments;
     const rows = paymentSourcesByLocation.filter(r => selectedLocations.includes(r.location_code));
-    const map = new Map<string, { count: number; amount: number; category: string }>();
+    const map = new Map<string, { count: number; amount: number; refunded: number; category: string }>();
     rows.forEach(r => {
-      const e = map.get(r.payment_source) ?? { count: 0, amount: 0, category: r.category };
-      e.count  += r.payment_count;
-      e.amount += r.total_amount;
+      const e = map.get(r.payment_source) ?? { count: 0, amount: 0, refunded: 0, category: r.category };
+      e.count    += r.payment_count;
+      e.amount   += r.total_amount;
+      e.refunded += r.refunded_amount;
       map.set(r.payment_source, e);
     });
     const grand = [...map.values()].reduce((s, v) => s + v.amount, 0);
     return [...map.entries()]
       .sort((a, b) => b[1].amount - a[1].amount)
       .map(([source, v]) => ({
-        payment_source: source,
-        payment_count:  v.count,
-        total_amount:   v.amount,
-        pct:            grand > 0 ? Math.round(v.amount / grand * 1000) / 10 : 0,
-        category:       v.category,
+        payment_source:  source,
+        payment_count:   v.count,
+        total_amount:    v.amount,
+        refunded_amount: v.refunded,
+        pct:             grand > 0 ? Math.round(v.amount / grand * 1000) / 10 : 0,
+        category:        v.category,
       }));
   }, [payments, paymentSourcesByLocation, selectedLocations]);
 
@@ -44,11 +46,12 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
     !search || p.payment_source.toLowerCase().includes(search.toLowerCase()),
   );
 
-  const totalRevenue = effectivePayments.reduce((s, p) => s + p.total_amount, 0);
-  const totalTxns    = effectivePayments.reduce((s, p) => s + p.payment_count, 0);
-  const cardRevenue  = effectivePayments.filter(p => p.category === 'Card').reduce((s, p) => s + p.total_amount, 0);
-  const altRevenue   = effectivePayments.filter(p => p.category !== 'Card').reduce((s, p) => s + p.total_amount, 0);
-  const avgTicket    = totalTxns > 0 ? totalRevenue / totalTxns : 0;
+  const totalRevenue  = effectivePayments.reduce((s, p) => s + p.total_amount, 0);
+  const totalTxns     = effectivePayments.reduce((s, p) => s + p.payment_count, 0);
+  const totalRefunded = effectivePayments.reduce((s, p) => s + p.refunded_amount, 0);
+  const cardRevenue   = effectivePayments.filter(p => p.category === 'Card').reduce((s, p) => s + p.total_amount, 0);
+  const altRevenue    = effectivePayments.filter(p => p.category !== 'Card').reduce((s, p) => s + p.total_amount, 0);
+  const avgTicket     = totalTxns > 0 ? totalRevenue / totalTxns : 0;
 
   // Donut: Card vs Alt Payment
   const donutData = useMemo(() => {
@@ -109,11 +112,16 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
   return (
     <div>
       {/* ── KPI row ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 10, marginBottom: 12 }}>
         <div className="kc" style={{ borderLeft: '3px solid var(--accent)', borderLeftStyle: 'solid' }}>
           <div className="kl">Total Payments</div>
           <div className="kv">{fmt$(totalRevenue)}</div>
           <div className="ks">{totalTxns.toLocaleString()} transactions</div>
+        </div>
+        <div className="kc r" style={{ borderLeft: '3px solid #dc2626', borderLeftStyle: 'solid' }}>
+          <div className="kl">Refunded</div>
+          <div className="kv">{fmt$(totalRefunded)}</div>
+          <div className="ks">not netted out of Total Payments above</div>
         </div>
         <div className="kc" style={{ borderLeft: '3px solid #6366f1', borderLeftStyle: 'solid' }}>
           <div className="kl">Card</div>
