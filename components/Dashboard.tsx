@@ -887,7 +887,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       {tab === 'loccompare' && <LocationCompare  data={filteredData} makeItMealModifiers={channelCategoryFilteredMakeItMealModifiers} />}
       {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} makeItMealModifiers={locationFilteredMakeItMealModifiers} />}
       {tab === 'byo'        && visibleTabs.includes('byo')        && <BYOBreakdown modifiers={data.modifiers} items={data.items} pinkSheets={data.pinkSheets} meItems={data.meItems} selectedLocations={[]} />}
-      {tab === 'payment'    && <PaymentSource    payments={data.payments} paymentsByLocation={data.paymentsByLocation} paymentSourcesByLocation={data.paymentSourcesByLocation} selectedLocations={selectedLocations} />}
+      {tab === 'payment'    && <PaymentSource    payments={data.payments} paymentsByLocation={data.paymentsByLocation} paymentSourcesByLocation={data.paymentSourcesByLocation} selectedLocations={selectedLocations} dateStart={dr.start} dateEnd={dr.end} />}
       {tab === 'meoverall'  && <MEOverall meItems={data.meItems} pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} itemCosts={data.itemCosts} role={role} />}
       {tab === 'pinksheets' && visibleTabs.includes('pinksheets') && <PinkSheets pinkSheets={data.pinkSheets} details={data.pinkSheetDetails} />}
       {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} />}

@@ -1,5 +1,5 @@
 'use client';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import type { PaymentRow, PaymentByLocationRow, PaymentSourceLocationRow } from '@/lib/types';
@@ -14,13 +14,61 @@ const CAT_COLORS: Record<string, string> = {
   'Alt Payment': '#f5a623',
 };
 
-export default function PaymentSource({ payments, paymentsByLocation, paymentSourcesByLocation, selectedLocations = [] }: { payments: PaymentRow[]; paymentsByLocation: PaymentByLocationRow[]; paymentSourcesByLocation: PaymentSourceLocationRow[]; selectedLocations?: string[] }) {
+type Basis = 'event' | 'paid';
+const DEFAULT_STATUSES = ['CAPTURED', 'AUTHORIZED'];
+const ALL_STATUSES = ['CAPTURED', 'AUTHORIZED', 'DENIED', 'VOIDED'];
+const titleCase = (s: string) => s.charAt(0) + s.slice(1).toLowerCase();
+
+export default function PaymentSource({ payments, paymentsByLocation, paymentSourcesByLocation, selectedLocations = [], dateStart, dateEnd }: {
+  payments: PaymentRow[]; paymentsByLocation: PaymentByLocationRow[]; paymentSourcesByLocation: PaymentSourceLocationRow[];
+  selectedLocations?: string[]; dateStart: string; dateEnd: string;
+}) {
   const [search, setSearch] = useState('');
+  const [basis, setBasis] = useState<Basis>('event');
+  const [statuses, setStatuses] = useState<string[]>(DEFAULT_STATUSES);
+  const isDefault = basis === 'event' && statuses.length === DEFAULT_STATUSES.length
+    && DEFAULT_STATUSES.every(s => statuses.includes(s));
+
+  // PAYMENT_BASIS_TOGGLE_SPEC.md Part B.2: the default view stays the props
+  // passed down from loadDashboardData (unchanged first paint); any other
+  // basis/status combo fetches from /api/payments on demand.
+  const [fetched, setFetched] = useState<{
+    payments: PaymentRow[]; paymentsByLocation: PaymentByLocationRow[];
+    paymentSourcesByLocation: PaymentSourceLocationRow[];
+    deniedVoided: { count: number; amount: number };
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (isDefault) { setFetched(null); return; }
+    let cancelled = false;
+    setLoading(true);
+    const params = new URLSearchParams({ start: dateStart, end: dateEnd, basis, statuses: statuses.join(',') });
+    fetch(`/api/payments?${params}`)
+      .then(r => r.json())
+      .then(json => { if (!cancelled) setFetched(json); })
+      .catch(err => console.error('payments fetch error:', err))
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [basis, statuses, dateStart, dateEnd, isDefault]);
+
+  function toggleStatus(s: string) {
+    setStatuses(prev => {
+      if (prev.includes(s)) return prev.length > 1 ? prev.filter(x => x !== s) : prev;
+      return [...prev, s];
+    });
+  }
+
+  const activePayments                 = fetched ? fetched.payments : payments;
+  const activePaymentsByLocation       = fetched ? fetched.paymentsByLocation : paymentsByLocation;
+  const activePaymentSourcesByLocation = fetched ? fetched.paymentSourcesByLocation : paymentSourcesByLocation;
+  const deniedVoided = fetched?.deniedVoided;
+  const showDeniedVoidedWarning = statuses.includes('DENIED') || statuses.includes('VOIDED');
 
   // When a location is selected, re-aggregate payment sources from per-location data
   const effectivePayments = useMemo<PaymentRow[]>(() => {
-    if (selectedLocations.length === 0) return payments;
-    const rows = paymentSourcesByLocation.filter(r => selectedLocations.includes(r.location_code));
+    if (selectedLocations.length === 0) return activePayments;
+    const rows = activePaymentSourcesByLocation.filter(r => selectedLocations.includes(r.location_code));
     const map = new Map<string, { count: number; amount: number; refunded: number; category: string }>();
     rows.forEach(r => {
       const e = map.get(r.payment_source) ?? { count: 0, amount: 0, refunded: 0, category: r.category };
@@ -40,7 +88,7 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
         pct:             grand > 0 ? Math.round(v.amount / grand * 1000) / 10 : 0,
         category:        v.category,
       }));
-  }, [payments, paymentSourcesByLocation, selectedLocations]);
+  }, [activePayments, activePaymentSourcesByLocation, selectedLocations]);
 
   const filtered = effectivePayments.filter(p =>
     !search || p.payment_source.toLowerCase().includes(search.toLowerCase()),
@@ -97,8 +145,8 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
   // Location stacked bar data — filtered by selectedLocations when active
   const locBarData = useMemo(() => {
     const rows = selectedLocations.length > 0
-      ? paymentsByLocation.filter(l => selectedLocations.includes(l.location_code))
-      : paymentsByLocation;
+      ? activePaymentsByLocation.filter(l => selectedLocations.includes(l.location_code))
+      : activePaymentsByLocation;
     return [...rows]
       .sort((a, b) => b.total_amount - a.total_amount)
       .map(l => ({
@@ -107,10 +155,63 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
         Alt:   l.alt_amount,
         total: l.total_amount,
       }));
-  }, [paymentsByLocation, selectedLocations]);
+  }, [activePaymentsByLocation, selectedLocations]);
 
   return (
     <div>
+      {/* ── Basis toggle + status filter ── */}
+      <div className="cc" style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
+          <div>
+            <div className="tgl-g">
+              <button className={`tgl ${basis === 'event' ? 'on' : ''}`} onClick={() => setBasis('event')}>Service date</button>
+              <button className={`tgl ${basis === 'paid' ? 'on' : ''}`} onClick={() => setBasis('paid')}>Paid date</button>
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6, maxWidth: 320 }}>
+              {basis === 'event'
+                ? "Payments on the order's business date — catering on the event date. Matches revenue attribution on all other tabs."
+                : "Payments on the day the money was collected. Matches Toast's Payments report."}
+            </div>
+          </div>
+          <div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {ALL_STATUSES.map(s => {
+                const active = statuses.includes(s);
+                return (
+                  <button
+                    key={s}
+                    onClick={() => toggleStatus(s)}
+                    style={{
+                      padding: '4px 11px', borderRadius: 999, fontSize: 10, fontWeight: 700,
+                      border: active ? '1px solid #6d28d9' : '1px solid var(--border)',
+                      background: active ? '#ede9fe' : '#fff',
+                      color: active ? '#5b21b6' : 'var(--muted)',
+                      cursor: 'pointer', fontFamily: 'inherit',
+                    }}
+                  >
+                    {titleCase(s)}
+                  </button>
+                );
+              })}
+            </div>
+            {loading && <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6 }}>Refreshing…</div>}
+          </div>
+        </div>
+        {basis === 'paid' && (
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 10 }}>
+            Catering deposits appear here on their collection date, not the event date.
+          </div>
+        )}
+        {showDeniedVoidedWarning && deniedVoided && deniedVoided.count > 0 && (
+          <div style={{
+            fontSize: 11, fontWeight: 600, color: '#92400e', background: '#fef3c7',
+            border: '1px solid #fde68a', borderRadius: 6, padding: '6px 10px', marginTop: 10,
+          }}>
+            Includes {deniedVoided.count.toLocaleString()} denied/voided payment{deniedVoided.count === 1 ? '' : 's'} ({fmt$(deniedVoided.amount)}) — money that was never collected.
+          </div>
+        )}
+      </div>
+
       {/* ── KPI row ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 10, marginBottom: 12 }}>
         <div className="kc" style={{ borderLeft: '3px solid var(--accent)', borderLeftStyle: 'solid' }}>

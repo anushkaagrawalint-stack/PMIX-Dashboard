@@ -200,8 +200,6 @@ const BYO_FIX_CTE = `byo_fix(raw, clean) AS (VALUES
   ('Aramark Marriott Extra Paneer',               'Extra Paneer'),
   ('Eurest Premium Bowl',                         'Premium Bowl'),
   ('Eurest APL Premium Bowl',                     'Premium Bowl'),
-  ('Eurest Bowl',                                 'Bowl'),
-  ('Eurest APL Bowl',                             'Bowl'),
   ('Aramark Harvest Vegetables Bowl',             'Harvest Vegetables Bowl'),
   ('Cureate Harvest Vegetables Bowl',             'Harvest Vegetables Bowl'),
   ('Aramark Marriott Spicy Chicken Avocado Bowl', 'Spicy Chicken Avocado Bowl'),
@@ -1938,14 +1936,24 @@ export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
 // the earlier is_voided/is_deferred + analytics.refund_sales approach — that
 // was a proxy for a problem this directly-sourced payment status and
 // pipeline-populated refund_amount solve more precisely.
-export async function getPayments(dr: DateRange): Promise<PaymentRow[]> {
+// PAYMENT_BASIS_TOGGLE_SPEC.md: basis picks the date column (event = order's
+// business_date, paid = the payment's own business_date, COALESCE-guarded for
+// any not-yet-backfilled row); statuses replaces the old hardcoded
+// DENIED/VOIDED exclusion with an explicit allow-list. Defaults preserve
+// today's behavior exactly for existing callers.
+export async function getPayments(
+  dr: DateRange,
+  basis: 'event' | 'paid' = 'event',
+  statuses: string[] = ['CAPTURED', 'AUTHORIZED'],
+): Promise<PaymentRow[]> {
   const db = pool();
+  const dateCol = basis === 'paid' ? 'COALESCE(paid_business_date, business_date)' : 'business_date';
   const { rows } = await db.query(`
     WITH grand AS (
       SELECT SUM(amount) AS total
       FROM public.br_order_payment
-      WHERE business_date BETWEEN $1::DATE AND $2::DATE
-        AND COALESCE(paid_status, 'CAPTURED') NOT IN ('DENIED', 'VOIDED')
+      WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
+        AND COALESCE(paid_status, 'CAPTURED') = ANY($3)
     )
     SELECT
       COALESCE(NULLIF(TRIM(alt_payment_name),''), payment_type, 'Unknown') AS payment_source,
@@ -1955,12 +1963,12 @@ export async function getPayments(dr: DateRange): Promise<PaymentRow[]> {
       ROUND(COALESCE(SUM(refund_amount), 0)::NUMERIC, 2)                    AS refunded_amount,
       ROUND(SUM(amount)*100.0/NULLIF(g.total,0)::NUMERIC, 1)               AS pct
     FROM public.br_order_payment, grand g
-    WHERE business_date BETWEEN $1::DATE AND $2::DATE
-      AND COALESCE(paid_status, 'CAPTURED') NOT IN ('DENIED', 'VOIDED')
+    WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
+      AND COALESCE(paid_status, 'CAPTURED') = ANY($3)
     GROUP BY 1, 2, g.total
     ORDER BY total_amount DESC
     LIMIT 30
-  `, [dr.start, dr.end]);
+  `, [dr.start, dr.end, statuses]);
   await db.end();
   return rows.map(r => ({
     payment_source:  r.payment_source as string,
@@ -1977,8 +1985,13 @@ export async function getPayments(dr: DateRange): Promise<PaymentRow[]> {
 // lives on br_order_payment itself (populated from the same order every line/
 // check/payment of it shares), so this no longer needs a fact_order_lines join
 // just to attach it.
-export async function getPaymentsByLocation(dr: DateRange): Promise<PaymentByLocationRow[]> {
+export async function getPaymentsByLocation(
+  dr: DateRange,
+  basis: 'event' | 'paid' = 'event',
+  statuses: string[] = ['CAPTURED', 'AUTHORIZED'],
+): Promise<PaymentByLocationRow[]> {
   const db = pool();
+  const dateCol = basis === 'paid' ? 'COALESCE(p.paid_business_date, p.business_date)' : 'p.business_date';
   const { rows } = await db.query(`
     SELECT
       p.location_code,
@@ -1990,11 +2003,11 @@ export async function getPaymentsByLocation(dr: DateRange): Promise<PaymentByLoc
       ROUND(COALESCE(SUM(p.refund_amount), 0)::NUMERIC, 2)   AS refunded_amount
     FROM public.br_order_payment p
     LEFT JOIN public.dim_location dl ON dl.location_code = p.location_code
-    WHERE p.business_date BETWEEN $1::DATE AND $2::DATE
-      AND COALESCE(p.paid_status, 'CAPTURED') NOT IN ('DENIED', 'VOIDED')
+    WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
+      AND COALESCE(p.paid_status, 'CAPTURED') = ANY($3)
     GROUP BY p.location_code, dl.display_name
     ORDER BY total_amount DESC
-  `, [dr.start, dr.end]);
+  `, [dr.start, dr.end, statuses]);
   await db.end();
   return rows.map(r => ({
     location_code:   r.location_code as string,
@@ -2009,8 +2022,13 @@ export async function getPaymentsByLocation(dr: DateRange): Promise<PaymentByLoc
 
 // ─── Payments by location × source ──────────────────────────────────────────
 // Same DENIED/VOIDED exclusion and location_code simplification as above.
-export async function getPaymentSourcesByLocation(dr: DateRange): Promise<PaymentSourceLocationRow[]> {
+export async function getPaymentSourcesByLocation(
+  dr: DateRange,
+  basis: 'event' | 'paid' = 'event',
+  statuses: string[] = ['CAPTURED', 'AUTHORIZED'],
+): Promise<PaymentSourceLocationRow[]> {
   const db = pool();
+  const dateCol = basis === 'paid' ? 'COALESCE(p.paid_business_date, p.business_date)' : 'p.business_date';
   const { rows } = await db.query(`
     SELECT
       p.location_code,
@@ -2022,11 +2040,11 @@ export async function getPaymentSourcesByLocation(dr: DateRange): Promise<Paymen
       ROUND(COALESCE(SUM(p.refund_amount), 0)::NUMERIC, 2)                   AS refunded_amount
     FROM public.br_order_payment p
     LEFT JOIN public.dim_location dl ON dl.location_code = p.location_code
-    WHERE p.business_date BETWEEN $1::DATE AND $2::DATE
-      AND COALESCE(p.paid_status, 'CAPTURED') NOT IN ('DENIED', 'VOIDED')
+    WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
+      AND COALESCE(p.paid_status, 'CAPTURED') = ANY($3)
     GROUP BY p.location_code, dl.display_name, 3, p.payment_type
     ORDER BY p.location_code, total_amount DESC
-  `, [dr.start, dr.end]);
+  `, [dr.start, dr.end, statuses]);
   await db.end();
   return rows.map(r => ({
     location_code:   r.location_code  as string,
@@ -2037,6 +2055,29 @@ export async function getPaymentSourcesByLocation(dr: DateRange): Promise<Paymen
     refunded_amount: Number(r.refunded_amount),
     category:        (r.payment_type as string) === 'CREDIT' ? 'Card' : 'Alt Payment',
   }));
+}
+
+// PAYMENT_BASIS_TOGGLE_SPEC.md Part B.4: the tab captions "Includes N
+// denied/voided payments ($X) — money that was never collected" whenever
+// Denied and/or Voided are among the active statuses — this needs the total
+// for just that subset, independent of whatever else is in the statuses
+// filter, so it's its own small aggregate rather than reusing getPayments.
+export async function getDeniedVoidedTotal(
+  dr: DateRange,
+  basis: 'event' | 'paid',
+  deniedVoidedStatuses: string[],
+): Promise<{ count: number; amount: number }> {
+  if (deniedVoidedStatuses.length === 0) return { count: 0, amount: 0 };
+  const db = pool();
+  const dateCol = basis === 'paid' ? 'COALESCE(paid_business_date, business_date)' : 'business_date';
+  const { rows } = await db.query(`
+    SELECT COUNT(*)::INT AS count, ROUND(COALESCE(SUM(amount), 0)::NUMERIC, 2) AS amount
+    FROM public.br_order_payment
+    WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
+      AND COALESCE(paid_status, 'CAPTURED') = ANY($3)
+  `, [dr.start, dr.end, deniedVoidedStatuses]);
+  await db.end();
+  return { count: Number(rows[0].count), amount: Number(rows[0].amount) };
 }
 
 // ─── Bikky retention ─────────────────────────────────────────────────────────
