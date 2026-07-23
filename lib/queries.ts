@@ -15,7 +15,7 @@ import type {
   CategoryRow, ChannelCategoryRow,
   RenameRow, RenameNameHistoryEntry, RenameDemoRow, NeedsReviewRow, NeedsReviewLineItem,
   OpenItemRow, OpenItemsSummary,
-  UncategorizedItemRow,
+  UncategorizedItemRow, UncategorizedModifierRow,
   FiscalPeriodRow, VendorRow, PinkSheetRow, PinkSheetDetailRow,
   ItemCostRow, MissingCostRow,
   AttachmentData, AttachmentBucketRow, AttachmentModifierRow, AttachmentItemRow, AttachmentCategoryRow,
@@ -49,11 +49,22 @@ const IL_JOIN = `
   ) mlt ON mlt.modifier_name = fol.canonical_name
 `;
 
+// item_category_override join — required wherever CAT1/CAT2 is used against raw
+// fol.canonical_name (getItems joins its own mapped-identity version instead, see
+// cat1Mapped/cat2Mapped below). Table's canonical_name is a PRIMARY KEY, so this
+// LEFT JOIN can never fan out rows.
+const ICO_JOIN = `
+  LEFT JOIN analytics.item_category_override ico ON ico.canonical_name = fol.canonical_name
+`;
+
 // Category — mirrors AppScript getMasterCategory_:
-//   1. ITEM_CATEGORY_OVERRIDE by canonical_name
+//   1. ITEM_CATEGORY_OVERRIDE by canonical_name (analytics.item_category_override,
+//      joined as `ico` — every call site must LEFT JOIN it on canonical_name)
 //   2. GRP_TO_CATEGORY by fol.menu_group
 const CAT1 = `
   CASE
+    WHEN ico.category IS NOT NULL
+      THEN ico.category
     WHEN fol.canonical_name IN ('That Fire Hot Sauce (Bottle)','That Fire Hot Sauce - Side')
       THEN 'Retail'
     WHEN fol.canonical_name IN ('Harvest Chicken Bowl','Spicy Chili Chicken Bowl','Chicken Tikka Burrito')
@@ -63,10 +74,12 @@ const CAT1 = `
 `;
 
 // Subcategory — mirrors AppScript getMasterSubCategory_ exactly:
-//   1. ITEM_SUBCATEGORY_OVERRIDE + ITEM_SUBCATEGORY by canonical_name
-//   2. GRP_TO_SUBCATEGORY by fol.menu_group
+//   1. ITEM_CATEGORY_OVERRIDE by canonical_name (same `ico` join as CAT1)
+//   2. ITEM_SUBCATEGORY_OVERRIDE + ITEM_SUBCATEGORY by canonical_name
+//   3. GRP_TO_SUBCATEGORY by fol.menu_group
 const CAT2 = `
   COALESCE(
+    ico.sub_category,
     ${ITEM_SUBCAT_SQL},
     ${GRP_TO_SUBCAT_SQL},
     ''
@@ -433,6 +446,7 @@ export async function getWeeklyByChannel(dr: DateRange): Promise<WeeklyChannelRo
         SUM(rs.sales_refund)                        AS refunds
       FROM analytics.refund_sales rs
       JOIN public.fact_order_lines fol ON fol.selection_guid = rs.selection_guid
+      ${ICO_JOIN}
       ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
@@ -446,6 +460,7 @@ export async function getWeeklyByChannel(dr: DateRange): Promise<WeeklyChannelRo
       ROUND(SUM(fol.line_total)::NUMERIC - COALESCE(MAX(rt.refunds), 0), 0) AS revenue,
       SUM(fol.quantity)::BIGINT                         AS qty
     FROM public.fact_order_lines fol
+    ${ICO_JOIN}
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     LEFT JOIN refund_totals rt
       ON rt.week_start = DATE_TRUNC('week', fol.business_date)::DATE
@@ -480,6 +495,7 @@ export async function getDailyByChannel(dr: DateRange): Promise<DailyChannelRow[
         SUM(rs.sales_refund)            AS refunds
       FROM analytics.refund_sales rs
       JOIN public.fact_order_lines fol ON fol.selection_guid = rs.selection_guid
+      ${ICO_JOIN}
       ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
@@ -493,6 +509,7 @@ export async function getDailyByChannel(dr: DateRange): Promise<DailyChannelRow[
       ROUND(SUM(fol.line_total)::NUMERIC - COALESCE(MAX(rt.refunds), 0), 0) AS revenue,
       SUM(fol.quantity)::BIGINT                        AS qty
     FROM public.fact_order_lines fol
+    ${ICO_JOIN}
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     LEFT JOIN refund_totals rt
       ON rt.date = fol.business_date
@@ -565,6 +582,7 @@ export async function getItems(dr: DateRange): Promise<ItemRow[]> {
       ROUND(SUM(fol.line_total)::NUMERIC - COALESCE(MAX(rt.refunds), 0), 2) AS net_after_refunds
     FROM public.fact_order_lines fol
     LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+    LEFT JOIN analytics.item_category_override ico ON ico.canonical_name = ${mappedExpr}
     ${IL_JOIN}
     ${CH_OVERRIDE_JOIN('fol.selection_guid')}
     CROSS JOIN grand g
@@ -578,7 +596,7 @@ export async function getItems(dr: DateRange): Promise<ItemRow[]> {
     GROUP BY
       ${mappedExpr}, fol.menu_name, fol.menu_group,
       mlt.modifier_name, co.correct_channel,
-      g.total_rev, g.total_qty
+      g.total_rev, g.total_qty, ico.category, ico.sub_category
     ORDER BY revenue DESC
   `, [dr.start, dr.end]);
   await db.end();
@@ -746,6 +764,7 @@ export async function getCategories(dr: DateRange): Promise<CategoryRow[]> {
       SUM(fol.quantity)::BIGINT              AS qty
     FROM public.fact_order_lines fol
     ${IL_JOIN}
+    ${ICO_JOIN}
     WHERE ${BASE_WHERE}
       AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     GROUP BY 1
@@ -771,6 +790,7 @@ export async function getChannelCategories(dr: DateRange): Promise<ChannelCatego
         fol.line_total
       FROM public.fact_order_lines fol
       ${IL_JOIN}
+      ${ICO_JOIN}
       ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
@@ -2584,7 +2604,7 @@ export async function getUncategorizedItems(dr: DateRange): Promise<Uncategorize
     const { rows } = await db.query(`
       SELECT
         fol.canonical_name,
-        (${CHO}) AS channel,
+        STRING_AGG(DISTINCT (${CHO}), ', ' ORDER BY (${CHO})) AS channel,
         SUM(fol.quantity)::BIGINT              AS qty,
         ROUND(SUM(fol.line_total)::NUMERIC, 2) AS revenue,
         MAX(fol.business_date)::TEXT           AS last_seen
@@ -2603,7 +2623,7 @@ export async function getUncategorizedItems(dr: DateRange): Promise<Uncategorize
         AND mlt.modifier_name IS NULL
         AND (${GRP_TO_CAT_SQL}) IS NULL
         AND fol.canonical_name NOT IN ('That Fire Hot Sauce (Bottle)', 'That Fire Hot Sauce - Side')
-      GROUP BY fol.canonical_name, 2
+      GROUP BY fol.canonical_name
       ORDER BY revenue DESC
     `, [dr.start, dr.end]);
     await db.end();
@@ -2617,6 +2637,46 @@ export async function getUncategorizedItems(dr: DateRange): Promise<Uncategorize
   } catch (err) {
     console.error('getUncategorizedItems error:', err);
     await db.end().catch(() => {}); // connection may already be broken; don't let cleanup crash the request
+    return [];
+  }
+}
+
+// ─── Uncategorized modifiers ──────────────────────────────────────────────────
+// Modifier picks (public.fact_modifiers) whose name isn't in analytics.modifier_type
+// at all — mirrors getUncategorizedItems above, one level down (modifiers, not items).
+export async function getUncategorizedModifiers(dr: DateRange): Promise<UncategorizedModifierRow[]> {
+  const db = pool();
+  try {
+    const { rows } = await db.query(`
+      SELECT
+        fm.canonical_name AS modifier_name,
+        STRING_AGG(DISTINCT (${CHO}), ', ' ORDER BY (${CHO})) AS channel,
+        SUM(fm.quantity)::BIGINT           AS qty,
+        ROUND(SUM(fm.price)::NUMERIC, 2)   AS revenue,
+        MAX(fm.business_date)::TEXT        AS last_seen
+      FROM public.fact_modifiers fm
+      JOIN public.fact_order_lines fol ON fol.selection_guid = fm.parent_selection
+      LEFT JOIN (
+        SELECT DISTINCT modifier_name FROM analytics.modifier_type
+      ) mlt ON mlt.modifier_name = fm.canonical_name
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE NOT fm.is_voided
+        AND fm.business_date BETWEEN $1::DATE AND $2::DATE
+        AND mlt.modifier_name IS NULL
+      GROUP BY fm.canonical_name
+      ORDER BY revenue DESC
+    `, [dr.start, dr.end]);
+    await db.end();
+    return rows.map(r => ({
+      modifier_name: r.modifier_name as string,
+      channel:       r.channel       as string,
+      qty:           Number(r.qty),
+      revenue:       Number(r.revenue),
+      last_seen:     r.last_seen     as string,
+    }));
+  } catch (err) {
+    console.error('getUncategorizedModifiers error:', err);
+    await db.end().catch(() => {});
     return [];
   }
 }
@@ -2889,6 +2949,7 @@ export async function getMissingItemCosts(dr: DateRange): Promise<MissingCostRow
         ROUND(SUM(fol.line_total)::NUMERIC, 2)   AS net_sales
       FROM public.fact_order_lines fol
       LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      ${ICO_JOIN}
       WHERE NOT fol.is_voided AND NOT fol.is_deferred
         AND fol.menu_name IN (
           'FOOD - IN HOUSE','DRINKS - IN HOUSE',
@@ -3211,6 +3272,7 @@ export async function loadDashboardData(
     renames, renamesDemo, needsReview,
     openItemsResult,
     uncategorizedItems,
+    uncategorizedModifiers,
     cateringVendors, offsiteVendors,
     itemCosts, missingCosts,
     prevChannelItems, prevLocationItems, prevMEItems,
@@ -3243,6 +3305,7 @@ export async function loadDashboardData(
     getNeedsReview(dr),
     getOpenItems(dr),
     getUncategorizedItems(dr),
+    getUncategorizedModifiers(dr),
     getCateringVendors(dr),
     getOffsiteVendors(dr),
     getItemCosts(dr),
@@ -3278,6 +3341,7 @@ export async function loadDashboardData(
     categories, channelCategories,
     renames, renamesDemo, needsReview,
     uncategorizedItems,
+    uncategorizedModifiers,
     openItems:        openItemsResult.items,
     openItemsSummary: openItemsResult.summary,
     periods,

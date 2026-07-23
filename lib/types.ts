@@ -336,6 +336,15 @@ export interface UncategorizedItemRow {
   last_seen:      string;
 }
 
+// ─── Uncategorized modifiers (not in modifier_type) ──────────────────────────
+export interface UncategorizedModifierRow {
+  modifier_name: string;
+  channel:       string;
+  qty:           number;
+  revenue:       number;
+  last_seen:     string;
+}
+
 // ─── Item base costs from r365 (fallback for items not in pink sheets / ME) ──
 export interface ItemCostRow {
   canonical_name:      string;
@@ -498,6 +507,7 @@ export interface DashboardData {
   renamesDemo:        RenameDemoRow[];
   needsReview:          NeedsReviewRow[];
   uncategorizedItems:   UncategorizedItemRow[];
+  uncategorizedModifiers: UncategorizedModifierRow[];
   openItems:            OpenItemRow[];
   openItemsSummary:     OpenItemsSummary;
   pinkSheets:         PinkSheetRow[];

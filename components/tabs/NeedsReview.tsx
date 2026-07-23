@@ -1,14 +1,15 @@
 'use client';
 import { useState, useCallback, useMemo } from 'react';
 import { CHANNELS, CHANNEL_LABEL } from '@/lib/constants';
-import type { NeedsReviewRow, UncategorizedItemRow, MissingCostRow, FiscalPeriodRow } from '@/lib/types';
+import type { NeedsReviewRow, UncategorizedItemRow, UncategorizedModifierRow, MissingCostRow, FiscalPeriodRow } from '@/lib/types';
 
 interface Props {
-  needsReview:        NeedsReviewRow[];
-  uncategorizedItems: UncategorizedItemRow[];
-  missingCosts:       MissingCostRow[];
-  periods:            FiscalPeriodRow[];
-  isAdmin:            boolean;
+  needsReview:            NeedsReviewRow[];
+  uncategorizedItems:     UncategorizedItemRow[];
+  uncategorizedModifiers: UncategorizedModifierRow[];
+  missingCosts:           MissingCostRow[];
+  periods:                FiscalPeriodRow[];
+  isAdmin:                boolean;
 }
 
 const fmt$ = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
@@ -51,9 +52,9 @@ const BUCKET_LABEL: Record<MissingCostRow['bucket'], string> = {
 // FiscalPeriodRow → r365's period string format, e.g. period=5, fiscal_year=2026 → 'P05-2026'
 const toR365Period = (p: FiscalPeriodRow) => `P${String(p.period).padStart(2, '0')}-${p.fiscal_year}`;
 
-type Section = 'channels' | 'items' | 'costs';
+type Section = 'channels' | 'items' | 'modifiers' | 'costs';
 
-export default function NeedsReview({ needsReview, uncategorizedItems, missingCosts, periods, isAdmin }: Props) {
+export default function NeedsReview({ needsReview, uncategorizedItems, uncategorizedModifiers, missingCosts, periods, isAdmin }: Props) {
   const [section, setSection]     = useState<Section>('channels');
 
   // ── Missing R365 cost state (admin only) ──────────────────────────────────
@@ -119,6 +120,51 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
     setCostBulkSaving(false);
   }, [costPendingRows, saveCost]);
 
+  // ── Any-item/modifier cost entry (admin only) — not limited to flagged-missing
+  // rows above; set a cost for any canonical name, any period. Item cost writes
+  // to the same analytics.r365_item_cost as saveCost above; modifier cost is a
+  // different table/shape (no bucket/menu concept) so it has its own endpoint.
+  const [customKind,   setCustomKind]   = useState<'item' | 'modifier'>('item');
+  const [customName,   setCustomName]   = useState('');
+  const [customBucket, setCustomBucket] = useState<MissingCostRow['bucket']>('ih');
+  const [customMenu,   setCustomMenu]   = useState(BUCKET_MENUS.ih[0]);
+  const [customPeriod, setCustomPeriod] = useState(() => defaultPeriod ? toR365Period(defaultPeriod) : '');
+  const [customValue,  setCustomValue]  = useState('');
+  const [customStatus, setCustomStatus] = useState<'idle' | 'saving' | 'done' | 'error'>('idle');
+
+  const saveCustomCost = useCallback(async () => {
+    const cost = Number(customValue);
+    if (!customName.trim() || !Number.isFinite(cost) || cost <= 0) {
+      setCustomStatus('error');
+      return;
+    }
+    setCustomStatus('saving');
+    try {
+      const res = customKind === 'item'
+        ? await fetch('/api/costs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              canonical_name: customName.trim(), bucket: customBucket, menu: customMenu,
+              period: customPeriod, avg_cost: cost,
+            }),
+          })
+        : await fetch('/api/costs/modifier', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              canonical_name: customName.trim(), period: customPeriod, cost_per_portion: cost,
+            }),
+          });
+      if (!res.ok) throw new Error(await res.text());
+      setCustomStatus('done');
+      setCustomName('');
+      setCustomValue('');
+    } catch {
+      setCustomStatus('error');
+    }
+  }, [customKind, customName, customBucket, customMenu, customPeriod, customValue]);
+
   // ── Channel correction state ──────────────────────────────────────────────
   // channelDraft[order_guid] = selected channel value (not yet confirmed).
   // Pre-fills from a persisted override if one already exists (survives reload),
@@ -143,10 +189,17 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
     });
 
   // ── Item categorization state ─────────────────────────────────────────────
-  const [catDraft,   setCatDraft]   = useState<Record<string, string>>({});
-  const [grpDraft,   setGrpDraft]   = useState<Record<string, string>>({});
-  const [itemStatus, setItemStatus] = useState<Record<string, 'idle' | 'saving' | 'done' | 'error'>>({});
-  const [itemEditing,setItemEditing]= useState<Set<string>>(new Set());
+  const [catDraft,    setCatDraft]    = useState<Record<string, string>>({});
+  const [subCatDraft, setSubCatDraft] = useState<Record<string, string>>({});
+  const [grpDraft,    setGrpDraft]    = useState<Record<string, string>>({});
+  const [itemStatus,  setItemStatus]  = useState<Record<string, 'idle' | 'saving' | 'done' | 'error'>>({});
+  const [itemEditing, setItemEditing] = useState<Set<string>>(new Set());
+
+  // ── Modifier categorization state ─────────────────────────────────────────
+  const [modItemTypeDraft, setModItemTypeDraft] = useState<Record<string, string>>({});
+  const [modTypeDraft,     setModTypeDraft]     = useState<Record<string, string>>({});
+  const [modStatus,        setModStatus]        = useState<Record<string, 'idle' | 'saving' | 'done' | 'error'>>({});
+  const [modEditing,       setModEditing]       = useState<Set<string>>(new Set());
 
   // ── Channel save — only ever touches THIS order's flagged line(s), never
   // the whole order, so already-correct lines (e.g. a Catering-3PD line sitting
@@ -218,15 +271,16 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
 
   // ── Item confirm ──────────────────────────────────────────────────────────
   const confirmItem = useCallback(async (canonical_name: string) => {
-    const category   = catDraft[canonical_name];
-    const menu_group = grpDraft[canonical_name] ?? '';
+    const category     = catDraft[canonical_name];
+    const sub_category = subCatDraft[canonical_name] ?? '';
+    const menu_group    = grpDraft[canonical_name] ?? '';
     if (!category) return;
     setItemStatus(s => ({ ...s, [canonical_name]: 'saving' }));
     try {
       const res = await fetch('/api/review/categorize-item', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ canonical_name, category, menu_group }),
+        body: JSON.stringify({ canonical_name, category, sub_category, menu_group }),
       });
       if (!res.ok) throw new Error(await res.text());
       setItemStatus(s => ({ ...s, [canonical_name]: 'done' }));
@@ -234,12 +288,33 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
     } catch {
       setItemStatus(s => ({ ...s, [canonical_name]: 'error' }));
     }
-  }, [catDraft, grpDraft]);
+  }, [catDraft, subCatDraft, grpDraft]);
+
+  // ── Modifier confirm ───────────────────────────────────────────────────────
+  const confirmModifier = useCallback(async (modifier_name: string) => {
+    const item_type    = modItemTypeDraft[modifier_name];
+    const modifier_type = modTypeDraft[modifier_name] ?? '';
+    if (!item_type) return;
+    setModStatus(s => ({ ...s, [modifier_name]: 'saving' }));
+    try {
+      const res = await fetch('/api/review/categorize-modifier', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modifier_name, item_type, modifier_type }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setModStatus(s => ({ ...s, [modifier_name]: 'done' }));
+      setModEditing(prev => { const n = new Set(prev); n.delete(modifier_name); return n; });
+    } catch {
+      setModStatus(s => ({ ...s, [modifier_name]: 'error' }));
+    }
+  }, [modItemTypeDraft, modTypeDraft]);
 
   // Persisted count (survives reload) — a session-local 'done' status only briefly
   // exists between save success and the reload that follows it.
-  const doneChannels = needsReview.filter(r => r.override_channel !== null).length;
-  const doneItems    = Object.values(itemStatus).filter(s => s === 'done').length;
+  const doneChannels  = needsReview.filter(r => r.override_channel !== null).length;
+  const doneItems     = Object.values(itemStatus).filter(s => s === 'done').length;
+  const doneModifiers = Object.values(modStatus).filter(s => s === 'done').length;
 
   // ── CSV export (admin only) — exports whichever section is currently active ──
   function exportCSV() {
@@ -289,9 +364,16 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
           <option value="channels">
             Wrong Channel Orders ({needsReview.length}{doneChannels > 0 ? ` · ${doneChannels} fixed` : ''})
           </option>
-          {/* <option value="items">
-            Uncategorized Items ({uncategorizedItems.length}{doneItems > 0 ? ` · ${doneItems} fixed` : ''})
-          </option> */}
+          {isAdmin && (
+            <option value="items">
+              Uncategorized Items ({uncategorizedItems.length}{doneItems > 0 ? ` · ${doneItems} fixed` : ''})
+            </option>
+          )}
+          {isAdmin && (
+            <option value="modifiers">
+              Uncategorized Modifiers ({uncategorizedModifiers.length}{doneModifiers > 0 ? ` · ${doneModifiers} fixed` : ''})
+            </option>
+          )}
           {isAdmin && (
             <option value="costs">
               Missing R365 Costs ({missingCosts.length}{doneCosts > 0 ? ` · ${doneCosts} added` : ''})
@@ -594,6 +676,7 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
                       <th>Qty</th>
                       <th>Revenue</th>
                       <th style={{ textAlign: 'left' }}>Category</th>
+                      <th style={{ textAlign: 'left' }}>Sub-Category</th>
                       <th style={{ textAlign: 'left' }}>Menu Group</th>
                       <th style={{ textAlign: 'left' }}>Action</th>
                     </tr>
@@ -605,6 +688,7 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
                       const isDone = status === 'done';
                       const isEdit = itemEditing.has(key);
                       const cat    = catDraft[key] ?? '';
+                      const subCat = subCatDraft[key] ?? '';
                       const grp    = grpDraft[key] ?? '';
 
                       return (
@@ -656,6 +740,24 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
                                   <option key={c} value={c}>{c}</option>
                                 ))}
                               </select>
+                            )}
+                          </td>
+
+                          {/* Sub-Category cell */}
+                          <td>
+                            {isDone && !isEdit ? (
+                              <span style={{ fontSize: 11, color: 'var(--muted)' }}>{subCatDraft[key] || '—'}</span>
+                            ) : (
+                              <input
+                                value={subCat}
+                                onChange={e => setSubCatDraft(prev => ({ ...prev, [key]: e.target.value }))}
+                                placeholder="optional"
+                                style={{
+                                  fontSize: 11, padding: '3px 6px', width: 100,
+                                  border: '1px solid var(--border)', borderRadius: 5,
+                                  background: 'var(--card)', color: 'var(--text)', fontFamily: 'inherit',
+                                }}
+                              />
                             )}
                           </td>
 
@@ -730,6 +832,167 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
+          SECTION — Uncategorized modifiers (admin only)
+      ══════════════════════════════════════════════════════════════════════ */}
+      {section === 'modifiers' && isAdmin && (
+        <>
+          <div className="info-banner" style={{
+            background: 'rgba(249,115,22,0.08)', borderColor: '#f97316', marginBottom: 12,
+          }}>
+            <i className="ti ti-tag-off" style={{ color: '#f97316' }} />
+            <div>
+              <strong style={{ color: '#f97316' }}>{uncategorizedModifiers.length}</strong> modifiers
+              aren&apos;t in <code>analytics.modifier_type</code> yet. Assign each an item type and
+              confirm to save.
+              {doneModifiers > 0 && <> <strong style={{ color: '#16a34a' }}>{doneModifiers} fixed.</strong></>}
+              {' '}Type changes reach Pink Sheets / ME detail / BYO Breakdown on the next daily
+              pipeline run (up to ~24h) — those three tabs read a precomputed layer, not this table
+              directly.
+            </div>
+          </div>
+
+          {uncategorizedModifiers.length === 0 ? (
+            <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)' }}>
+              <i className="ti ti-check" style={{ fontSize: 28, opacity: 0.3, display: 'block' }} />
+              <div style={{ marginTop: 8 }}>All modifiers are categorized.</div>
+            </div>
+          ) : (
+            <div className="tw">
+              <div className="tscroll">
+                <table style={{ fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left' }}>#</th>
+                      <th style={{ textAlign: 'left' }}>Modifier Name</th>
+                      <th style={{ textAlign: 'left' }}>Channel</th>
+                      <th>Qty</th>
+                      <th>Revenue</th>
+                      <th style={{ textAlign: 'left' }}>Item Type</th>
+                      <th style={{ textAlign: 'left' }}>Modifier Type</th>
+                      <th style={{ textAlign: 'left' }}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {uncategorizedModifiers.map((row, i) => {
+                      const key      = row.modifier_name;
+                      const status   = modStatus[key] ?? 'idle';
+                      const isDone   = status === 'done';
+                      const isEdit   = modEditing.has(key);
+                      const itemType = modItemTypeDraft[key] ?? '';
+                      const modType  = modTypeDraft[key] ?? '';
+
+                      return (
+                        <tr key={key} style={{
+                          background: isDone && !isEdit ? 'rgba(22,163,74,0.05)' : undefined,
+                          borderLeft: isDone && !isEdit ? '3px solid #16a34a' : undefined,
+                        }}>
+                          <td style={{ color: 'var(--muted)', fontSize: 11 }}>{i + 1}</td>
+                          <td style={{
+                            fontWeight: 600, maxWidth: 200,
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}>
+                            {row.modifier_name}
+                          </td>
+                          <td>
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+                              background: 'var(--border)', color: 'var(--text)',
+                            }}>
+                              {CHANNEL_LABEL[row.channel] ?? row.channel}
+                            </span>
+                          </td>
+                          <td style={{ fontWeight: 600 }}>{row.qty.toLocaleString()}</td>
+                          <td style={{ fontWeight: 600, color: 'var(--accent)' }}>{fmt$(row.revenue)}</td>
+
+                          {/* Item Type cell */}
+                          <td>
+                            {isDone && !isEdit ? (
+                              <span style={{ fontSize: 11, fontWeight: 700, color: '#16a34a' }}>
+                                <i className="ti ti-check" /> {modItemTypeDraft[key]}
+                              </span>
+                            ) : (
+                              <input
+                                value={itemType}
+                                onChange={e => setModItemTypeDraft(prev => ({ ...prev, [key]: e.target.value }))}
+                                placeholder="e.g. BYO Grain Bowl - In House"
+                                style={{
+                                  fontSize: 11, padding: '3px 6px', width: 160,
+                                  border: '1px solid var(--border)', borderRadius: 5,
+                                  background: 'var(--card)', color: 'var(--text)', fontFamily: 'inherit',
+                                }}
+                              />
+                            )}
+                          </td>
+
+                          {/* Modifier Type cell */}
+                          <td>
+                            {isDone && !isEdit ? (
+                              <span style={{ fontSize: 11, color: 'var(--muted)' }}>{modTypeDraft[key] || '—'}</span>
+                            ) : (
+                              <input
+                                value={modType}
+                                onChange={e => setModTypeDraft(prev => ({ ...prev, [key]: e.target.value }))}
+                                placeholder="optional, e.g. Base"
+                                style={{
+                                  fontSize: 11, padding: '3px 6px', width: 120,
+                                  border: '1px solid var(--border)', borderRadius: 5,
+                                  background: 'var(--card)', color: 'var(--text)', fontFamily: 'inherit',
+                                }}
+                              />
+                            )}
+                          </td>
+
+                          {/* Action cell */}
+                          <td style={{ whiteSpace: 'nowrap' }}>
+                            {isDone && !isEdit ? (
+                              <button
+                                onClick={() => setModEditing(prev => { const n = new Set(prev); n.add(key); return n; })}
+                                style={{
+                                  padding: '3px 10px', borderRadius: 5,
+                                  border: '1px solid var(--border)', background: 'transparent',
+                                  fontSize: 10, fontWeight: 600, cursor: 'pointer', color: 'var(--muted)',
+                                }}
+                              >
+                                Edit
+                              </button>
+                            ) : (
+                              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                                <button
+                                  disabled={!itemType || status === 'saving'}
+                                  onClick={() => confirmModifier(key)}
+                                  style={{
+                                    padding: '4px 12px', borderRadius: 5, border: 'none',
+                                    background: itemType ? 'var(--accent)' : 'var(--border)',
+                                    color: itemType ? '#fff' : 'var(--muted)',
+                                    fontSize: 11, fontWeight: 700,
+                                    cursor: itemType ? 'pointer' : 'not-allowed',
+                                    opacity: status === 'saving' ? 0.6 : 1,
+                                  }}
+                                >
+                                  {status === 'saving' ? '…' : '✓ Confirm'}
+                                </button>
+                                {status === 'error' && (
+                                  <span style={{ fontSize: 10, color: '#dc2626' }}>Failed</span>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--muted)', padding: '8px 0 4px' }}>
+                {doneModifiers} of {uncategorizedModifiers.length} modifiers categorized · Changes saved to{' '}
+                <code>analytics.modifier_type</code>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
           SECTION 3 — Missing R365 costs (admin only)
       ══════════════════════════════════════════════════════════════════════ */}
       {section === 'costs' && isAdmin && (
@@ -744,6 +1007,110 @@ export default function NeedsReview({ needsReview, uncategorizedItems, missingCo
               enter a cost to save it directly to <code>analytics.r365_item_cost</code>.
               {doneCosts > 0 && <> <strong style={{ color: '#16a34a' }}>{doneCosts} added.</strong></>}
             </div>
+          </div>
+
+          {/* Any item/modifier cost entry — not limited to the flagged-missing rows below */}
+          <div className="tw" style={{ padding: 12, marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
+              Set a cost for any item or modifier
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              <select
+                className="fb-sel"
+                value={customKind}
+                onChange={e => setCustomKind(e.target.value as 'item' | 'modifier')}
+                style={{ fontSize: 11, padding: '4px 8px' }}
+              >
+                <option value="item">Item cost</option>
+                <option value="modifier">Modifier cost</option>
+              </select>
+              <input
+                value={customName}
+                onChange={e => setCustomName(e.target.value)}
+                placeholder="Canonical name"
+                style={{
+                  fontSize: 11, padding: '4px 8px', width: 200,
+                  border: '1px solid var(--border)', borderRadius: 5,
+                  background: 'var(--card)', color: 'var(--text)', fontFamily: 'inherit',
+                }}
+              />
+              {customKind === 'item' && (
+                <>
+                  <select
+                    className="fb-sel"
+                    value={customBucket}
+                    onChange={e => {
+                      const b = e.target.value as MissingCostRow['bucket'];
+                      setCustomBucket(b);
+                      setCustomMenu(BUCKET_MENUS[b][0]);
+                    }}
+                    style={{ fontSize: 11, padding: '4px 8px' }}
+                  >
+                    {(Object.keys(BUCKET_MENUS) as MissingCostRow['bucket'][]).map(b => (
+                      <option key={b} value={b}>{BUCKET_LABEL[b]}</option>
+                    ))}
+                  </select>
+                  <select
+                    className="fb-sel"
+                    value={customMenu}
+                    onChange={e => setCustomMenu(e.target.value)}
+                    style={{ fontSize: 11, padding: '4px 8px' }}
+                  >
+                    {BUCKET_MENUS[customBucket].map(m => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </>
+              )}
+              <select
+                className="fb-sel"
+                value={customPeriod}
+                onChange={e => setCustomPeriod(e.target.value)}
+                style={{ fontSize: 11, padding: '4px 8px' }}
+              >
+                {periods.map(p => (
+                  <option key={p.label} value={toR365Period(p)}>{p.label}</option>
+                ))}
+              </select>
+              <input
+                type="number" step="0.01" min="0"
+                value={customValue}
+                onChange={e => setCustomValue(e.target.value)}
+                placeholder="0.00"
+                style={{
+                  fontSize: 11, padding: '4px 8px', width: 80,
+                  border: '1px solid var(--border)', borderRadius: 5,
+                  background: 'var(--card)', color: 'var(--text)',
+                }}
+              />
+              <button
+                disabled={!customName.trim() || !customValue || customStatus === 'saving'}
+                onClick={saveCustomCost}
+                style={{
+                  padding: '5px 14px', borderRadius: 5, border: 'none',
+                  background: customName.trim() && customValue ? 'var(--accent)' : 'var(--border)',
+                  color: customName.trim() && customValue ? '#fff' : 'var(--muted)',
+                  fontSize: 11, fontWeight: 700,
+                  cursor: customName.trim() && customValue ? 'pointer' : 'not-allowed',
+                  opacity: customStatus === 'saving' ? 0.6 : 1,
+                }}
+              >
+                {customStatus === 'saving' ? '…' : '✓ Save'}
+              </button>
+              {customStatus === 'done' && (
+                <span style={{ fontSize: 10, color: '#16a34a', fontWeight: 700 }}><i className="ti ti-check" /> Saved</span>
+              )}
+              {customStatus === 'error' && (
+                <span style={{ fontSize: 10, color: '#dc2626' }}>Failed — check name/cost</span>
+              )}
+            </div>
+            {customKind === 'modifier' && (
+              <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6 }}>
+                Modifier cost is live immediately wherever the dashboard reads it live (e.g. Menu
+                Engineering); Pink Sheets / ME detail / BYO Breakdown read a precomputed layer and
+                pick it up on the next daily pipeline run (up to ~24h).
+              </div>
+            )}
           </div>
 
           {missingCosts.length === 0 ? (

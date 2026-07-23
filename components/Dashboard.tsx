@@ -893,7 +893,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} />}
       {tab === 'renames'    && <RenamesAudit     renames={data.renames} role={role} />}
       {tab === 'renamesdemo' && visibleTabs.includes('renamesdemo') && <RenamesDemo renames={data.renamesDemo} />}
-      {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}
+      {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} uncategorizedModifiers={data.uncategorizedModifiers} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}
       {tab === 'admin'      && visibleTabs.includes('admin')      && <AdminPanel currentEmail={currentEmail} currentRole={role} />}
       {tab === 'attachment' && visibleTabs.includes('attachment') && <AttachmentAnalytics data={data.attachment} prevData={data.prevAttachment} prevLabel={data.prevLabel} trendData={data.attachmentTrend} locations={data.locations} selectedLocations={selectedLocations} selectedChannels={selectedChannels} items={locationBaseItems} beverageModifiers={data.beverageModifiers} role={role} periods={data.periods} />}
