@@ -26,31 +26,37 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
   const [search, setSearch] = useState('');
   const [basis, setBasis] = useState<Basis>('event');
   const [statuses, setStatuses] = useState<string[]>(DEFAULT_STATUSES);
+  const [statusOpen, setStatusOpen] = useState(false);
   const isDefault = basis === 'event' && statuses.length === DEFAULT_STATUSES.length
     && DEFAULT_STATUSES.every(s => statuses.includes(s));
+  const statusLabel = statuses.length === ALL_STATUSES.length
+    ? 'All Statuses'
+    : statuses.map(titleCase).join(' + ');
 
   // PAYMENT_BASIS_TOGGLE_SPEC.md Part B.2: the default view stays the props
   // passed down from loadDashboardData (unchanged first paint); any other
-  // basis/status combo fetches from /api/payments on demand.
+  // basis/status combo fetches from /api/payments on demand. `fetched` tags
+  // its own basis/statuses so staleness (and therefore the loading state) is
+  // derived during render rather than tracked with a separate setState call
+  // at the top of the effect (matches AdminPanel.tsx's loadFiles pattern).
+  const statusesKey = statuses.join(',');
   const [fetched, setFetched] = useState<{
+    basis: Basis; statusesKey: string;
     payments: PaymentRow[]; paymentsByLocation: PaymentByLocationRow[];
     paymentSourcesByLocation: PaymentSourceLocationRow[];
     deniedVoided: { count: number; amount: number };
   } | null>(null);
-  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (isDefault) { setFetched(null); return; }
+    if (isDefault) return; // no fetch needed — activePayments falls back to props below
     let cancelled = false;
-    setLoading(true);
-    const params = new URLSearchParams({ start: dateStart, end: dateEnd, basis, statuses: statuses.join(',') });
+    const params = new URLSearchParams({ start: dateStart, end: dateEnd, basis, statuses: statusesKey });
     fetch(`/api/payments?${params}`)
       .then(r => r.json())
-      .then(json => { if (!cancelled) setFetched(json); })
-      .catch(err => console.error('payments fetch error:', err))
-      .finally(() => { if (!cancelled) setLoading(false); });
+      .then(json => { if (!cancelled) setFetched({ ...json, basis, statusesKey }); })
+      .catch(err => console.error('payments fetch error:', err));
     return () => { cancelled = true; };
-  }, [basis, statuses, dateStart, dateEnd, isDefault]);
+  }, [basis, statusesKey, dateStart, dateEnd, isDefault]);
 
   function toggleStatus(s: string) {
     setStatuses(prev => {
@@ -59,10 +65,13 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
     });
   }
 
-  const activePayments                 = fetched ? fetched.payments : payments;
-  const activePaymentsByLocation       = fetched ? fetched.paymentsByLocation : paymentsByLocation;
-  const activePaymentSourcesByLocation = fetched ? fetched.paymentSourcesByLocation : paymentSourcesByLocation;
-  const deniedVoided = fetched?.deniedVoided;
+  const isStale   = !fetched || fetched.basis !== basis || fetched.statusesKey !== statusesKey;
+  const useFetched = !isDefault && !isStale;
+  const loading    = !isDefault && isStale;
+  const activePayments                 = useFetched ? fetched!.payments : payments;
+  const activePaymentsByLocation       = useFetched ? fetched!.paymentsByLocation : paymentsByLocation;
+  const activePaymentSourcesByLocation = useFetched ? fetched!.paymentSourcesByLocation : paymentSourcesByLocation;
+  const deniedVoided = useFetched ? fetched!.deniedVoided : undefined;
   const showDeniedVoidedWarning = statuses.includes('DENIED') || statuses.includes('VOIDED');
 
   // When a location is selected, re-aggregate payment sources from per-location data
@@ -159,46 +168,47 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
 
   return (
     <div>
-      {/* ── Basis toggle + status filter ── */}
-      <div className="cc" style={{ marginBottom: 12 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
-          <div>
-            <div className="tgl-g">
-              <button className={`tgl ${basis === 'event' ? 'on' : ''}`} onClick={() => setBasis('event')}>Service date</button>
-              <button className={`tgl ${basis === 'paid' ? 'on' : ''}`} onClick={() => setBasis('paid')}>Paid date</button>
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6, maxWidth: 320 }}>
-              {basis === 'event'
-                ? "Payments on the order's business date — catering on the event date. Matches revenue attribution on all other tabs."
-                : "Payments on the day the money was collected. Matches Toast's Payments report."}
-            </div>
+      {/* ── Basis toggle + status filter — matches the app's filter-bar look (fb/drw/drm) ── */}
+      <div className="fb">
+        <div className="fb-r">
+          <span className="fb-lbl">Basis</span>
+          <div className="tgl-g">
+            <button className={`tgl ${basis === 'event' ? 'on' : ''}`} onClick={() => setBasis('event')}>Business Date</button>
+            <button className={`tgl ${basis === 'paid' ? 'on' : ''}`} onClick={() => setBasis('paid')}>Paid Date</button>
           </div>
-          <div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {ALL_STATUSES.map(s => {
-                const active = statuses.includes(s);
-                return (
-                  <button
-                    key={s}
-                    onClick={() => toggleStatus(s)}
-                    style={{
-                      padding: '4px 11px', borderRadius: 999, fontSize: 10, fontWeight: 700,
-                      border: active ? '1px solid #6d28d9' : '1px solid var(--border)',
-                      background: active ? '#ede9fe' : '#fff',
-                      color: active ? '#5b21b6' : 'var(--muted)',
-                      cursor: 'pointer', fontFamily: 'inherit',
-                    }}
-                  >
-                    {titleCase(s)}
-                  </button>
-                );
-              })}
-            </div>
-            {loading && <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6 }}>Refreshing…</div>}
+
+          <div className="fb-sep" />
+          <span className="fb-lbl">Status</span>
+          <div className="drw" style={{ position: 'relative' }}>
+            <button className="drb" onClick={() => setStatusOpen(o => !o)} style={{ minWidth: 150 }}>
+              {statusLabel}
+              <i className="ti ti-chevron-down" style={{ fontSize: 11 }} />
+            </button>
+            {statusOpen && (
+              <>
+                <div style={{ position: 'fixed', inset: 0, zIndex: 199 }} onClick={() => setStatusOpen(false)} />
+                <div className="drm open" style={{ minWidth: 170, zIndex: 200 }}>
+                  {ALL_STATUSES.map(s => (
+                    <label key={s} className="dr-it" style={{ gap: 8, userSelect: 'none' }}>
+                      <input type="checkbox" checked={statuses.includes(s)} onChange={() => toggleStatus(s)} style={{ accentColor: 'var(--accent)' }} />
+                      {titleCase(s)}
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
+
+          {loading && <span style={{ fontSize: 10, color: 'var(--muted)' }}>Refreshing…</span>}
+        </div>
+
+        <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 8 }}>
+          {basis === 'event'
+            ? "Payments on the order's business date — catering on the event date. Matches revenue attribution on all other tabs."
+            : "Payments on the day the money was collected. Matches Toast's Payments report."}
         </div>
         {basis === 'paid' && (
-          <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 10 }}>
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>
             Catering deposits appear here on their collection date, not the event date.
           </div>
         )}
