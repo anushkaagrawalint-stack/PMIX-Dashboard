@@ -243,8 +243,8 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 12 }}>
         <div className="kc" style={{ borderLeft: '3px solid var(--accent)', borderLeftStyle: 'solid' }}>
           <div className="kl">Total Payments</div>
-          <div className="kv">{fmt$(netAfterFeesAndRefunds)}</div>
-          <div className="ks">{totalTxns.toLocaleString()} transactions</div>
+          <div className="kv">{totalTxns.toLocaleString()}</div>
+          <div className="ks">transactions</div>
         </div>
         <div className="kc r" style={{ borderLeft: '3px solid #dc2626', borderLeftStyle: 'solid' }}>
           <div className="kl">Refunded</div>
