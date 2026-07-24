@@ -204,6 +204,9 @@ export interface PaymentRow {
   payment_source:   string;
   payment_count:    number;
   total_amount:     number;
+  tip_amount:       number;
+  fees:             number;
+  withholdings:     number;
   refunded_amount:  number;
   pct:              number;
   category:         string;  // 'Card' | 'Alt Payment'
@@ -225,6 +228,9 @@ export interface PaymentSourceLocationRow {
   payment_source:   string;
   payment_count:    number;
   total_amount:     number;
+  tip_amount:       number;
+  fees:             number;
+  withholdings:     number;
   refunded_amount:  number;
   category:         string;  // 'Card' | 'Alt Payment'
 }

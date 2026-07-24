@@ -78,12 +78,15 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
   const effectivePayments = useMemo<PaymentRow[]>(() => {
     if (selectedLocations.length === 0) return activePayments;
     const rows = activePaymentSourcesByLocation.filter(r => selectedLocations.includes(r.location_code));
-    const map = new Map<string, { count: number; amount: number; refunded: number; category: string }>();
+    const map = new Map<string, { count: number; amount: number; tip: number; fees: number; withholdings: number; refunded: number; category: string }>();
     rows.forEach(r => {
-      const e = map.get(r.payment_source) ?? { count: 0, amount: 0, refunded: 0, category: r.category };
-      e.count    += r.payment_count;
-      e.amount   += r.total_amount;
-      e.refunded += r.refunded_amount;
+      const e = map.get(r.payment_source) ?? { count: 0, amount: 0, tip: 0, fees: 0, withholdings: 0, refunded: 0, category: r.category };
+      e.count        += r.payment_count;
+      e.amount       += r.total_amount;
+      e.tip          += r.tip_amount;
+      e.fees         += r.fees;
+      e.withholdings += r.withholdings;
+      e.refunded     += r.refunded_amount;
       map.set(r.payment_source, e);
     });
     const grand = [...map.values()].reduce((s, v) => s + v.amount, 0);
@@ -93,6 +96,9 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
         payment_source:  source,
         payment_count:   v.count,
         total_amount:    v.amount,
+        tip_amount:      v.tip,
+        fees:            v.fees,
+        withholdings:    v.withholdings,
         refunded_amount: v.refunded,
         pct:             grand > 0 ? Math.round(v.amount / grand * 1000) / 10 : 0,
         category:        v.category,
@@ -105,10 +111,21 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
 
   const totalRevenue  = effectivePayments.reduce((s, p) => s + p.total_amount, 0);
   const totalTxns     = effectivePayments.reduce((s, p) => s + p.payment_count, 0);
+  const totalTip      = effectivePayments.reduce((s, p) => s + p.tip_amount, 0);
+  const totalFees     = effectivePayments.reduce((s, p) => s + p.fees, 0);
+  const totalWithholdings = effectivePayments.reduce((s, p) => s + p.withholdings, 0);
   const totalRefunded = effectivePayments.reduce((s, p) => s + p.refunded_amount, 0);
   const cardRevenue   = effectivePayments.filter(p => p.category === 'Card').reduce((s, p) => s + p.total_amount, 0);
+  const cardTip       = effectivePayments.filter(p => p.category === 'Card').reduce((s, p) => s + p.tip_amount, 0);
+  const cardFees      = effectivePayments.filter(p => p.category === 'Card').reduce((s, p) => s + p.fees, 0);
+  const cardWithholdings = effectivePayments.filter(p => p.category === 'Card').reduce((s, p) => s + p.withholdings, 0);
+  const cardRefunded  = effectivePayments.filter(p => p.category === 'Card').reduce((s, p) => s + p.refunded_amount, 0);
+  const cardAmountPlusTip = cardRevenue + cardTip;
+  const cardNet       = cardAmountPlusTip - cardFees - cardWithholdings - cardRefunded;
   const altRevenue    = effectivePayments.filter(p => p.category !== 'Card').reduce((s, p) => s + p.total_amount, 0);
   const avgTicket     = totalTxns > 0 ? totalRevenue / totalTxns : 0;
+  const amountPlusTip = totalRevenue + totalTip;
+  const netAfterFeesAndRefunds = amountPlusTip - totalFees - totalWithholdings - totalRefunded;
 
   // Donut: Card vs Alt Payment
   const donutData = useMemo(() => {
@@ -223,20 +240,19 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
       </div>
 
       {/* ── KPI row ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 10, marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 12 }}>
         <div className="kc" style={{ borderLeft: '3px solid var(--accent)', borderLeftStyle: 'solid' }}>
           <div className="kl">Total Payments</div>
-          <div className="kv">{fmt$(totalRevenue)}</div>
+          <div className="kv">{fmt$(netAfterFeesAndRefunds)}</div>
           <div className="ks">{totalTxns.toLocaleString()} transactions</div>
         </div>
         <div className="kc r" style={{ borderLeft: '3px solid #dc2626', borderLeftStyle: 'solid' }}>
           <div className="kl">Refunded</div>
           <div className="kv">{fmt$(totalRefunded)}</div>
-          <div className="ks">not netted out of Total Payments above</div>
         </div>
         <div className="kc" style={{ borderLeft: '3px solid #6366f1', borderLeftStyle: 'solid' }}>
           <div className="kl">Card</div>
-          <div className="kv">{fmt$(cardRevenue)}</div>
+          <div className="kv">{fmt$(cardAmountPlusTip)}</div>
           <div className="ks">
             {((cardRevenue / totalRevenue) * 100).toFixed(1)}% · avg {fmt$2(avgByCategory['Card']?.count ? avgByCategory['Card'].amount / avgByCategory['Card'].count : 0)}
           </div>
@@ -252,6 +268,30 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
           <div className="kl">Avg Ticket</div>
           <div className="kv">{fmt$2(avgTicket)}</div>
           <div className="ks">across all payment types</div>
+        </div>
+        <div className="kc" style={{ borderLeft: '3px solid #0ea5e9', borderLeftStyle: 'solid' }}>
+          <div className="kl">Amount + Tip</div>
+          <div className="kv">{fmt$(amountPlusTip)}</div>
+          <div className="ks">gross charged, tip included</div>
+        </div>
+        <div className="kc" style={{ borderLeft: '3px solid #f97316', borderLeftStyle: 'solid' }}>
+          <div className="kl">Fees</div>
+          <div className="kv">{fmt$(totalFees)}</div>
+          <div className="ks">processing fees</div>
+        </div>
+        <div className="kc" style={{ borderLeft: '3px solid #a855f7', borderLeftStyle: 'solid' }}>
+          <div className="kl">Withholdings</div>
+          <div className="kv">{fmt$(totalWithholdings)}</div>
+          <div className="ks">merchant cash advance repayment, held from payout</div>
+        </div>
+        <div className="kc" style={{ borderLeft: '3px solid #16a34a', borderLeftStyle: 'solid' }}>
+          <div className="kl">Net (Amt+Tip−Fees−Withholdings−Refunds)</div>
+          <div className="kv">{fmt$(netAfterFeesAndRefunds)}</div>
+        </div>
+        <div className="kc" style={{ borderLeft: '3px solid #4338ca', borderLeftStyle: 'solid' }}>
+          <div className="kl">Card Net</div>
+          <div className="kv">{fmt$(cardNet)}</div>
+          <div className="ks">card only: amt+tip−fees−withholdings−refunds</div>
         </div>
       </div>
 
@@ -372,6 +412,7 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
             <tbody>
               {filtered.map(p => {
                 const avg = p.payment_count > 0 ? p.total_amount / p.payment_count : 0;
+                const revenue = p.total_amount + p.tip_amount - p.withholdings - p.refunded_amount - p.fees;
                 return (
                   <tr key={p.payment_source}>
                     <td style={{ fontWeight: 600 }}>{p.payment_source}</td>
@@ -384,7 +425,7 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
                       }}>{p.category}</span>
                     </td>
                     <td>{p.payment_count.toLocaleString()}</td>
-                    <td style={{ fontWeight: 600 }}>{fmt$(p.total_amount)}</td>
+                    <td style={{ fontWeight: 600 }}>{fmt$(revenue)}</td>
                     <td>{fmt$2(avg)}</td>
                     <td>{p.pct}%</td>
                   </tr>

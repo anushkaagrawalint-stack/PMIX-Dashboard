@@ -1974,15 +1974,26 @@ export async function getPayments(
       FROM public.br_order_payment
       WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
         AND COALESCE(paid_status, 'CAPTURED') = ANY($3)
+    ),
+    refunds AS (
+      SELECT payment_guid, SUM(refund_amount + COALESCE(tip_refund_amount, 0)) AS refund_amount
+      FROM public.order_refunds
+      WHERE refund_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY payment_guid
     )
     SELECT
       COALESCE(NULLIF(TRIM(alt_payment_name),''), payment_type, 'Unknown') AS payment_source,
       payment_type,
       COUNT(*)::INT                                                          AS payment_count,
       ROUND(SUM(amount)::NUMERIC, 2)                                        AS total_amount,
-      ROUND(COALESCE(SUM(refund_amount), 0)::NUMERIC, 2)                    AS refunded_amount,
+      ROUND(COALESCE(SUM(tip_amount), 0)::NUMERIC, 2)                       AS tip_amount,
+      ROUND(COALESCE(SUM(fees), 0)::NUMERIC, 2)                             AS fees,
+      ROUND(COALESCE(SUM(withholdings), 0)::NUMERIC, 2)                     AS withholdings,
+      ROUND(COALESCE(SUM(rf.refund_amount), 0)::NUMERIC, 2)                 AS refunded_amount,
       ROUND(SUM(amount)*100.0/NULLIF(g.total,0)::NUMERIC, 1)               AS pct
-    FROM public.br_order_payment, grand g
+    FROM public.br_order_payment
+    LEFT JOIN refunds rf ON rf.payment_guid = br_order_payment.payment_guid
+    CROSS JOIN grand g
     WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
       AND COALESCE(paid_status, 'CAPTURED') = ANY($3)
     GROUP BY 1, 2, g.total
@@ -1994,6 +2005,9 @@ export async function getPayments(
     payment_source:  r.payment_source as string,
     payment_count:   Number(r.payment_count),
     total_amount:    Number(r.total_amount),
+    tip_amount:      Number(r.tip_amount),
+    fees:            Number(r.fees),
+    withholdings:    Number(r.withholdings),
     refunded_amount: Number(r.refunded_amount),
     pct:             Number(r.pct),
     category:        (r.payment_type as string) === 'CREDIT' ? 'Card' : 'Alt Payment',
@@ -2013,6 +2027,12 @@ export async function getPaymentsByLocation(
   const db = pool();
   const dateCol = basis === 'paid' ? 'COALESCE(p.paid_business_date, p.business_date)' : 'p.business_date';
   const { rows } = await db.query(`
+    WITH refunds AS (
+      SELECT payment_guid, SUM(refund_amount + COALESCE(tip_refund_amount, 0)) AS refund_amount
+      FROM public.order_refunds
+      WHERE refund_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY payment_guid
+    )
     SELECT
       p.location_code,
       COALESCE(dl.display_name, p.location_code)            AS display_name,
@@ -2020,9 +2040,10 @@ export async function getPaymentsByLocation(
       ROUND(SUM(p.amount)::NUMERIC, 2)                       AS total_amount,
       ROUND(SUM(CASE WHEN p.payment_type = 'CREDIT' THEN p.amount ELSE 0 END)::NUMERIC, 2) AS card_amount,
       ROUND(SUM(CASE WHEN p.payment_type != 'CREDIT' THEN p.amount ELSE 0 END)::NUMERIC, 2) AS alt_amount,
-      ROUND(COALESCE(SUM(p.refund_amount), 0)::NUMERIC, 2)   AS refunded_amount
+      ROUND(COALESCE(SUM(rf.refund_amount), 0)::NUMERIC, 2)  AS refunded_amount
     FROM public.br_order_payment p
     LEFT JOIN public.dim_location dl ON dl.location_code = p.location_code
+    LEFT JOIN refunds rf ON rf.payment_guid = p.payment_guid
     WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
       AND COALESCE(p.paid_status, 'CAPTURED') = ANY($3)
     GROUP BY p.location_code, dl.display_name
@@ -2050,6 +2071,12 @@ export async function getPaymentSourcesByLocation(
   const db = pool();
   const dateCol = basis === 'paid' ? 'COALESCE(p.paid_business_date, p.business_date)' : 'p.business_date';
   const { rows } = await db.query(`
+    WITH refunds AS (
+      SELECT payment_guid, SUM(refund_amount + COALESCE(tip_refund_amount, 0)) AS refund_amount
+      FROM public.order_refunds
+      WHERE refund_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY payment_guid
+    )
     SELECT
       p.location_code,
       COALESCE(dl.display_name, p.location_code)                              AS display_name,
@@ -2057,9 +2084,13 @@ export async function getPaymentSourcesByLocation(
       p.payment_type,
       COUNT(*)::INT                                                           AS payment_count,
       ROUND(SUM(p.amount)::NUMERIC, 2)                                       AS total_amount,
-      ROUND(COALESCE(SUM(p.refund_amount), 0)::NUMERIC, 2)                   AS refunded_amount
+      ROUND(COALESCE(SUM(p.tip_amount), 0)::NUMERIC, 2)                      AS tip_amount,
+      ROUND(COALESCE(SUM(p.fees), 0)::NUMERIC, 2)                            AS fees,
+      ROUND(COALESCE(SUM(p.withholdings), 0)::NUMERIC, 2)                    AS withholdings,
+      ROUND(COALESCE(SUM(rf.refund_amount), 0)::NUMERIC, 2)                  AS refunded_amount
     FROM public.br_order_payment p
     LEFT JOIN public.dim_location dl ON dl.location_code = p.location_code
+    LEFT JOIN refunds rf ON rf.payment_guid = p.payment_guid
     WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
       AND COALESCE(p.paid_status, 'CAPTURED') = ANY($3)
     GROUP BY p.location_code, dl.display_name, 3, p.payment_type
@@ -2072,6 +2103,9 @@ export async function getPaymentSourcesByLocation(
     payment_source:  r.payment_source as string,
     payment_count:   Number(r.payment_count),
     total_amount:    Number(r.total_amount),
+    tip_amount:      Number(r.tip_amount),
+    fees:            Number(r.fees),
+    withholdings:    Number(r.withholdings),
     refunded_amount: Number(r.refunded_amount),
     category:        (r.payment_type as string) === 'CREDIT' ? 'Card' : 'Alt Payment',
   }));
