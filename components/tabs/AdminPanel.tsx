@@ -376,9 +376,16 @@ function BikkyPanel() {
 
   useEffect(loadFiles, []);
 
+  const uploadTargetPeriod: number | 'YTD' = uploadIsYtd ? 'YTD' : Number(uploadPeriod);
+  const willReplace = !!files && files.some(f =>
+    f.source === uploadType && f.period === uploadTargetPeriod && f.fiscalYear === Number(uploadYear));
+
   async function submitUpload(e: React.FormEvent) {
     e.preventDefault();
     if (!uploadFile) return;
+    if (willReplace && !confirm(
+      `This replaces the existing ${periodLabel(uploadTargetPeriod)} ${uploadYear} file for ${BIKKY_SOURCE_LABEL[uploadType]}. Continue?`
+    )) return;
     setUploadBusy(true); setUploadMsg('');
     try {
       const form = new FormData();
@@ -449,8 +456,8 @@ function BikkyPanel() {
             <input type="file" accept=".csv" required
               onChange={e => setUploadFile(e.target.files?.[0] ?? null)} />
           </div>
-          <button type="submit" disabled={uploadBusy || !uploadFile} style={{ ...btn('#059669'), opacity: uploadBusy ? 0.7 : 1 }}>
-            {uploadBusy ? 'Uploading…' : 'Upload'}
+          <button type="submit" disabled={uploadBusy || !uploadFile} style={{ ...btn(willReplace ? '#dc2626' : '#059669'), opacity: uploadBusy ? 0.7 : 1 }}>
+            {uploadBusy ? (willReplace ? 'Replacing…' : 'Uploading…') : (willReplace ? 'Replace' : 'Upload')}
           </button>
           {uploadMsg && (
             <span style={{ fontSize: 12, color: uploadMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{uploadMsg}</span>
