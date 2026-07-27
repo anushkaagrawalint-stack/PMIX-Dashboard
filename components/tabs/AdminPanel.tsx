@@ -345,7 +345,7 @@ interface BikkyFileRow { source: BikkySource; name: string; path: string; period
 const periodSortKey = (p: number | 'YTD') => p === 'YTD' ? 999 : p;
 const periodLabel    = (p: number | 'YTD') => p === 'YTD' ? 'YTD' : `P${p}`;
 
-const BIKKY_SOURCE_LABEL: Record<BikkySource, string> = { instore: 'In-Store', '3pd_loyalty': '3PD + Loyalty' };
+const BIKKY_SOURCE_LABEL: Record<BikkySource, string> = { instore: 'In-Store', '3pd_loyalty': '3PD + Pickup' };
 
 function BikkyPanel() {
   const [files, setFiles]     = useState<BikkyFileRow[] | null>(null);
@@ -358,6 +358,7 @@ function BikkyPanel() {
   const [uploadFile, setUploadFile]     = useState<File | null>(null);
   const [uploadBusy, setUploadBusy]     = useState(false);
   const [uploadMsg, setUploadMsg]       = useState('');
+  const [pending, setPending]           = useState<{ source: BikkySource; period: number | 'YTD'; fiscalYear: number; file: File; replace: boolean } | null>(null);
 
   const [deleting, setDeleting] = useState<string | null>(null); // path currently being deleted
 
@@ -380,24 +381,28 @@ function BikkyPanel() {
   const willReplace = !!files && files.some(f =>
     f.source === uploadType && f.period === uploadTargetPeriod && f.fiscalYear === Number(uploadYear));
 
-  async function submitUpload(e: React.FormEvent) {
+  function stageUpload(e: React.FormEvent) {
     e.preventDefault();
     if (!uploadFile) return;
-    if (willReplace && !confirm(
-      `This replaces the existing ${periodLabel(uploadTargetPeriod)} ${uploadYear} file for ${BIKKY_SOURCE_LABEL[uploadType]}. Continue?`
-    )) return;
+    setUploadMsg('');
+    setPending({ source: uploadType, period: uploadTargetPeriod, fiscalYear: Number(uploadYear), file: uploadFile, replace: willReplace });
+  }
+
+  async function confirmAll() {
+    if (!pending) return;
     setUploadBusy(true); setUploadMsg('');
     try {
       const form = new FormData();
-      form.set('type', uploadType);
-      form.set('period', uploadIsYtd ? 'YTD' : uploadPeriod);
-      form.set('fiscal_year', uploadYear);
-      form.set('file', uploadFile);
+      form.set('type', pending.source);
+      form.set('period', String(pending.period));
+      form.set('fiscal_year', String(pending.fiscalYear));
+      form.set('file', pending.file);
       const res = await fetch('/api/admin/bikky', { method: 'POST', body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Upload failed');
       setUploadMsg(data.replaced ? 'Replaced existing period.' : 'Uploaded.');
       setUploadPeriod(''); setUploadYear(''); setUploadFile(null);
+      setPending(null);
       loadFiles();
     } catch (err) {
       setUploadMsg('Error: ' + (err instanceof Error ? err.message : String(err)));
@@ -428,12 +433,12 @@ function BikkyPanel() {
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14, color: 'var(--text)' }}>
           Upload new period
         </div>
-        <form onSubmit={submitUpload} style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+        <form onSubmit={stageUpload} style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
           <div>
             <label style={lbl}>Source</label>
             <select style={inp} value={uploadType} onChange={e => setUploadType(e.target.value as BikkySource)}>
               <option value="instore">In-Store</option>
-              <option value="3pd_loyalty">3PD + Loyalty</option>
+              <option value="3pd_loyalty">3PD + Pickup</option>
             </select>
           </div>
           <div style={{ width: 90 }}>
@@ -456,16 +461,40 @@ function BikkyPanel() {
             <input type="file" accept=".csv" required
               onChange={e => setUploadFile(e.target.files?.[0] ?? null)} />
           </div>
-          <button type="submit" disabled={uploadBusy || !uploadFile} style={{ ...btn(willReplace ? '#dc2626' : '#059669'), opacity: uploadBusy ? 0.7 : 1 }}>
-            {uploadBusy ? (willReplace ? 'Replacing…' : 'Uploading…') : (willReplace ? 'Replace' : 'Upload')}
+          <button type="submit" disabled={!!pending || !uploadFile || willReplace} style={{ ...btn('#059669'), opacity: (!!pending || willReplace) ? 0.4 : 1 }}>
+            Upload
+          </button>
+          <button type="submit" disabled={!!pending || !uploadFile || !willReplace} style={{ ...btn('#dc2626'), opacity: (!!pending || !willReplace) ? 0.4 : 1 }}>
+            Replace
           </button>
           {uploadMsg && (
             <span style={{ fontSize: 12, color: uploadMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{uploadMsg}</span>
           )}
         </form>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
-          Uploading a period that already exists replaces it (deletes the old file, commits the new one).
+          Uploading a period that already exists needs Replace (deletes the old file, commits the new one).
         </div>
+        {pending && (
+          <div style={{
+            marginTop: 12, padding: '10px 14px', borderRadius: 8,
+            background: pending.replace ? '#fef2f2' : '#f0fdf4',
+            border: `1px solid ${pending.replace ? '#fecaca' : '#bbf7d0'}`,
+            display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+          }}>
+            <span style={{ fontSize: 13, color: 'var(--text)' }}>
+              {pending.replace
+                ? `Replace existing ${periodLabel(pending.period)} ${pending.fiscalYear} file for ${BIKKY_SOURCE_LABEL[pending.source]}?`
+                : `Upload ${periodLabel(pending.period)} ${pending.fiscalYear} for ${BIKKY_SOURCE_LABEL[pending.source]}?`}
+              {' '}({pending.file.name})
+            </span>
+            <button onClick={confirmAll} disabled={uploadBusy} style={{ ...btn(pending.replace ? '#dc2626' : '#059669'), opacity: uploadBusy ? 0.7 : 1 }}>
+              {uploadBusy ? 'Working…' : 'Confirm All'}
+            </button>
+            <button onClick={() => setPending(null)} disabled={uploadBusy} style={{ ...btn('#6b7280'), opacity: uploadBusy ? 0.7 : 1 }}>
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
 
       {listError && <div style={{ color: '#dc2626', padding: 10 }}>{listError}</div>}
@@ -803,7 +832,7 @@ export default function AdminPanel({ currentEmail, currentRole }: { currentEmail
       <div style={{ marginTop: 28 }}>
         <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: 'var(--text)' }}>Bikky Data</div>
         <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 14 }}>
-          Upload, replace, or delete the In-Store and 3PD + Loyalty Bikky exports per period. Commits directly to this repo — see BIKKY_ADMIN_UPLOAD_PLAN.md.
+          Upload, replace, or delete the In-Store and 3PD + Pickup Bikky exports per period. Commits directly to this repo — see BIKKY_ADMIN_UPLOAD_PLAN.md.
         </div>
         <BikkyPanel />
       </div>
