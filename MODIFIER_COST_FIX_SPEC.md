@@ -264,3 +264,51 @@ swing >2% needs explanation).
    Acceptance: T3.
 3. **PR 3:** `getModifiers` cost-source inversion (= RC4). Acceptance: T4.
 4. Sweep for text-sorted `period DESC` orderings (§3) — can ride along in PR 1.
+
+---
+
+## 9. Verification results — her implementation @ `fe230e5` (added 2026-07-03)
+
+Ran the acceptance suite against Anushka's ACTUAL pushed query functions on production.
+
+**Verdict: implementation is correct; ONE pre-existing bug blocks sign-off.**
+19/20 checks pass once a one-line fiscal-boundary fix is applied (verified by patching
+locally and re-running). As pushed, all T1 unit costs read ~3–4% low.
+
+### The blocker — fiscal-period join orphans day 1 of every period
+`dim_fiscal_period` stores INCLUSIVE dates (P5 = 2026-04-27 → 2026-05-24, 28 days), but
+every fiscal join uses `fol.business_date > fp.start_date::DATE` (strictly greater), so
+the first day of each period matches NO period (not > its own start; not ≤ prior end).
+Those orders get `pnum` NULL → `mod_costs` join misses → modifiers priced $0
+(2026-04-27 alone: 3,279 modifier rows). This PREDATES the modifier-cost work — the old
+code masked it via the period-less "latest cost" fallback; the new period-strict
+pipeline correctly exposes it.
+
+**Fix (verified — with it, all T1 hit exactly):**
+1. `business_date > fp.start_date::DATE` → `>=` — 9 instances (8 in `lib/queries.ts`,
+   1 in `lib/modifierCost.ts` `_mod_pairs`).
+2. `selected_period` overlap test (`lib/queries.ts` ~1242): `start_date::DATE < $2::DATE`
+   → `<=` (same convention; a range equal to a period's first day selects no period).
+No double-counting risk: periods are contiguous and disjoint (P4 ends 04-26, P5 starts
+04-27), so `>= start AND <= end` is exact.
+
+### Results (with the boundary fix applied)
+- **T1** all 7 exact — incl. Coconut Ginger 0.7998 and the Tikka Masala 0.7360 guard.
+- **T2** pink-sheet summary: PASS (P3–P5 range = P5-only; selected-period rule works).
+- **T3** summary vs Σdetail reconcile ≤0.1%; no $0 sauce/chutney rows.
+- **T4** BYO tab: all 6 (Basmati Rice 0.2023 … 1/2 Tandoori Paneer 0.7494 from R365's
+  native half-row — correct, not naive halving).
+
+### Remaining notes (non-blocking)
+1. **Detail tab on multi-period ranges** prices each order at its own period while the
+   summary shows the selected period → the two won't reconcile on spanning ranges
+   (P3–P5 Coconut Ginger: detail 0.8129 vs summary 0.7998). Single-period ranges (the
+   normal case) reconcile perfectly. Recommend: join the detail's `mod_costs` at the
+   selected period, same as the summary.
+2. `getModifiers` re-inlines the alias list instead of importing it from
+   `lib/modifierCost.ts` (a 5th copy — drift risk). Suggest exporting the alias CASE
+   from the module and reusing.
+3. Process: pushed straight to `main`, and the commit bundles unrelated tab work
+   (EntreeMix, ChannelMenu, Overview). Branch + PR next time, one concern per PR.
+4. Spec's P5 range (04-27→05-23) was one day short; true P5 ends 05-24. Doesn't affect
+   unit costs; acceptance runs used the corrected calendar.
