@@ -1696,12 +1696,7 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
         CASE WHEN d.channel IN ('APP', 'TPD', 'TPD_MARKUP')
              THEN 'online' ELSE 'ih' END AS channel,
         d.qty,
-        d.qty * COALESCE(uc.unit_cost, 0) AS cost,
-        -- true when this modifier's cost wasn't found for the selected period
-        -- itself (uc.src_pnum NULL) or was borrowed from an older period
-        -- (analytics.pc_modifier_unit_cost.src_pnum, see pc_refresh.sql) —
-        -- surfaced so a stale/missing R365 export doesn't look like real data.
-        (uc.src_pnum IS DISTINCT FROM sp.pnum) AS is_stale_cost
+        d.qty * COALESCE(uc.unit_cost, 0) AS cost
       FROM analytics.pc_modifier_daily d
       CROSS JOIN sp
       LEFT JOIN byo_fix bf ON bf.raw = d.raw_parent
@@ -1714,8 +1709,7 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
     SELECT
       parent_item, section, modifier_name, channel,
       SUM(qty)::BIGINT AS qty,
-      ROUND(SUM(cost)::NUMERIC, 4) AS total_cost,
-      BOOL_OR(is_stale_cost) AS is_stale_cost
+      ROUND(SUM(cost)::NUMERIC, 4) AS total_cost
     FROM rows_
     WHERE section IS NOT NULL AND section NOT IN ('Online', 'NA', 'ZeroCater')
     GROUP BY 1, 2, 3, 4
@@ -1724,14 +1718,13 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
   await db.end();
 
   return rows.map(r => ({
-    parent_item:    r.parent_item    as string,
-    section:        r.section        as string,
-    modifier_name:  r.modifier_name  as string,
-    channel:        r.channel        as string,
-    qty:            Number(r.qty),
-    unit_cost:      Number(r.qty) > 0 ? Number(r.total_cost) / Number(r.qty) : 0,
-    total_cost:     Number(r.total_cost),
-    is_stale_cost:  Boolean(r.is_stale_cost),
+    parent_item:   r.parent_item   as string,
+    section:       r.section       as string,
+    modifier_name: r.modifier_name as string,
+    channel:       r.channel       as string,
+    qty:           Number(r.qty),
+    unit_cost:     Number(r.qty) > 0 ? Number(r.total_cost) / Number(r.qty) : 0,
+    total_cost:    Number(r.total_cost),
   }));
 }
 
