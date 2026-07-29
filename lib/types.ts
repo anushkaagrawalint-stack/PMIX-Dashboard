@@ -171,6 +171,7 @@ export interface PinkSheetDetailRow {
   qty:           number;
   unit_cost:     number;
   total_cost:    number;   // qty × unit_cost
+  is_stale_cost: boolean;  // cost wasn't in this period's own R365 export — borrowed from an older period, or missing entirely
 }
 
 // ─── Pink Sheets (cost breakdown per item) ───────────────────────────────────

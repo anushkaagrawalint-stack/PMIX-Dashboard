@@ -73,7 +73,13 @@ function SectionTable({
                 const weighted = m.unit_cost * share;
                 return (
                   <tr key={m.modifier_name}>
-                    <td style={{ paddingLeft: 20 }}>{m.modifier_name}</td>
+                    <td style={{ paddingLeft: 20 }}>
+                      {m.modifier_name}
+                      {m.is_stale_cost && (
+                        <span title="Cost isn't from this period's own R365 export — borrowed from an older period, or missing entirely"
+                          style={{ marginLeft: 6, fontSize: 10, color: '#d97706', cursor: 'help' }}>⚠</span>
+                      )}
+                    </td>
                     <td style={{ textAlign: 'center' }}>{m.qty.toLocaleString()}</td>
                     <td />
                     <td style={{ textAlign: 'center', color: m.unit_cost === 0 ? 'var(--muted)' : 'inherit' }}>
@@ -95,7 +101,13 @@ function SectionTable({
             <>
               {sec.mods.map(m => (
                 <tr key={m.modifier_name}>
-                  <td style={{ paddingLeft: 20 }}>{m.modifier_name}</td>
+                  <td style={{ paddingLeft: 20 }}>
+                    {m.modifier_name}
+                    {m.is_stale_cost && (
+                      <span title="Cost isn't from this period's own R365 export — borrowed from an older period, or missing entirely"
+                        style={{ marginLeft: 6, fontSize: 10, color: '#d97706', cursor: 'help' }}>⚠</span>
+                    )}
+                  </td>
                   <td style={{ textAlign: 'center' }}>{m.qty.toLocaleString()}</td>
                   <td style={{ textAlign: 'center', color: m.unit_cost === 0 ? 'var(--muted)' : 'inherit' }}>
                     {fmt$(m.unit_cost)}

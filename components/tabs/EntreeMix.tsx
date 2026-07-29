@@ -422,23 +422,25 @@ function aggregateSections(
   modTypeFilter: Set<string>,
 ): SectionData[] {
   // Sum qty + total_cost per (displayName, modifier_name) across all selected items
-  const bySecMod: Record<string, Record<string, { qty: number; total_cost: number }>> = {};
+  const bySecMod: Record<string, Record<string, { qty: number; total_cost: number; is_stale_cost: boolean }>> = {};
   allDetails
     .filter(d => names.includes(d.parent_item) && d.channel === ch)
     .forEach(d => {
       const dn = effectiveDisplayName(d.section);
       if (!bySecMod[dn]) bySecMod[dn] = {};
-      if (!bySecMod[dn][d.modifier_name]) bySecMod[dn][d.modifier_name] = { qty: 0, total_cost: 0 };
-      bySecMod[dn][d.modifier_name].qty        += d.qty;
-      bySecMod[dn][d.modifier_name].total_cost += d.total_cost;
+      if (!bySecMod[dn][d.modifier_name]) bySecMod[dn][d.modifier_name] = { qty: 0, total_cost: 0, is_stale_cost: false };
+      bySecMod[dn][d.modifier_name].qty          += d.qty;
+      bySecMod[dn][d.modifier_name].total_cost   += d.total_cost;
+      bySecMod[dn][d.modifier_name].is_stale_cost = bySecMod[dn][d.modifier_name].is_stale_cost || d.is_stale_cost;
     });
 
   const sections: SectionData[] = Object.entries(bySecMod).map(([displayName, modMap]) => {
-    const mods: PinkSheetDetailRow[] = Object.entries(modMap).map(([modifier_name, { qty, total_cost }]) => ({
+    const mods: PinkSheetDetailRow[] = Object.entries(modMap).map(([modifier_name, { qty, total_cost, is_stale_cost }]) => ({
       parent_item: '__overall__', section: displayName, channel: ch,
       modifier_name, qty,
       unit_cost:   qty > 0 ? total_cost / qty : 0,
       total_cost,
+      is_stale_cost,
     })).sort((a, b) => b.qty - a.qty);
     return {
       rawKeys: [displayName], displayName,
