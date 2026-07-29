@@ -340,6 +340,10 @@ type BikkySource = 'instore' | '3pd_loyalty';
 interface BikkyFileRow { source: BikkySource; name: string; path: string; period: number | 'YTD'; fiscalYear: number; returnWindowDays: number }
 const DEFAULT_RETURN_WINDOW_DAYS = 90;
 
+type QueuedAction =
+  | { id: number; kind: 'upload'; source: BikkySource; period: number | 'YTD'; fiscalYear: number; file: File; returnWindowDays: number; replace: boolean }
+  | { id: number; kind: 'delete'; source: BikkySource; period: number | 'YTD'; fiscalYear: number; name: string };
+
 // 'YTD' sorts after every discrete period within its fiscal year — it's the
 // cumulative whole-year figure, shown as the "last" bucket. Mirrors the same
 // convention in lib/queries.ts's getBikky().
@@ -358,11 +362,12 @@ function BikkyPanel() {
   const [uploadYear, setUploadYear]     = useState('');
   const [uploadFile, setUploadFile]     = useState<File | null>(null);
   const [uploadReturnWindow, setUploadReturnWindow] = useState('');
-  const [uploadBusy, setUploadBusy]     = useState(false);
   const [uploadMsg, setUploadMsg]       = useState('');
-  const [pending, setPending]           = useState<{ source: BikkySource; period: number | 'YTD'; fiscalYear: number; file: File; returnWindowDays: number; replace: boolean } | null>(null);
 
-  const [deleting, setDeleting] = useState<string | null>(null); // path currently being deleted
+  const [queue, setQueue]         = useState<QueuedAction[]>([]);
+  const [queueSeq, setQueueSeq]   = useState(0);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  const [progress, setProgress]   = useState<{ done: number; total: number } | null>(null);
 
   const loadFiles = () => {
     fetch('/api/admin/bikky')
@@ -379,11 +384,20 @@ function BikkyPanel() {
 
   useEffect(loadFiles, []);
 
-  const uploadTargetPeriod: number | 'YTD' = uploadIsYtd ? 'YTD' : Number(uploadPeriod);
-  const willReplace = !!files && files.some(f =>
-    f.source === uploadType && f.period === uploadTargetPeriod && f.fiscalYear === Number(uploadYear));
+  // A slot "will replace" if it exists on the server (and isn't already queued
+  // for deletion) or is already queued for upload — accounts for actions the
+  // user has staged but not yet confirmed, not just the last-loaded file list.
+  function willReplaceFor(source: BikkySource, period: number | 'YTD', fiscalYear: number): boolean {
+    const queuedForDelete = queue.some(a => a.kind === 'delete' && a.source === source && a.period === period && a.fiscalYear === fiscalYear);
+    const queuedForUpload = queue.some(a => a.kind === 'upload' && a.source === source && a.period === period && a.fiscalYear === fiscalYear);
+    const existsOnServer  = !!files && files.some(f => f.source === source && f.period === period && f.fiscalYear === fiscalYear);
+    return queuedForUpload || (existsOnServer && !queuedForDelete);
+  }
 
-  function stageUpload(e: React.FormEvent) {
+  const uploadTargetPeriod: number | 'YTD' = uploadIsYtd ? 'YTD' : Number(uploadPeriod);
+  const willReplace = willReplaceFor(uploadType, uploadTargetPeriod, Number(uploadYear));
+
+  function addUploadToQueue(e: React.FormEvent) {
     e.preventDefault();
     if (!uploadFile) return;
     const returnWindowDays = uploadReturnWindow.trim() === '' ? DEFAULT_RETURN_WINDOW_DAYS : Number(uploadReturnWindow);
@@ -391,48 +405,61 @@ function BikkyPanel() {
       setUploadMsg('Error: return window must be a positive whole number of days');
       return;
     }
-    setUploadMsg('');
-    setPending({ source: uploadType, period: uploadTargetPeriod, fiscalYear: Number(uploadYear), file: uploadFile, returnWindowDays, replace: willReplace });
+    const id = queueSeq; setQueueSeq(id + 1);
+    setQueue(q => [...q, {
+      id, kind: 'upload', source: uploadType, period: uploadTargetPeriod,
+      fiscalYear: Number(uploadYear), file: uploadFile, returnWindowDays, replace: willReplace,
+    }]);
+    setUploadPeriod(''); setUploadYear(''); setUploadFile(null); setUploadReturnWindow(''); setUploadMsg('');
+  }
+
+  function queueDelete(f: BikkyFileRow) {
+    const id = queueSeq; setQueueSeq(id + 1);
+    setQueue(q => [...q, { id, kind: 'delete', source: f.source, period: f.period, fiscalYear: f.fiscalYear, name: f.name }]);
+  }
+
+  function removeFromQueue(id: number) {
+    setQueue(q => q.filter(a => a.id !== id));
   }
 
   async function confirmAll() {
-    if (!pending) return;
-    setUploadBusy(true); setUploadMsg('');
-    try {
-      const form = new FormData();
-      form.set('type', pending.source);
-      form.set('period', String(pending.period));
-      form.set('fiscal_year', String(pending.fiscalYear));
-      form.set('file', pending.file);
-      form.set('return_window_days', String(pending.returnWindowDays));
-      const res = await fetch('/api/admin/bikky', { method: 'POST', body: form });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Upload failed');
-      setUploadMsg(data.replaced ? 'Replaced existing period.' : 'Uploaded.');
-      setUploadPeriod(''); setUploadYear(''); setUploadFile(null); setUploadReturnWindow('');
-      setPending(null);
-      loadFiles();
-    } catch (err) {
-      setUploadMsg('Error: ' + (err instanceof Error ? err.message : String(err)));
-    } finally {
-      setUploadBusy(false);
-    }
-  }
+    if (queue.length === 0) return;
+    setConfirmBusy(true); setUploadMsg('');
+    setProgress({ done: 0, total: queue.length });
+    const results: string[] = [];
 
-  async function deleteFile(f: BikkyFileRow) {
-    if (!confirm(`Delete ${f.name}? This removes it from the repo — cannot be undone.`)) return;
-    setDeleting(f.path);
-    try {
-      const params = new URLSearchParams({ type: f.source, period: String(f.period), fiscal_year: String(f.fiscalYear) });
-      const res = await fetch(`/api/admin/bikky?${params}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Delete failed');
-      loadFiles();
-    } catch (err) {
-      alert('Error: ' + (err instanceof Error ? err.message : String(err)));
-    } finally {
-      setDeleting(null);
+    for (const action of queue) {
+      const label = `${periodLabel(action.period)} ${action.fiscalYear} (${BIKKY_SOURCE_LABEL[action.source]})`;
+      try {
+        if (action.kind === 'delete') {
+          const params = new URLSearchParams({ type: action.source, period: String(action.period), fiscal_year: String(action.fiscalYear) });
+          const res = await fetch(`/api/admin/bikky?${params}`, { method: 'DELETE' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Delete failed');
+          results.push(`Deleted ${label}`);
+        } else {
+          const form = new FormData();
+          form.set('type', action.source);
+          form.set('period', String(action.period));
+          form.set('fiscal_year', String(action.fiscalYear));
+          form.set('file', action.file);
+          form.set('return_window_days', String(action.returnWindowDays));
+          const res = await fetch('/api/admin/bikky', { method: 'POST', body: form });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Upload failed');
+          results.push(`${data.replaced ? 'Replaced' : 'Uploaded'} ${label}`);
+        }
+      } catch (err) {
+        results.push(`FAILED ${label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      setProgress(p => p ? { done: p.done + 1, total: p.total } : null);
     }
+
+    setUploadMsg(results.join(' · '));
+    setQueue([]);
+    setProgress(null);
+    setConfirmBusy(false);
+    loadFiles();
   }
 
   return (
@@ -441,7 +468,7 @@ function BikkyPanel() {
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14, color: 'var(--text)' }}>
           Upload new period
         </div>
-        <form onSubmit={stageUpload} style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+        <form onSubmit={addUploadToQueue} style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
           <div>
             <label style={lbl}>Source</label>
             <select style={inp} value={uploadType} onChange={e => setUploadType(e.target.value as BikkySource)}>
@@ -474,39 +501,56 @@ function BikkyPanel() {
             <input style={inp} type="number" min={1} value={uploadReturnWindow}
               onChange={e => setUploadReturnWindow(e.target.value)} placeholder={String(DEFAULT_RETURN_WINDOW_DAYS)} />
           </div>
-          <button type="submit" disabled={!!pending || !uploadFile || willReplace} style={{ ...btn('#059669'), opacity: (!!pending || willReplace) ? 0.4 : 1 }}>
+          <button type="submit" disabled={confirmBusy || !uploadFile || willReplace} style={{ ...btn('#059669'), opacity: (confirmBusy || willReplace) ? 0.4 : 1 }}>
             Upload
           </button>
-          <button type="submit" disabled={!!pending || !uploadFile || !willReplace} style={{ ...btn('#dc2626'), opacity: (!!pending || !willReplace) ? 0.4 : 1 }}>
+          <button type="submit" disabled={confirmBusy || !uploadFile || !willReplace} style={{ ...btn('#dc2626'), opacity: (confirmBusy || !willReplace) ? 0.4 : 1 }}>
             Replace
           </button>
           {uploadMsg && (
-            <span style={{ fontSize: 12, color: uploadMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{uploadMsg}</span>
+            <span style={{ fontSize: 12, color: uploadMsg.startsWith('Error') || uploadMsg.includes('FAILED') ? '#dc2626' : '#16a34a' }}>{uploadMsg}</span>
           )}
         </form>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
           Uploading a period that already exists needs Replace (deletes the old file, commits the new one).
           Return window defaults to {DEFAULT_RETURN_WINDOW_DAYS} days if left blank — shown as a note wherever this period's return rate is displayed.
+          Nothing happens on the repo until you click Confirm All below.
         </div>
-        {pending && (
-          <div style={{
-            marginTop: 12, padding: '10px 14px', borderRadius: 8,
-            background: pending.replace ? '#fef2f2' : '#f0fdf4',
-            border: `1px solid ${pending.replace ? '#fecaca' : '#bbf7d0'}`,
-            display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-          }}>
-            <span style={{ fontSize: 13, color: 'var(--text)' }}>
-              {pending.replace
-                ? `Replace existing ${periodLabel(pending.period)} ${pending.fiscalYear} file for ${BIKKY_SOURCE_LABEL[pending.source]}?`
-                : `Upload ${periodLabel(pending.period)} ${pending.fiscalYear} for ${BIKKY_SOURCE_LABEL[pending.source]}?`}
-              {' '}({pending.file.name}, {pending.returnWindowDays}-day return window)
-            </span>
-            <button onClick={confirmAll} disabled={uploadBusy} style={{ ...btn(pending.replace ? '#dc2626' : '#059669'), opacity: uploadBusy ? 0.7 : 1 }}>
-              {uploadBusy ? 'Working…' : 'Confirm All'}
-            </button>
-            <button onClick={() => setPending(null)} disabled={uploadBusy} style={{ ...btn('#6b7280'), opacity: uploadBusy ? 0.7 : 1 }}>
-              Cancel
-            </button>
+        {queue.length > 0 && (
+          <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 8, background: 'var(--bg)', border: '1px solid var(--border)' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>
+              Queued actions ({queue.length})
+            </div>
+            <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
+              {queue.map(a => (
+                <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                  <span style={{
+                    fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4, textTransform: 'uppercase',
+                    background: a.kind === 'delete' ? '#fee2e2' : a.kind === 'upload' && a.replace ? '#fef2f2' : '#dcfce7',
+                    color:      a.kind === 'delete' ? '#991b1b' : a.kind === 'upload' && a.replace ? '#dc2626' : '#166534',
+                  }}>
+                    {a.kind === 'delete' ? 'Delete' : a.replace ? 'Replace' : 'Upload'}
+                  </span>
+                  <span style={{ color: 'var(--text)' }}>
+                    {periodLabel(a.period)} {a.fiscalYear} — {BIKKY_SOURCE_LABEL[a.source]}
+                    {a.kind === 'upload' && ` (${a.file.name}, ${a.returnWindowDays}-day window)`}
+                    {a.kind === 'delete' && ` (${a.name})`}
+                  </span>
+                  <button onClick={() => removeFromQueue(a.id)} disabled={confirmBusy}
+                    style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, padding: '0 4px' }}>
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button onClick={confirmAll} disabled={confirmBusy} style={{ ...btn('#059669'), opacity: confirmBusy ? 0.7 : 1 }}>
+                {confirmBusy ? `Working… (${progress?.done ?? 0}/${progress?.total ?? queue.length})` : `Confirm All (${queue.length})`}
+              </button>
+              <button onClick={() => setQueue([])} disabled={confirmBusy} style={{ ...btn('#6b7280'), opacity: confirmBusy ? 0.7 : 1 }}>
+                Clear queue
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -536,22 +580,25 @@ function BikkyPanel() {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map(f => (
-                      <tr key={f.path} style={{ borderBottom: '1px solid var(--border)' }}>
-                        <td style={{ padding: '10px 10px', color: 'var(--text)' }}>{periodLabel(f.period)} {f.fiscalYear}</td>
-                        <td style={{ padding: '10px 10px', color: 'var(--muted)', fontFamily: 'monospace', fontSize: 12 }}>{f.name}</td>
-                        <td style={{ padding: '10px 10px', color: 'var(--text)' }}>{f.returnWindowDays} days</td>
-                        <td style={{ padding: '10px 10px' }}>
-                          <button
-                            onClick={() => deleteFile(f)}
-                            disabled={deleting === f.path}
-                            style={{ ...btn('#dc2626'), padding: '4px 12px', fontSize: 12, borderRadius: 6, opacity: deleting === f.path ? 0.5 : 1 }}
-                          >
-                            {deleting === f.path ? 'Deleting…' : 'Delete'}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {rows.map(f => {
+                      const queuedForDelete = queue.some(a => a.kind === 'delete' && a.source === f.source && a.period === f.period && a.fiscalYear === f.fiscalYear);
+                      return (
+                        <tr key={f.path} style={{ borderBottom: '1px solid var(--border)' }}>
+                          <td style={{ padding: '10px 10px', color: 'var(--text)' }}>{periodLabel(f.period)} {f.fiscalYear}</td>
+                          <td style={{ padding: '10px 10px', color: 'var(--muted)', fontFamily: 'monospace', fontSize: 12 }}>{f.name}</td>
+                          <td style={{ padding: '10px 10px', color: 'var(--text)' }}>{f.returnWindowDays} days</td>
+                          <td style={{ padding: '10px 10px' }}>
+                            <button
+                              onClick={() => queueDelete(f)}
+                              disabled={queuedForDelete || confirmBusy}
+                              style={{ ...btn('#dc2626'), padding: '4px 12px', fontSize: 12, borderRadius: 6, opacity: (queuedForDelete || confirmBusy) ? 0.5 : 1 }}
+                            >
+                              {queuedForDelete ? 'Queued' : 'Delete'}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
