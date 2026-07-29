@@ -500,7 +500,7 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
                       <th>Item / Modifier</th>
                       <th>Period</th>
                       <th>Quadrant</th>
-                      <th style={thStyle('return_rate')}  onClick={() => toggleSort('return_rate')}>Return Rate{arrow('return_rate')}</th>
+                      <th style={thStyle('return_rate')}  onClick={() => toggleSort('return_rate')}>Return Rate ({returnWindowLabel}){arrow('return_rate')}</th>
                       <th style={thStyle('reorder_rate')} onClick={() => toggleSort('reorder_rate')}>Reorder Rate{arrow('reorder_rate')}</th>
                       <th style={thStyle('guests')}       onClick={() => toggleSort('guests')}>Guests{arrow('guests')}</th>
                     </tr>
