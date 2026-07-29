@@ -235,6 +235,16 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
       : catFilteredRows.filter(r => subCatFilters.includes(subCatMap.get(r.item_name) ?? '')),
   [catFilteredRows, subCatFilters, subCatMap]);
 
+  // Return window (days) actually used for the currently-filtered rows — set
+  // per upload (admin panel), defaults to 90 when not specified. Shown as a
+  // dynamic note in place of a hardcoded "90 days" since it can vary by period.
+  const returnWindowLabel = useMemo(() => {
+    const days = Array.from(new Set(filteredSourceRows.map(r => r.return_window_days))).sort((a, b) => a - b);
+    if (days.length === 0) return '90-day window';
+    if (days.length === 1) return `${days[0]}-day window`;
+    return `${days[0]}–${days[days.length - 1]}-day window (varies by period)`;
+  }, [filteredSourceRows]);
+
   // Average rates per item across all periods (for charts + scatter)
   const byItem = useMemo(() => {
     const map: Record<string, {
@@ -330,7 +340,7 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
       <div className="info-banner blue">
         <i className="ti ti-info-circle" />
         <div>
-          Bikky retention data · {period ? <strong>{period}</strong> : 'all periods'} — return rate (% of guests who returned within 90 days) and reorder rate (same item again). &quot;Highest&quot;/Top-10/Bottom-10 rankings only consider items with at least median guest volume, so a low-guest item at a deceptively high or low rate can&apos;t dominate the ranking.
+          Bikky retention data · {period ? <strong>{period}</strong> : 'all periods'} — return rate (% of guests who returned within the {returnWindowLabel}) and reorder rate (same item again). &quot;Highest&quot;/Top-10/Bottom-10 rankings only consider items with at least median guest volume, so a low-guest item at a deceptively high or low rate can&apos;t dominate the ranking.
         </div>
       </div>
 
@@ -387,7 +397,7 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
         <div className="kc a">
           <div className="kl">Avg Return Rate</div>
           <div className="kv">{pct(avgReturn)}</div>
-          <div className="ks">90-day window</div>
+          <div className="ks">{returnWindowLabel}</div>
         </div>
         <div className="kc g">
           <div className="kl">Avg Reorder Rate</div>

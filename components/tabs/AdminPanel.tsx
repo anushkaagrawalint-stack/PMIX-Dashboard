@@ -337,7 +337,8 @@ function LocationStatusGrid({
 // delete the existing period's file then upload the new one (two commits,
 // by design — see the plan doc).
 type BikkySource = 'instore' | '3pd_loyalty';
-interface BikkyFileRow { source: BikkySource; name: string; path: string; period: number | 'YTD'; fiscalYear: number }
+interface BikkyFileRow { source: BikkySource; name: string; path: string; period: number | 'YTD'; fiscalYear: number; returnWindowDays: number }
+const DEFAULT_RETURN_WINDOW_DAYS = 90;
 
 // 'YTD' sorts after every discrete period within its fiscal year — it's the
 // cumulative whole-year figure, shown as the "last" bucket. Mirrors the same
@@ -356,9 +357,10 @@ function BikkyPanel() {
   const [uploadPeriod, setUploadPeriod] = useState('');
   const [uploadYear, setUploadYear]     = useState('');
   const [uploadFile, setUploadFile]     = useState<File | null>(null);
+  const [uploadReturnWindow, setUploadReturnWindow] = useState('');
   const [uploadBusy, setUploadBusy]     = useState(false);
   const [uploadMsg, setUploadMsg]       = useState('');
-  const [pending, setPending]           = useState<{ source: BikkySource; period: number | 'YTD'; fiscalYear: number; file: File; replace: boolean } | null>(null);
+  const [pending, setPending]           = useState<{ source: BikkySource; period: number | 'YTD'; fiscalYear: number; file: File; returnWindowDays: number; replace: boolean } | null>(null);
 
   const [deleting, setDeleting] = useState<string | null>(null); // path currently being deleted
 
@@ -384,8 +386,13 @@ function BikkyPanel() {
   function stageUpload(e: React.FormEvent) {
     e.preventDefault();
     if (!uploadFile) return;
+    const returnWindowDays = uploadReturnWindow.trim() === '' ? DEFAULT_RETURN_WINDOW_DAYS : Number(uploadReturnWindow);
+    if (!Number.isInteger(returnWindowDays) || returnWindowDays <= 0) {
+      setUploadMsg('Error: return window must be a positive whole number of days');
+      return;
+    }
     setUploadMsg('');
-    setPending({ source: uploadType, period: uploadTargetPeriod, fiscalYear: Number(uploadYear), file: uploadFile, replace: willReplace });
+    setPending({ source: uploadType, period: uploadTargetPeriod, fiscalYear: Number(uploadYear), file: uploadFile, returnWindowDays, replace: willReplace });
   }
 
   async function confirmAll() {
@@ -397,11 +404,12 @@ function BikkyPanel() {
       form.set('period', String(pending.period));
       form.set('fiscal_year', String(pending.fiscalYear));
       form.set('file', pending.file);
+      form.set('return_window_days', String(pending.returnWindowDays));
       const res = await fetch('/api/admin/bikky', { method: 'POST', body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Upload failed');
       setUploadMsg(data.replaced ? 'Replaced existing period.' : 'Uploaded.');
-      setUploadPeriod(''); setUploadYear(''); setUploadFile(null);
+      setUploadPeriod(''); setUploadYear(''); setUploadFile(null); setUploadReturnWindow('');
       setPending(null);
       loadFiles();
     } catch (err) {
@@ -461,6 +469,11 @@ function BikkyPanel() {
             <input type="file" accept=".csv" required
               onChange={e => setUploadFile(e.target.files?.[0] ?? null)} />
           </div>
+          <div style={{ width: 130 }}>
+            <label style={lbl}>Return Window (days)</label>
+            <input style={inp} type="number" min={1} value={uploadReturnWindow}
+              onChange={e => setUploadReturnWindow(e.target.value)} placeholder={String(DEFAULT_RETURN_WINDOW_DAYS)} />
+          </div>
           <button type="submit" disabled={!!pending || !uploadFile || willReplace} style={{ ...btn('#059669'), opacity: (!!pending || willReplace) ? 0.4 : 1 }}>
             Upload
           </button>
@@ -473,6 +486,7 @@ function BikkyPanel() {
         </form>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
           Uploading a period that already exists needs Replace (deletes the old file, commits the new one).
+          Return window defaults to {DEFAULT_RETURN_WINDOW_DAYS} days if left blank — shown as a note wherever this period's return rate is displayed.
         </div>
         {pending && (
           <div style={{
@@ -485,7 +499,7 @@ function BikkyPanel() {
               {pending.replace
                 ? `Replace existing ${periodLabel(pending.period)} ${pending.fiscalYear} file for ${BIKKY_SOURCE_LABEL[pending.source]}?`
                 : `Upload ${periodLabel(pending.period)} ${pending.fiscalYear} for ${BIKKY_SOURCE_LABEL[pending.source]}?`}
-              {' '}({pending.file.name})
+              {' '}({pending.file.name}, {pending.returnWindowDays}-day return window)
             </span>
             <button onClick={confirmAll} disabled={uploadBusy} style={{ ...btn(pending.replace ? '#dc2626' : '#059669'), opacity: uploadBusy ? 0.7 : 1 }}>
               {uploadBusy ? 'Working…' : 'Confirm All'}
@@ -514,7 +528,7 @@ function BikkyPanel() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                   <thead>
                     <tr style={{ borderBottom: '2px solid var(--border)' }}>
-                      {['Period', 'File', 'Actions'].map(h => (
+                      {['Period', 'File', 'Return Window', 'Actions'].map(h => (
                         <th key={h} style={{ textAlign: 'left', padding: '6px 10px', fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase' }}>
                           {h}
                         </th>
@@ -526,6 +540,7 @@ function BikkyPanel() {
                       <tr key={f.path} style={{ borderBottom: '1px solid var(--border)' }}>
                         <td style={{ padding: '10px 10px', color: 'var(--text)' }}>{periodLabel(f.period)} {f.fiscalYear}</td>
                         <td style={{ padding: '10px 10px', color: 'var(--muted)', fontFamily: 'monospace', fontSize: 12 }}>{f.name}</td>
+                        <td style={{ padding: '10px 10px', color: 'var(--text)' }}>{f.returnWindowDays} days</td>
                         <td style={{ padding: '10px 10px' }}>
                           <button
                             onClick={() => deleteFile(f)}

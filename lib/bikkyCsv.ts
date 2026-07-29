@@ -160,6 +160,15 @@ export function bikkyFileNameFor(source: BikkySource, period: number | 'YTD', fi
   return source === 'instore' ? `${stem}IS.csv` : `${stem}Del.csv`;
 }
 
+// Return window (days) an admin can specify per upload — how many days after a
+// sale a return can still be attributed to it. Defaults to 90 when not given.
+export const DEFAULT_RETURN_WINDOW_DAYS = 90;
+
+/** Sidecar metadata file path (holds returnWindowDays) alongside a Bikky CSV. */
+export function bikkyMetaPathFor(csvPath: string): string {
+  return `${csvPath}.meta.json`;
+}
+
 export function bikkyFolderFor(source: BikkySource): string {
   return source === 'instore' ? 'InStore' : '3PD+Loyalty';
 }

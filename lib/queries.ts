@@ -6,7 +6,10 @@ import {
 } from './constants';
 import { modifierAliasCaseSQL } from './modifierCost';
 import { listDir, getFileRaw } from './github';
-import { parseBikkyCsv, bikkyFolderFor, parseBikkyFileName, bikkyPeriodLabel, type BikkySource } from './bikkyCsv';
+import {
+  parseBikkyCsv, bikkyFolderFor, parseBikkyFileName, bikkyPeriodLabel,
+  bikkyMetaPathFor, DEFAULT_RETURN_WINDOW_DAYS, type BikkySource,
+} from './bikkyCsv';
 import type {
   DateRange, Summary, ChannelRow, WeekRow, DailyRow,
   WeeklyChannelRow, DailyChannelRow,
@@ -2163,6 +2166,17 @@ async function readBikkySource(source: BikkySource): Promise<BikkyRowSortable[]>
       return [];
     }
 
+    let returnWindowDays = DEFAULT_RETURN_WINDOW_DAYS;
+    const metaRaw = await getFileRaw(bikkyMetaPathFor(entry.path)).catch(() => null);
+    if (metaRaw) {
+      try {
+        const meta = JSON.parse(metaRaw);
+        if (Number.isInteger(meta.returnWindowDays) && meta.returnWindowDays > 0) {
+          returnWindowDays = meta.returnWindowDays;
+        }
+      } catch { /* malformed sidecar — fall back to default */ }
+    }
+
     return csvRows.map(r => ({
       item_name:         r.item_name,
       return_rate:       r.return_rate       ?? 0,
@@ -2175,6 +2189,7 @@ async function readBikkySource(source: BikkySource): Promise<BikkyRowSortable[]>
       category:          '',
       revenue:           0,
       qty:               0,
+      return_window_days: returnWindowDays,
       // YTD sorts after every discrete period within its fiscal year (it's
       // the cumulative whole-year figure, shown as the "final" bucket).
       _periodSort:       parsed.period === 'YTD' ? 999 : parsed.period,

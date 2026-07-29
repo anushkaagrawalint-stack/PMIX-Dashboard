@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { verifyToken, hasAdminAccess, COOKIE } from '@/lib/auth';
-import { listDir, createFile, deleteFile } from '@/lib/github';
+import { listDir, createFile, deleteFile, getFileRaw } from '@/lib/github';
 import {
   parseBikkyCsv, bikkyFileNameFor, bikkyFolderFor, parseBikkyFileName,
+  bikkyMetaPathFor, DEFAULT_RETURN_WINDOW_DAYS,
   type BikkySource,
 } from '@/lib/bikkyCsv';
 
@@ -19,6 +20,14 @@ function parsePeriodParam(raw: FormDataEntryValue | string | null): number | 'YT
   if (raw === 'YTD') return 'YTD';
   const n = Number(raw);
   return Number.isInteger(n) && n >= 1 && n <= 13 ? n : null;
+}
+
+// Optional per-upload return window (days) — blank/absent defaults to 90.
+// Returns null if given but invalid (caller rejects the request in that case).
+function parseReturnWindowParam(raw: FormDataEntryValue | null): number | null {
+  if (raw === null || raw === '') return DEFAULT_RETURN_WINDOW_DAYS;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 async function requireAdmin(req: NextRequest) {
@@ -37,7 +46,7 @@ export async function GET(req: NextRequest) {
     const files = await Promise.all(
       VALID_SOURCES.map(async source => {
         const entries = await listDir(`${BIKKY_ROOT}/${bikkyFolderFor(source)}`);
-        return entries
+        const csvEntries = entries
           .filter(e => e.type === 'file' && e.name.endsWith('.csv'))
           .map(e => {
             const stem = e.name.replace(/\.csv$/i, '');
@@ -45,6 +54,20 @@ export async function GET(req: NextRequest) {
             return parsed ? { source, name: e.name, path: e.path, ...parsed } : null;
           })
           .filter((x): x is NonNullable<typeof x> => x !== null);
+
+        return Promise.all(csvEntries.map(async entry => {
+          const metaRaw = await getFileRaw(bikkyMetaPathFor(entry.path)).catch(() => null);
+          let returnWindowDays = DEFAULT_RETURN_WINDOW_DAYS;
+          if (metaRaw) {
+            try {
+              const meta = JSON.parse(metaRaw);
+              if (Number.isInteger(meta.returnWindowDays) && meta.returnWindowDays > 0) {
+                returnWindowDays = meta.returnWindowDays;
+              }
+            } catch { /* malformed sidecar — fall back to default */ }
+          }
+          return { ...entry, returnWindowDays };
+        }));
       }),
     );
     return NextResponse.json({ files: files.flat() });
@@ -65,6 +88,7 @@ export async function POST(req: NextRequest) {
   const period = parsePeriodParam(form?.get('period') ?? null);
   const fiscalYear = Number(form?.get('fiscal_year'));
   const file   = form?.get('file');
+  const returnWindowDays = parseReturnWindowParam(form?.get('return_window_days') ?? null);
 
   if (!isValidSource(source)) {
     return NextResponse.json({ error: 'type must be "instore" or "3pd_loyalty"' }, { status: 400 });
@@ -78,6 +102,9 @@ export async function POST(req: NextRequest) {
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'Missing file' }, { status: 400 });
   }
+  if (returnWindowDays === null) {
+    return NextResponse.json({ error: 'return_window_days must be a positive integer' }, { status: 400 });
+  }
 
   const raw = await file.text();
   try {
@@ -88,12 +115,15 @@ export async function POST(req: NextRequest) {
 
   const fileName = bikkyFileNameFor(source, period, fiscalYear);
   const path = `${BIKKY_ROOT}/${bikkyFolderFor(source)}/${fileName}`;
+  const metaPath = bikkyMetaPathFor(path);
 
   try {
     // Replace semantics per BIKKY_ADMIN_UPLOAD_PLAN.md §4: delete-then-create,
-    // two commits, not a single-sha overwrite.
+    // two commits, not a single-sha overwrite. Sidecar follows the same pattern.
     const replaced = await deleteFile(path, `bikky: remove ${path} (replaced)`);
+    await deleteFile(metaPath, `bikky: remove ${metaPath} (replaced)`);
     await createFile(path, raw, `bikky: upload ${path}`);
+    await createFile(metaPath, JSON.stringify({ returnWindowDays }), `bikky: upload ${metaPath}`);
     // Route Handlers can't use updateTag (Server-Action-only) — {expire: 0} is
     // the documented way to get immediate (not stale-while-revalidate) effect here.
     revalidateTag('dashboard-data', { expire: 0 });
@@ -129,6 +159,7 @@ export async function DELETE(req: NextRequest) {
     if (!deleted) {
       return NextResponse.json({ error: 'File not found' }, { status: 404 });
     }
+    await deleteFile(bikkyMetaPathFor(path), `bikky: delete ${bikkyMetaPathFor(path)}`);
     // Route Handlers can't use updateTag (Server-Action-only) — {expire: 0} is
     // the documented way to get immediate (not stale-while-revalidate) effect here.
     revalidateTag('dashboard-data', { expire: 0 });

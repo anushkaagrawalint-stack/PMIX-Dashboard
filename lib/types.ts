@@ -248,6 +248,7 @@ export interface BikkyRow {
   guests:       number;
   return_rate_prev:  number;
   reorder_rate_prev: number;
+  return_window_days: number;
 }
 
 // ─── Renames ─────────────────────────────────────────────────────────────────
