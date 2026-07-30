@@ -197,7 +197,13 @@ const BYO_FIX_CTE = `byo_fix(raw, clean) AS (VALUES
   ('Aramark Mango Lassi',                         'Mango Lassi'),
   ('Eurest APL Mango Lassi',                      'Mango Lassi'),
   -- Rahul: Aramark Marriott/Fooda Chicken Tikka Masala are different items — not merged.
-  ('Offsite Masala Chai Cookies',                 'Masala Chai Cookies'),
+  -- Rahul (confirmed): Masala Chai Cookies (incl. all vendor variants) is the same
+  -- dish as Chai Chocolate Chip Cookie Basket — consolidated here dashboard-side.
+  ('Masala Chai Cookies',                         'Chai Chocolate Chip Cookie Basket'),
+  ('Offsite Masala Chai Cookies',                 'Chai Chocolate Chip Cookie Basket'),
+  ('HUNGRY Masala Chai Cookies',                  'Chai Chocolate Chip Cookie Basket'),
+  ('USHOR Masala Chai Cookies',                   'Chai Chocolate Chip Cookie Basket'),
+  ('Fooda Aramark Eurest Masala Chai Cookies',    'Chai Chocolate Chip Cookie Basket'),
   ('Fooda BYO Spicy Chicken Bowl',                'BYO Spicy Chicken Bowl'),
   ('Aramark Marriott BYO Spicy Chicken Bowl',     'BYO Spicy Chicken Bowl'),
   ('Fooda Chicken Curry Bowl',                    'Chicken Curry Bowl'),
