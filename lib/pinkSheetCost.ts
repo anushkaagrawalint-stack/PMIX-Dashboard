@@ -138,13 +138,14 @@ export function computeTotalModCost(sections: SectionData[]): { totalModCost: nu
   return { totalModCost, isPattern1 };
 }
 
-// Zero-baseCost items (Sides, Homemade Juice) are channel-agnostic: their IH cost is
-// EXACTLY the online weighted-average modifier cost, never recomputed from IH's own
-// (often sparse or nonexistent) modifier orders. AppScript: "single online pink sheet
-// ... valid for all channels." Homemade Juice specifically has ZERO IH modifier rows
-// at all (flavor choice only happens online), so computing IH independently gives $0.
+// Zero-baseCost items whose IH modifier data is genuinely sparse/nonexistent
+// (not the "Side of X" items — those have hundreds of real IH orders each and
+// must be computed from their own data, not mirrored from online): their IH
+// cost is EXACTLY the online weighted-average modifier cost instead. Homemade
+// Juice has real but sparse IH rows (~27 vs ~740 online); Handcrafted Juice
+// for a Group has zero IH rows at all (flavor choice only happens online), so
+// computing IH independently would give $0 or an unreliable low-volume number.
 export const ZERO_BASE_ITEMS = new Set([
-  'Side of Main', 'Side of Grain', 'Side of Sauce', 'Side of Veggie',
   'Homemade Juice', 'Handcrafted Juice for a Group - 1/2 Gallon',
 ]);
 export function isZeroBaseItem(canonicalName: string): boolean {
