@@ -1,6 +1,6 @@
 'use client';
 import { useState, useMemo } from 'react';
-import type { ItemRow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow, MakeItMealModifierRow } from '@/lib/types';
+import type { ItemRow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow, MakeItMealModifierRow, CateringPinkSheetRow } from '@/lib/types';
 import { computeFinalAvgCost } from '@/lib/pinkSheetCost';
 import { normalizeCategory } from '@/lib/constants';
 
@@ -27,6 +27,7 @@ interface Props {
   items:              ItemRow[];
   pinkSheets:         PinkSheetRow[];
   pinkSheetDetails:   PinkSheetDetailRow[];
+  cateringPinkSheets: CateringPinkSheetRow[];
   itemCosts:          ItemCostRow[];
   makeItMealModifiers: MakeItMealModifierRow[];
   selectedChannels:   string[];
@@ -57,7 +58,7 @@ function itemCat(i: ItemRow): string {
   return normCat(i.category);
 }
 
-export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts = [], makeItMealModifiers, selectedChannels, categoryFilter }: Props) {
+export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringPinkSheets = [], itemCosts = [], makeItMealModifiers, selectedChannels, categoryFilter }: Props) {
   const [search,          setSearch]          = useState('');
   const [sortKey,         setSortKey]         = useState<SortKey>('gross_sales');
   const [sortDir,         setSortDir]         = useState<'asc' | 'desc'>('desc');
@@ -171,6 +172,18 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
     return m;
   }, [pinkSheets, pinkSheetDetails]);
 
+  // "canonical_name|channel" → Catering Pink Sheet's already-computed final avg
+  // cost (base + modifier cost) — admin/tester-only catering channels. Owner
+  // request 2026-08-03: bring these 4 channels up to the same base+modifier
+  // standard as IH/Online, instead of the bare r365 item cost they use today.
+  // NOTE: unlike fcMap, this is not scaled by the location filter — catering
+  // Pink Sheets don't have a per-location breakdown yet.
+  const catFcMap = useMemo(() => {
+    const m = new Map<string, number>();
+    cateringPinkSheets.forEach(r => m.set(`${r.canonical_name}|${r.channel}`, r.avg_cost));
+    return m;
+  }, [cateringPinkSheets]);
+
   // lowercase canonical_name → ItemCostRow (fallback: r365 latest period, incl. MI recipes)
   const icMap = useMemo(() => {
     const m = new Map<string, ItemCostRow>();
@@ -198,23 +211,33 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, itemCosts
       const ic = icMap.get(key);
       return ic && ic.online_cost > 0 ? ic.online_cost : undefined;
     }
-    // CATERING / CATERING_3PD / OFFSITE / OPEN_ITEMS: r365_item_cost for that exact
-    // menu, or nothing (shown as "—"). No fallback to IH/other channels — a Catering
-    // row's cost must come from the Catering menu in r365, never guessed from another
+    // CATERING / CATERING_3PD / OFFSITE / OPEN_ITEMS: Catering Pink Sheet cost
+    // (base + modifier, same standard as IH/Online) first, r365 bare item cost
+    // as fallback when the Pink Sheet has none — same two-tier cascade as
+    // IH/Online above. No fallback to IH/other channels — a Catering row's
+    // cost must come from Catering's own data, never guessed from another
     // channel's cost.
     if (item.channel === 'CATERING') {
+      const cfc = catFcMap.get(`${item.canonical_name}|catering`);
+      if (cfc && cfc > 0) return cfc;
       const ic = icMap.get(key);
       return ic && ic.catering_cost > 0 ? ic.catering_cost : undefined;
     }
     if (item.channel === 'CATERING_3PD') {
+      const cfc = catFcMap.get(`${item.canonical_name}|catering_3pd`);
+      if (cfc && cfc > 0) return cfc;
       const ic = icMap.get(key);
       return ic && ic.catering_3pd_cost > 0 ? ic.catering_3pd_cost : undefined;
     }
     if (item.channel === 'OFFSITE') {
+      const cfc = catFcMap.get(`${item.canonical_name}|offsite`);
+      if (cfc && cfc > 0) return cfc;
       const ic = icMap.get(key);
       return ic && ic.offsite_cost > 0 ? ic.offsite_cost : undefined;
     }
     if (item.channel === 'OPEN_ITEMS') {
+      const cfc = catFcMap.get(`${item.canonical_name}|open`);
+      if (cfc && cfc > 0) return cfc;
       const ic = icMap.get(key);
       return ic && ic.open_items_cost > 0 ? ic.open_items_cost : undefined;
     }

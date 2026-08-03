@@ -20,6 +20,7 @@ import type {
   OpenItemRow, OpenItemsSummary,
   UncategorizedItemRow, UncategorizedModifierRow,
   FiscalPeriodRow, VendorRow, PinkSheetRow, PinkSheetDetailRow,
+  CateringPinkSheetRow, CateringPinkSheetDetailRow,
   ItemCostRow, MissingCostRow,
   AttachmentData, AttachmentBucketRow, AttachmentModifierRow, AttachmentItemRow, AttachmentCategoryRow,
   AttachmentTrendData, AttachmentTrendBucketRow, AttachmentTrendCategoryRow,
@@ -1697,6 +1698,17 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
       ORDER BY fiscal_year DESC, period DESC
       LIMIT 1
     ),
+    -- Recipe traceability for CSV export/validation — keyed on (norm_name, src_pnum)
+    -- so it reflects the ACTUAL period a cost was sourced from (fallback-aware),
+    -- not just whatever this period's own sheet says.
+    recipe_lookup AS (
+      SELECT DISTINCT ON (LOWER(clean_name), (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT))
+        LOWER(clean_name) AS norm_name,
+        (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) AS pnum,
+        recipe_name
+      FROM analytics.r365_modifier_cost
+      ORDER BY LOWER(clean_name), (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT), recipe_name
+    ),
     -- Reads the precomputed daily grain (analytics.pc_modifier_daily) instead of the
     -- live fact_modifiers x fact_order_lines join + per-row modifier_type resolution —
     -- section_base/mod_norm/from_item_type/pit_item_type already bake in that logic.
@@ -1712,12 +1724,15 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
         CASE WHEN d.channel IN ('APP', 'TPD', 'TPD_MARKUP')
              THEN 'online' ELSE 'ih' END AS channel,
         d.qty,
-        d.qty * COALESCE(uc.unit_cost, 0) AS cost
+        d.qty * COALESCE(uc.unit_cost, 0) AS cost,
+        rl.recipe_name AS r365_recipe_name
       FROM analytics.pc_modifier_daily d
       CROSS JOIN sp
       LEFT JOIN byo_fix bf ON bf.raw = d.raw_parent
       LEFT JOIN analytics.pc_modifier_unit_cost uc
              ON uc.norm_name = d.mod_norm AND uc.pnum = sp.pnum
+      LEFT JOIN recipe_lookup rl
+             ON rl.norm_name = d.mod_norm AND rl.pnum = uc.src_pnum
       WHERE d.business_date BETWEEN $1::DATE AND $2::DATE
         AND d.channel IN ('IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP')
         AND d.in_byo_scope
@@ -1725,7 +1740,8 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
     SELECT
       parent_item, section, modifier_name, channel,
       SUM(qty)::BIGINT AS qty,
-      ROUND(SUM(cost)::NUMERIC, 4) AS total_cost
+      ROUND(SUM(cost)::NUMERIC, 4) AS total_cost,
+      MAX(r365_recipe_name) AS r365_recipe_name
     FROM rows_
     WHERE section IS NOT NULL AND section NOT IN ('Online', 'NA', 'ZeroCater')
     GROUP BY 1, 2, 3, 4
@@ -1741,7 +1757,254 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
     qty:           Number(r.qty),
     unit_cost:     Number(r.qty) > 0 ? Number(r.total_cost) / Number(r.qty) : 0,
     total_cost:    Number(r.total_cost),
+    r365_recipe_name: (r.r365_recipe_name ?? null) as string | null,
   }));
+}
+
+// ─── Catering Pink Sheets (admin/tester only) ────────────────────────────────
+// CATERING, CATERING - 3PD, OFFSITE, Open Items. Deliberately simpler than the
+// IH/Online Pink Sheet above per owner request 2026-08-01: no section/modifier-
+// type segregation (flat modifier list only — that may come later), and no
+// include_cmc filter — that flag exists specifically to EXCLUDE catering-typed
+// modifiers from the IH/Online calc, so reusing it here would wrongly drop the
+// very modifiers this feature exists to show. A modifier with no r365 cost match
+// is left null (blank in the UI), not defaulted to 0; a missing base item cost
+// IS defaulted to 0 (same convention as IH/Online).
+const CATERING_CHANNEL_CASE = `
+  CASE channel_raw
+    WHEN 'CATERING'     THEN 'catering'
+    WHEN 'CATERING_3PD' THEN 'catering_3pd'
+    WHEN 'OFFSITE'      THEN 'offsite'
+    WHEN 'OPEN_ITEMS'   THEN 'open'
+  END
+`;
+
+// Real order-time modifier names that don't have their own R365 recipe row —
+// same underlying recipe/cost as another name, just ordered under a different
+// display name (see MODIFIER_COST_KNOWN_FIXES.md "modifier name -> recipe name
+// reconciliation" section, verified against real P6 catering order volume
+// 2026-08-03). Scoped to these catering queries ONLY — does not touch
+// r365_modifier_cost.clean_name or pc_modifier_unit_cost, so it can't affect
+// IH/Online costing regardless of what the underlying recipe's shared clean_name
+// currently is (several of these targets were deliberately left unfixed at the
+// recipe level specifically because IH/Online already depends on them).
+const CATERING_MOD_ALIAS_CTE = `mod_alias(raw_norm, target_norm) AS (VALUES
+  ('avocado - classic', 'avocado'),
+  ('catering - additional item - harvest vegetables', 'catering - additional item - roasted vegetables'),
+  ('chili lime vinaigrette - side', 'chili lime vinaigrette'),
+  ('extra cauliflower + potato', 'cauliflower + potato'),
+  ('extra chicken tikka', 'chicken tikka'),
+  ('extra lamb kebab', 'lamb kebab'),
+  ('extra organic tandoori paneer', 'organic tandoori paneer'),
+  ('extra roasted vegetables', 'roasted vegetables'),
+  ('ginger tamarind chutney - side', 'ginger tamarind chutney'),
+  ('harvest vegetables - classic', 'roasted vegetables - classic'),
+  ('harvest vegetables - party pack', 'roasted vegetables - party pack'),
+  ('kokum vinaigrette - side', 'kokum vinaigrette'),
+  ('tandoori paneer', 'organic tandoori paneer'),
+  ('tandoori paneer - *', 'organic tandoori paneer'),
+  ('unsweetened black tea', 'unsweetened spiced tea')
+)`;
+
+export async function getCateringPinkSheetDetails(dr: DateRange): Promise<CateringPinkSheetDetailRow[]> {
+  const db = pool();
+  const { rows } = await db.query(`
+    WITH
+    ${BYO_FIX_CTE},
+    ${CATERING_MOD_ALIAS_CTE},
+    sp AS (
+      SELECT fiscal_year * 100 + period AS pnum
+      FROM public.dim_fiscal_period
+      WHERE start_date::DATE <= $2::DATE
+        AND end_date::DATE   >= $1::DATE
+      ORDER BY fiscal_year DESC, period DESC
+      LIMIT 1
+    ),
+    -- Recipe traceability for CSV export/validation — keyed on (norm_name, src_pnum)
+    -- so it reflects the ACTUAL period a cost was sourced from (fallback-aware).
+    recipe_lookup AS (
+      SELECT DISTINCT ON (LOWER(clean_name), (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT))
+        LOWER(clean_name) AS norm_name,
+        (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) AS pnum,
+        recipe_name
+      FROM analytics.r365_modifier_cost
+      ORDER BY LOWER(clean_name), (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT), recipe_name
+    ),
+    rows_ AS (
+      SELECT
+        COALESCE(bf.clean, d.raw_parent) AS parent_item,
+        d.mod_display                    AS modifier_name,
+        d.channel                        AS channel_raw,
+        d.qty,
+        uc.unit_cost,
+        rl.recipe_name AS r365_recipe_name
+      FROM analytics.pc_modifier_daily d
+      CROSS JOIN sp
+      LEFT JOIN byo_fix bf ON bf.raw = d.raw_parent
+      LEFT JOIN mod_alias ma ON ma.raw_norm = d.mod_norm
+      LEFT JOIN analytics.pc_modifier_unit_cost uc
+             ON uc.norm_name = COALESCE(ma.target_norm, d.mod_norm) AND uc.pnum = sp.pnum
+      LEFT JOIN recipe_lookup rl
+             ON rl.norm_name = COALESCE(ma.target_norm, d.mod_norm) AND rl.pnum = uc.src_pnum
+      WHERE d.business_date BETWEEN $1::DATE AND $2::DATE
+        AND d.channel IN ('CATERING', 'CATERING_3PD', 'OFFSITE', 'OPEN_ITEMS')
+    )
+    SELECT
+      parent_item, modifier_name,
+      ${CATERING_CHANNEL_CASE} AS channel,
+      SUM(qty)::BIGINT AS qty,
+      MAX(unit_cost)    AS unit_cost,
+      MAX(r365_recipe_name) AS r365_recipe_name
+    FROM rows_
+    GROUP BY 1, 2, channel_raw
+    ORDER BY parent_item, channel, modifier_name
+  `, [dr.start, dr.end]);
+  await db.end();
+
+  return rows.map(r => {
+    const qty = Number(r.qty);
+    const unitCost = r.unit_cost === null ? null : Number(r.unit_cost);
+    return {
+      parent_item:   r.parent_item   as string,
+      modifier_name: r.modifier_name as string,
+      channel:       r.channel       as CateringPinkSheetDetailRow['channel'],
+      qty,
+      unit_cost:  unitCost,
+      total_cost: unitCost === null ? null : Math.round(qty * unitCost * 10000) / 10000,
+      r365_recipe_name: (r.r365_recipe_name ?? null) as string | null,
+    };
+  });
+}
+
+export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPinkSheetRow[]> {
+  const db = pool();
+  const { rows } = await db.query(`
+    WITH
+    ${BYO_FIX_CTE},
+    ${CATERING_MOD_ALIAS_CTE},
+    selected_period AS (
+      SELECT fiscal_year * 100 + period AS pnum
+      FROM public.dim_fiscal_period
+      WHERE start_date::DATE <= $2::DATE
+        AND end_date::DATE   >= $1::DATE
+      ORDER BY fiscal_year DESC, period DESC
+      LIMIT 1
+    ),
+    orders_ AS (
+      SELECT
+        COALESCE(bf.clean, fol.canonical_name) AS parent_item,
+        (${CHO})          AS channel_raw,
+        SUM(fol.quantity) AS qty
+      FROM public.fact_order_lines fol
+      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE NOT fol.is_voided AND NOT fol.is_deferred
+        AND (${CHO}) IN ('CATERING', 'CATERING_3PD', 'OFFSITE', 'OPEN_ITEMS')
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY 1, 2
+    ),
+    mod_cost_ AS (
+      SELECT
+        COALESCE(bf.clean, d.raw_parent) AS parent_item,
+        d.channel                        AS channel_raw,
+        SUM(d.qty * COALESCE(uc.unit_cost, 0)) AS total_mod_cost
+      FROM analytics.pc_modifier_daily d
+      CROSS JOIN selected_period sp
+      LEFT JOIN byo_fix bf ON bf.raw = d.raw_parent
+      LEFT JOIN mod_alias ma ON ma.raw_norm = d.mod_norm
+      LEFT JOIN analytics.pc_modifier_unit_cost uc
+             ON uc.norm_name = COALESCE(ma.target_norm, d.mod_norm) AND uc.pnum = sp.pnum
+      WHERE d.business_date BETWEEN $1::DATE AND $2::DATE
+        AND d.channel IN ('CATERING', 'CATERING_3PD', 'OFFSITE', 'OPEN_ITEMS')
+      GROUP BY 1, 2
+    ),
+    -- Base item cost, freshest row <= selected period, own menu bucket only —
+    -- must NOT blend across CATERING/CATERING-3PD/OFFSITE/Open items (each is
+    -- its own r365 menu value with its own costs; see getItemCosts for the same
+    -- rule applied elsewhere). Missing -> 0, per owner instruction 2026-08-01.
+    catering_base AS (
+      SELECT DISTINCT ON (canonical) canonical AS name, avg_cost AS cost
+      FROM (
+        SELECT COALESCE(bf.clean, item_name_updated) AS canonical, avg_cost, period
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN selected_period sp
+        WHERE menu = 'CATERING' AND avg_cost > 0
+          AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
+      ) t
+      ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    ),
+    catering_3pd_base AS (
+      SELECT DISTINCT ON (canonical) canonical AS name, avg_cost AS cost
+      FROM (
+        SELECT COALESCE(bf.clean, item_name_updated) AS canonical, avg_cost, period
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN selected_period sp
+        WHERE menu = 'CATERING - 3PD' AND avg_cost > 0
+          AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
+      ) t
+      ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    ),
+    offsite_base AS (
+      SELECT DISTINCT ON (canonical) canonical AS name, avg_cost AS cost
+      FROM (
+        SELECT COALESCE(bf.clean, item_name_updated) AS canonical, avg_cost, period
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN selected_period sp
+        WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0
+          AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
+      ) t
+      ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    ),
+    open_base AS (
+      SELECT DISTINCT ON (canonical) canonical AS name, avg_cost AS cost
+      FROM (
+        SELECT COALESCE(bf.clean, item_name_updated) AS canonical, avg_cost, period
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN selected_period sp
+        WHERE menu = 'Open items' AND avg_cost > 0
+          AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
+      ) t
+      ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    )
+    SELECT
+      o.parent_item AS canonical_name,
+      ${CATERING_CHANNEL_CASE.replace('channel_raw', 'o.channel_raw')} AS channel,
+      o.qty::BIGINT AS qty,
+      COALESCE(
+        CASE o.channel_raw
+          WHEN 'CATERING'     THEN cb.cost
+          WHEN 'CATERING_3PD' THEN c3.cost
+          WHEN 'OFFSITE'      THEN ob.cost
+          WHEN 'OPEN_ITEMS'   THEN opb.cost
+        END, 0)::NUMERIC AS base_cost,
+      ROUND(COALESCE(mc.total_mod_cost, 0)::NUMERIC, 4) AS total_mod_cost
+    FROM orders_ o
+    LEFT JOIN mod_cost_ mc ON mc.parent_item = o.parent_item AND mc.channel_raw = o.channel_raw
+    LEFT JOIN catering_base     cb  ON LOWER(cb.name)  = LOWER(o.parent_item)
+    LEFT JOIN catering_3pd_base c3  ON LOWER(c3.name)  = LOWER(o.parent_item)
+    LEFT JOIN offsite_base      ob  ON LOWER(ob.name)  = LOWER(o.parent_item)
+    LEFT JOIN open_base         opb ON LOWER(opb.name) = LOWER(o.parent_item)
+    ORDER BY o.qty DESC
+  `, [dr.start, dr.end]);
+  await db.end();
+
+  return rows.map(r => {
+    const qty = Number(r.qty);
+    const baseCost = Number(r.base_cost);
+    const totalModCost = Number(r.total_mod_cost);
+    return {
+      canonical_name: r.canonical_name as string,
+      channel:        r.channel        as CateringPinkSheetRow['channel'],
+      qty,
+      base_cost:      baseCost,
+      total_mod_cost: totalModCost,
+      avg_cost:       qty > 0 ? Math.round(((baseCost * qty + totalModCost) / qty) * 10000) / 10000 : 0,
+    };
+  });
 }
 
 // ─── Beverage Modifiers (drinks added as a free modifier, e.g. kids-meal drink) ─
@@ -3332,7 +3595,8 @@ export async function loadDashboardData(
     channels, weekly, daily,
     weeklyByChannel, dailyByChannel,
     items, channelItems, locationItems, locations,
-    meItems, pinkSheets, pinkSheetDetails, modifiers, payments, paymentsByLocation, paymentSourcesByLocation, bikky,
+    meItems, pinkSheets, pinkSheetDetails, cateringPinkSheets, cateringPinkSheetDetails,
+    modifiers, payments, paymentsByLocation, paymentSourcesByLocation, bikky,
     categories, channelCategories,
     renames, renamesDemo, needsReview,
     openItemsResult,
@@ -3358,6 +3622,8 @@ export async function loadDashboardData(
     getMEItems(dr),
     getMEPinkSheets(dr),
     getMEPinkSheetDetails(dr),
+    getCateringPinkSheets(dr),
+    getCateringPinkSheetDetails(dr),
     getModifiers(dr),
     getPayments(dr),
     getPaymentsByLocation(dr),
@@ -3401,7 +3667,7 @@ export async function loadDashboardData(
     channels,
     weekly, daily, weeklyByChannel, dailyByChannel,
     items, channelItems, locationItems, locations,
-    meItems, pinkSheets, pinkSheetDetails, avgMargin,
+    meItems, pinkSheets, pinkSheetDetails, cateringPinkSheets, cateringPinkSheetDetails, avgMargin,
     modifiers, payments, paymentsByLocation, paymentSourcesByLocation, bikky,
     categories, channelCategories,
     renames, renamesDemo, needsReview,
