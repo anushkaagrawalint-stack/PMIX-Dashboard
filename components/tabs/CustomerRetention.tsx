@@ -6,6 +6,7 @@ import {
 } from 'recharts';
 import type { BikkyRow, MERow, ItemRow } from '@/lib/types';
 import { normalizeCategory } from '@/lib/constants';
+import { downloadCsv } from '@/lib/csvExport';
 
 
 interface Props {
@@ -13,6 +14,7 @@ interface Props {
   meItems: MERow[];
   items:   ItemRow[];
   period:  string | null;
+  isAdmin?: boolean;
 }
 
 const pct  = (v: number) => `${(v * 100).toFixed(1)}%`;
@@ -133,7 +135,7 @@ function Top10List({ rows, color }: {
   );
 }
 
-export default function CustomerRetention({ bikky, meItems, items, period }: Props) {
+export default function CustomerRetention({ bikky, meItems, items, period, isAdmin = false }: Props) {
   const [search,         setSearch]       = useState('');
   const [sort,           setSort]         = useState<SortKey>('return_rate');
   const [desc,           setDesc]         = useState(true);
@@ -335,6 +337,18 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
   });
   const arrow = (key: SortKey) => sort === key ? (desc ? ' ↓' : ' ↑') : '';
 
+  // Admin/tester-only export — every currently filtered/searched/sorted row
+  // in the item-level table below, same columns as displayed.
+  function exportCsv() {
+    const header = ['item_modifier', 'source', 'period', 'quadrant', 'return_rate_pct', 'reorder_rate_pct', 'guests', 'return_window_days'];
+    const rowsOut = filtered.map(r => [
+      r.item_name, SOURCE_LABELS[source], r.period, quadrantMap.get(r.item_name) ?? '',
+      Math.round(r.return_rate * 1000) / 10, Math.round(r.reorder_rate * 1000) / 10,
+      r.guests, r.return_window_days,
+    ]);
+    downloadCsv('customer_retention.csv', header, rowsOut);
+  }
+
   return (
     <div>
       <div className="info-banner blue">
@@ -487,6 +501,13 @@ export default function CustomerRetention({ bikky, meItems, items, period }: Pro
               <h3>Item-level retention · {SOURCE_LABELS[source]} ({returnWindowLabel})</h3>
               <input value={search} onChange={e => setSearch(e.target.value)}
                 placeholder="Search items…" className="srch" />
+              {isAdmin && (
+                <button className="drb" onClick={exportCsv}
+                  title="Download every currently filtered/searched row as CSV"
+                  style={{ minWidth: 0, padding: '4px 10px', fontSize: 11 }}>
+                  ⬇ Export CSV
+                </button>
+              )}
             </div>
             {filtered.length === 0 ? (
               <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>

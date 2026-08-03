@@ -879,7 +879,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
 
       {/* ── TAB CONTENT ── */}
       {tab === 'overview'   && <Overview         data={filteredData} selectedChannels={selectedChannels} categoryFilter={categoryFilter} selectedLocations={selectedLocations} makeItMealModifiers={locationFilteredMakeItMealModifiers} />}
-      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} cateringPinkSheets={data.cateringPinkSheets} itemCosts={locationFilteredItemCosts} makeItMealModifiers={locationFilteredMakeItMealModifiers} selectedChannels={selectedChannels} categoryFilter={categoryFilter} />}
+      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} cateringPinkSheets={data.cateringPinkSheets} itemCosts={locationFilteredItemCosts} makeItMealModifiers={locationFilteredMakeItMealModifiers} selectedChannels={selectedChannels} categoryFilter={categoryFilter} isAdmin={isAdmin} />}
       {/* entreemix/byo/meoverall/pinksheets: location dropdown commented out pending v2
           validation — always pass blended, all-location data here regardless of the
           global location filter (the location-scaled memos stay wired for itemmix). */}
@@ -897,7 +897,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
           cateringDetails={data.cateringPinkSheetDetails}
         />
       )}
-      {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} />}
+      {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} isAdmin={isAdmin} />}
       {tab === 'renames'    && <RenamesAudit     renames={data.renames} role={role} />}
       {tab === 'renamesdemo' && visibleTabs.includes('renamesdemo') && <RenamesDemo renames={data.renamesDemo} />}
       {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} uncategorizedModifiers={data.uncategorizedModifiers} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}

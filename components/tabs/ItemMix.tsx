@@ -3,6 +3,7 @@ import { useState, useMemo } from 'react';
 import type { ItemRow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow, MakeItMealModifierRow, CateringPinkSheetRow } from '@/lib/types';
 import { computeFinalAvgCost } from '@/lib/pinkSheetCost';
 import { normalizeCategory } from '@/lib/constants';
+import { downloadCsv } from '@/lib/csvExport';
 
 const fmt$  = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 const fmt$2 = (v: number) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -32,6 +33,7 @@ interface Props {
   makeItMealModifiers: MakeItMealModifierRow[];
   selectedChannels:   string[];
   categoryFilter:     string;
+  isAdmin?:           boolean;
 }
 
 interface FinalCost { online: number; ih: number }
@@ -58,7 +60,7 @@ function itemCat(i: ItemRow): string {
   return normCat(i.category);
 }
 
-export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringPinkSheets = [], itemCosts = [], makeItMealModifiers, selectedChannels, categoryFilter }: Props) {
+export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringPinkSheets = [], itemCosts = [], makeItMealModifiers, selectedChannels, categoryFilter, isAdmin = false }: Props) {
   const [search,          setSearch]          = useState('');
   const [sortKey,         setSortKey]         = useState<SortKey>('gross_sales');
   const [sortDir,         setSortDir]         = useState<'asc' | 'desc'>('desc');
@@ -560,6 +562,39 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     );
   }
 
+  // Admin/tester-only export — every currently filtered/searched row (ignores
+  // collapse state, which has no meaning in a flat CSV), same columns/values
+  // as the table, same sort order as currently displayed.
+  function exportCsv() {
+    const header = [
+      'item', 'channel', 'category', 'sub_category', 'menu_group', 'qty',
+      ...(includeMakeItMeal ? ['make_it_meal_qty', 'combined_qty'] : []),
+      'qty_mix_pct', 'gross_sales', 'gross_mix_pct', 'net_sales', 'refunds',
+      'net_after_refunds', 'gross_mix_all_pct', 'avg_price', 'avg_cost', 'cogs_pct',
+    ];
+    const rowsOut = sortedItems(dedupedFiltered.filter(matchesSearch)).map(item => {
+      const cat = itemCat(item);
+      const catQ = catTotals.qty.get(cat) ?? 0;
+      const catG = catTotals.gross.get(cat) ?? 0;
+      const qtyMix = catQ > 0 ? (item.qty / catQ * 100) : 0;
+      const grossMix = catG > 0 ? (item.gross_sales / catG * 100) : 0;
+      const grossMixAll = totalGrossSales > 0 ? (item.gross_sales / totalGrossSales * 100) : 0;
+      const avgCost = getAvgCost(item);
+      const cogsPct = getCogsPct(item);
+      return [
+        item.canonical_name, item.channel, cat, item.sub_category || '', item.menu_group, item.qty,
+        ...(includeMakeItMeal ? [item.makeItMealQty, item.combinedQty] : []),
+        Math.round(qtyMix * 10) / 10, Math.round(item.gross_sales * 100) / 100,
+        Math.round(grossMix * 10) / 10, Math.round(item.revenue * 100) / 100,
+        Math.round(item.refunds * 100) / 100, Math.round(item.net_after_refunds * 100) / 100,
+        Math.round(grossMixAll * 10) / 10, Math.round(item.avg_price * 100) / 100,
+        avgCost != null ? Math.round(avgCost * 100) / 100 : null,
+        cogsPct != null ? Math.round(cogsPct * 1000) / 10 : null,
+      ];
+    });
+    downloadCsv('item_mix.csv', header, rowsOut);
+  }
+
   const thBase: React.CSSProperties = { position: 'sticky', top: 0, zIndex: 2, background: 'var(--card)' };
 
   function thSort(key: SortKey, label: string, formulaTitle?: string, opts?: { wrap?: boolean; fontSize?: number }) {
@@ -627,6 +662,13 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
         <span style={{ fontSize: 10, color: 'var(--muted)' }}>
           {search.trim() ? dedupedFiltered.filter(matchesSearch).length : dedupedFiltered.length} items
         </span>
+        {isAdmin && (
+          <button className="drb" onClick={exportCsv}
+            title="Download every currently filtered/searched row as CSV"
+            style={{ minWidth: 0, padding: '4px 10px', fontSize: 11 }}>
+            ⬇ Export CSV
+          </button>
+        )}
         <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, cursor: 'pointer', width: '100%' }}>
           <input type="checkbox" checked={includeMakeItMeal} onChange={e => setIncludeMakeItMeal(e.target.checked)} />
           Include &quot;Make It a Meal&quot; picks in Gross Sales / Net Sales / Net after Refunds (adds the modifier&apos;s own real price from fact_modifiers)
