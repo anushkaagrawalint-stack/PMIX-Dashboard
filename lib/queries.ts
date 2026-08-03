@@ -1922,6 +1922,10 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
     -- must NOT blend across CATERING/CATERING-3PD/OFFSITE/Open items (each is
     -- its own r365 menu value with its own costs; see getItemCosts for the same
     -- rule applied elsewhere). Missing -> 0, per owner instruction 2026-08-01.
+    -- Chai Chocolate Chip Cookie Basket is excluded here (owner confirmed
+    -- 2026-08-03) — its real cost is modifier picks only; r365 has a "Masala
+    -- Chai Cookies" recipe-cost entry that consolidates into this name via
+    -- byo_fix, but that recipe cost should NOT apply as this item's base cost.
     catering_base AS (
       SELECT DISTINCT ON (canonical) canonical AS name, avg_cost AS cost
       FROM (
@@ -1930,6 +1934,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'CATERING' AND avg_cost > 0
+          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
       ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
@@ -1942,6 +1947,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'CATERING - 3PD' AND avg_cost > 0
+          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
       ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
@@ -1954,6 +1960,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0
+          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
       ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
@@ -1966,6 +1973,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'Open items' AND avg_cost > 0
+          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
       ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
@@ -3145,6 +3153,10 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
     -- fall back to fallback_base/mi_base (which pick an arbitrary menu's cost with no
     -- regard for which channel is actually being costed). Each gets its own bucket,
     -- period-aware (freshest <= selected period), sourced strictly from its own menu.
+    -- Chai Chocolate Chip Cookie Basket excluded (owner confirmed 2026-08-03) — same
+    -- reasoning as getCateringPinkSheets: its real cost is modifier picks only, the
+    -- "Masala Chai Cookies" r365 recipe-cost entry that consolidates into this name
+    -- via byo_fix should not apply as this item's base cost.
     catering_base AS (
       SELECT DISTINCT ON (canonical)
         canonical AS name, avg_cost AS cost
@@ -3156,6 +3168,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'CATERING' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
@@ -3172,6 +3185,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'CATERING - 3PD' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
@@ -3188,6 +3202,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
@@ -3204,6 +3219,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'Open items' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
