@@ -1926,6 +1926,13 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
     -- 2026-08-03) — its real cost is modifier picks only; r365 has a "Masala
     -- Chai Cookies" recipe-cost entry that consolidates into this name via
     -- byo_fix, but that recipe cost should NOT apply as this item's base cost.
+    -- Harvest Chicken Bowl - Catering / - Club Feast are excluded too (owner
+    -- confirmed 2026-08-04) — same ambiguity as the IH "Harvest Chicken Bowl -
+    -- In House" case above: r365 stores Harvest Chicken Bowl's OWN recipe cost
+    -- with item_name_updated = 'BYO Greens + Grains Bowl' (same as the real
+    -- Greens+Grains recipe, e.g. "Greens + Grains Bowl - Catering"), so matching
+    -- on item_name_updated alone would wrongly blend Harvest Chicken's cost into
+    -- Greens+Grains Bowl's base cost. Matched by item_name instead, below.
     catering_base AS (
       SELECT DISTINCT ON (canonical) canonical AS name, avg_cost AS cost
       FROM (
@@ -1935,6 +1942,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         CROSS JOIN selected_period sp
         WHERE menu = 'CATERING' AND avg_cost > 0
           AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
       ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
@@ -1948,6 +1956,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         CROSS JOIN selected_period sp
         WHERE menu = 'CATERING - 3PD' AND avg_cost > 0
           AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
       ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
@@ -1961,6 +1970,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         CROSS JOIN selected_period sp
         WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0
           AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
       ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
@@ -1974,9 +1984,26 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         CROSS JOIN selected_period sp
         WHERE menu = 'Open items' AND avg_cost > 0
           AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
       ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    ),
+    harvest_chicken_catering AS (
+      SELECT avg_cost
+      FROM analytics.r365_item_cost, selected_period sp
+      WHERE item_name = 'Harvest Chicken Bowl - Catering' AND menu = 'CATERING' AND avg_cost > 0
+        AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT <= sp.pnum
+      ORDER BY RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+      LIMIT 1
+    ),
+    harvest_chicken_catering_3pd AS (
+      SELECT avg_cost
+      FROM analytics.r365_item_cost, selected_period sp
+      WHERE item_name = 'Harvest Chicken Bowl - Catering' AND menu = 'CATERING - 3PD' AND avg_cost > 0
+        AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT <= sp.pnum
+      ORDER BY RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+      LIMIT 1
     )
     SELECT
       o.parent_item AS canonical_name,
@@ -1984,8 +2011,8 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
       o.qty::BIGINT AS qty,
       COALESCE(
         CASE o.channel_raw
-          WHEN 'CATERING'     THEN cb.cost
-          WHEN 'CATERING_3PD' THEN c3.cost
+          WHEN 'CATERING'     THEN COALESCE(hcc.avg_cost, cb.cost)
+          WHEN 'CATERING_3PD' THEN COALESCE(hc3.avg_cost, c3.cost)
           WHEN 'OFFSITE'      THEN ob.cost
           WHEN 'OPEN_ITEMS'   THEN opb.cost
         END, 0)::NUMERIC AS base_cost,
@@ -1996,6 +2023,12 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
     LEFT JOIN catering_3pd_base c3  ON LOWER(c3.name)  = LOWER(o.parent_item)
     LEFT JOIN offsite_base      ob  ON LOWER(ob.name)  = LOWER(o.parent_item)
     LEFT JOIN open_base         opb ON LOWER(opb.name) = LOWER(o.parent_item)
+    LEFT JOIN LATERAL (
+      SELECT avg_cost FROM harvest_chicken_catering WHERE o.parent_item = 'Harvest Chicken Bowl'
+    ) hcc ON true
+    LEFT JOIN LATERAL (
+      SELECT avg_cost FROM harvest_chicken_catering_3pd WHERE o.parent_item = 'Harvest Chicken Bowl'
+    ) hc3 ON true
     ORDER BY o.qty DESC
   `, [dr.start, dr.end]);
   await db.end();
@@ -3157,6 +3190,11 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
     -- reasoning as getCateringPinkSheets: its real cost is modifier picks only, the
     -- "Masala Chai Cookies" r365 recipe-cost entry that consolidates into this name
     -- via byo_fix should not apply as this item's base cost.
+    -- Harvest Chicken Bowl - Catering / - Club Feast excluded too (owner confirmed
+    -- 2026-08-04) — r365 stores Harvest Chicken Bowl's own recipe cost with
+    -- item_name_updated = 'BYO Greens + Grains Bowl' (same as the real Greens+Grains
+    -- recipe), so matching on item_name_updated alone would wrongly blend it in;
+    -- see harvest_chicken_catering/harvest_chicken_catering_3pd below instead.
     catering_base AS (
       SELECT DISTINCT ON (canonical)
         canonical AS name, avg_cost AS cost
@@ -3169,6 +3207,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         CROSS JOIN max_pk
         WHERE menu = 'CATERING' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
@@ -3186,10 +3225,27 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         CROSS JOIN max_pk
         WHERE menu = 'CATERING - 3PD' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
           AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
                RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    ),
+    harvest_chicken_catering AS (
+      SELECT avg_cost
+      FROM analytics.r365_item_cost, max_pk
+      WHERE item_name = 'Harvest Chicken Bowl - Catering' AND menu = 'CATERING' AND avg_cost > 0
+        AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT <= max_pk.pk
+      ORDER BY RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+      LIMIT 1
+    ),
+    harvest_chicken_catering_3pd AS (
+      SELECT avg_cost
+      FROM analytics.r365_item_cost, max_pk
+      WHERE item_name = 'Harvest Chicken Bowl - Catering' AND menu = 'CATERING - 3PD' AND avg_cost > 0
+        AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT <= max_pk.pk
+      ORDER BY RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+      LIMIT 1
     ),
     offsite_base AS (
       SELECT DISTINCT ON (canonical)
@@ -3234,13 +3290,15 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
       UNION SELECT name FROM catering_3pd_base
       UNION SELECT name FROM offsite_base
       UNION SELECT name FROM open_items_base
+      UNION SELECT 'Harvest Chicken Bowl' FROM harvest_chicken_catering
+      UNION SELECT 'Harvest Chicken Bowl' FROM harvest_chicken_catering_3pd
     )
     SELECT
       n.name                                                    AS canonical_name,
       COALESCE(ih.cost, fb.cost, mi.cost, 0)::NUMERIC          AS ih_cost,
       COALESCE(ol.cost, fb.cost, mi.cost, 0)::NUMERIC          AS online_cost,
-      COALESCE(ct.cost, 0)::NUMERIC                             AS catering_cost,
-      COALESCE(c3.cost, 0)::NUMERIC                             AS catering_3pd_cost,
+      COALESCE(hcc.avg_cost, ct.cost, 0)::NUMERIC               AS catering_cost,
+      COALESCE(hc3.avg_cost, c3.cost, 0)::NUMERIC               AS catering_3pd_cost,
       COALESCE(off.cost, 0)::NUMERIC                            AS offsite_cost,
       COALESCE(oi.cost, 0)::NUMERIC                             AS open_items_cost
     FROM all_names n
@@ -3252,7 +3310,13 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
     LEFT JOIN catering_3pd_base c3 ON LOWER(c3.name)  = LOWER(n.name)
     LEFT JOIN offsite_base     off ON LOWER(off.name) = LOWER(n.name)
     LEFT JOIN open_items_base  oi  ON LOWER(oi.name)  = LOWER(n.name)
-    WHERE COALESCE(ih.cost, ol.cost, ct.cost, c3.cost, off.cost, oi.cost, fb.cost, mi.cost, 0) > 0
+    LEFT JOIN LATERAL (
+      SELECT avg_cost FROM harvest_chicken_catering WHERE n.name = 'Harvest Chicken Bowl'
+    ) hcc ON true
+    LEFT JOIN LATERAL (
+      SELECT avg_cost FROM harvest_chicken_catering_3pd WHERE n.name = 'Harvest Chicken Bowl'
+    ) hc3 ON true
+    WHERE COALESCE(hcc.avg_cost, ih.cost, ol.cost, ct.cost, hc3.avg_cost, c3.cost, off.cost, oi.cost, fb.cost, mi.cost, 0) > 0
   `, [dr.end]);
   await db.end();
   return rows.map(r => ({
