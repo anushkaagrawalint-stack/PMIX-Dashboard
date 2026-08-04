@@ -171,6 +171,7 @@ export interface PinkSheetDetailRow {
   qty:           number;
   unit_cost:     number;
   total_cost:    number;   // qty × unit_cost
+  r365_recipe_name: string | null;   // traceability for CSV export/validation
 }
 
 // ─── Pink Sheets (cost breakdown per item) ───────────────────────────────────
@@ -186,6 +187,33 @@ export interface PinkSheetRow {
   avg_cost_ih:        number;   // = base_cost_ih + total_ih_mod_cost / ih_qty
   avg_cost_online:    number;   // = base_cost_online + total_mod_cost / online_qty
   avg_cost_3pd:       number;   // = avg_cost_online × 1.18
+}
+
+// ─── Catering Pink Sheets (admin/tester only — CATERING, CATERING - 3PD,
+// OFFSITE, Open Items). Deliberately simpler than PinkSheetRow/PinkSheetDetailRow:
+// no section/half-half segregation (flat modifier list only, per owner request
+// 2026-08-01 — modifier-type segregation may come later), and a missing modifier
+// cost is left `null` (not defaulted to 0) so it's visibly blank in the UI. A
+// missing base_cost IS defaulted to 0 (same convention as IH/Online base costs).
+export type CateringChannel = 'catering' | 'catering_3pd' | 'offsite' | 'open';
+
+export interface CateringPinkSheetDetailRow {
+  parent_item:   string;
+  modifier_name: string;
+  channel:       CateringChannel;
+  qty:           number;
+  unit_cost:     number | null;   // null when no r365 modifier cost match this period
+  total_cost:    number | null;   // qty × unit_cost, or null if unit_cost is null
+  r365_recipe_name: string | null;   // traceability for CSV export/validation
+}
+
+export interface CateringPinkSheetRow {
+  canonical_name: string;
+  channel:        CateringChannel;
+  qty:            number;   // real order-line qty for this channel (not modifier qty)
+  base_cost:      number;   // r365 item cost for this channel's own menu bucket; 0 if missing
+  total_mod_cost: number;   // Σ qty × unit_cost across modifiers with a known cost
+  avg_cost:       number;   // (base_cost × qty + total_mod_cost) / qty
 }
 
 // ─── BYO modifiers ────────────────────────────────────────────────────────────
@@ -519,6 +547,8 @@ export interface DashboardData {
   openItemsSummary:     OpenItemsSummary;
   pinkSheets:         PinkSheetRow[];
   pinkSheetDetails:   PinkSheetDetailRow[];
+  cateringPinkSheets:        CateringPinkSheetRow[];
+  cateringPinkSheetDetails:  CateringPinkSheetDetailRow[];
   periods:            FiscalPeriodRow[];
   cateringVendors:    VendorRow[];
   offsiteVendors:     VendorRow[];

@@ -1,6 +1,6 @@
 'use client';
 import { useState, useMemo } from 'react';
-import type { PinkSheetRow, PinkSheetDetailRow } from '@/lib/types';
+import type { PinkSheetRow, PinkSheetDetailRow, CateringPinkSheetRow, CateringPinkSheetDetailRow, CateringChannel } from '@/lib/types';
 import { buildSections, applyHalfHalfCosts, computeTotalModCost, isZeroBaseItem, type SectionData } from '@/lib/pinkSheetCost';
 
 const fmt$ = (v: number, d = 4) =>
@@ -8,11 +8,40 @@ const fmt$ = (v: number, d = 4) =>
 const fmt2 = (v: number) =>
   `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-type ChannelMode = 'online' | 'ih';
+type ChannelMode = 'online' | 'ih' | CateringChannel;
+const CATERING_MODES: CateringChannel[] = ['catering', 'catering_3pd', 'offsite', 'open'];
+const CATERING_LABEL: Record<CateringChannel, string> = {
+  catering: 'CATERING', catering_3pd: 'CATERING-3PD', offsite: 'OFFSITE', open: 'OPEN',
+};
+const CHANNEL_FILE_LABEL: Record<ChannelMode, string> = {
+  ih: 'in_house', online: 'online',
+  catering: 'catering', catering_3pd: 'catering_3pd', offsite: 'offsite', open: 'open',
+};
+
+// Validation export — every unique modifier for the active channel, one row per
+// (menu, modifier), with qty/unit cost/R365 recipe name so a human can spot-check
+// the cost pipeline without needing DB access. Owner request 2026-08-03.
+function csvCell(v: string | number | null): string {
+  if (v === null) return '';
+  const s = String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function downloadCsv(filename: string, header: string[], rows: (string | number | null)[][]) {
+  const csv = [header, ...rows].map(r => r.map(csvCell).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 interface Props {
   pinkSheets: PinkSheetRow[];
   details:    PinkSheetDetailRow[];
+  cateringPinkSheets: CateringPinkSheetRow[];
+  cateringDetails:    CateringPinkSheetDetailRow[];
 }
 
 // Renders one section table — half sections (1/2 Base, 1/2 Main) get weighted-avg columns
@@ -123,27 +152,72 @@ function SectionTable({
   );
 }
 
-export default function PinkSheets({ pinkSheets, details }: Props) {
-  const rows    = pinkSheets ?? [];
-  const dets    = details    ?? [];
+export default function PinkSheets({ pinkSheets, details, cateringPinkSheets, cateringDetails }: Props) {
+  const rows     = pinkSheets ?? [];
+  const dets     = details    ?? [];
+  const catRows  = cateringPinkSheets ?? [];
+  const catDets  = cateringDetails    ?? [];
   const [search,   setSearch]   = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [channel,  setChannel]  = useState<ChannelMode>('online');
 
+  const isCatering = (CATERING_MODES as ChannelMode[]).includes(channel);
+
   const filteredItems = useMemo(() => {
+    if (isCatering) return [];
     const q = search.toLowerCase();
     const filtered = q ? rows.filter(r => r.canonical_name.toLowerCase().includes(q)) : rows;
     return channel === 'ih'
       ? filtered.filter(r => r.ih_qty > 0).sort((a, b) => b.ih_qty - a.ih_qty)
       : filtered.filter(r => r.online_qty > 0);
-  }, [rows, search, channel]);
+  }, [rows, search, channel, isCatering]);
+
+  // Catering/Catering-3PD/Offsite/Open: one row per item already scoped to `channel`
+  // (CateringPinkSheetRow), separate from the IH/Online PinkSheetRow list above.
+  const filteredCateringItems = useMemo(() => {
+    if (!isCatering) return [];
+    const q = search.toLowerCase();
+    const scoped = catRows.filter(r => r.channel === channel && r.qty > 0);
+    return (q ? scoped.filter(r => r.canonical_name.toLowerCase().includes(q)) : scoped)
+      .sort((a, b) => b.qty - a.qty);
+  }, [catRows, search, channel, isCatering]);
 
   const activeItem = useMemo(
-    () => rows.find(r => r.canonical_name === selected) ??
-          filteredItems[0] ??
-          null,
-    [selected, filteredItems, rows],
+    () => isCatering ? null : (rows.find(r => r.canonical_name === selected) ?? filteredItems[0] ?? null),
+    [selected, filteredItems, rows, isCatering],
   );
+
+  // Every unique (menu, modifier) for the active channel — used for the CSV
+  // export button, independent of whichever single item is currently selected.
+  function downloadActiveChannelCsv() {
+    const header = ['menu', 'modifier_name', 'qty', 'unit_cost', 'r365_recipe_name'];
+    const filename = `pink_sheets_${CHANNEL_FILE_LABEL[channel]}_modifiers.csv`;
+    if (isCatering) {
+      const rowsOut = catDets
+        .filter(d => d.channel === channel)
+        .sort((a, b) => a.parent_item.localeCompare(b.parent_item) || a.modifier_name.localeCompare(b.modifier_name))
+        .map(d => [d.parent_item, d.modifier_name, d.qty, d.unit_cost, d.r365_recipe_name]);
+      downloadCsv(filename, header, rowsOut);
+    } else {
+      const rowsOut = dets
+        .filter(d => d.channel === channel)
+        .sort((a, b) => a.parent_item.localeCompare(b.parent_item) || a.modifier_name.localeCompare(b.modifier_name))
+        .map(d => [d.parent_item, d.modifier_name, d.qty, d.unit_cost, d.r365_recipe_name]);
+      downloadCsv(filename, header, rowsOut);
+    }
+  }
+
+  const activeCateringItem = useMemo(
+    () => !isCatering ? null : (filteredCateringItems.find(r => r.canonical_name === selected) ?? filteredCateringItems[0] ?? null),
+    [selected, filteredCateringItems, isCatering],
+  );
+
+  const activeCateringMods = useMemo(() => {
+    if (!activeCateringItem) return [];
+    return catDets
+      .filter(d => d.parent_item === activeCateringItem.canonical_name && d.channel === activeCateringItem.channel)
+      .sort((a, b) => a.modifier_name.localeCompare(b.modifier_name));
+  }, [activeCateringItem, catDets]);
 
   // Zero-baseCost items (Sides, Homemade Juice) are channel-agnostic — their IH cost
   // mirrors the online weighted-average modifier cost exactly, never recomputed from
@@ -177,7 +251,7 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
   const modPlusAvg   = totalModCost + totalAvgCost;
   const finalAvgCost = activeQty > 0 ? modPlusAvg / activeQty : 0;
 
-  if (!rows.length) return (
+  if (!rows.length && !catRows.length) return (
     <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)' }}>
       No pink sheet data for this period.
     </div>
@@ -210,13 +284,60 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
             ))}
           </div>
 
+          {/* Admin/tester-only: Catering / Catering-3PD / Offsite / Open Items.
+              Flat modifier list, no section segregation — owner request 2026-08-01. */}
+          <div style={{ display: 'flex', gap: 4, marginBottom: 6, flexWrap: 'wrap' }}>
+            {CATERING_MODES.map(ch => (
+              <button key={ch} onClick={() => { setChannel(ch); setSelected(null); }}
+                style={{
+                  flex: '1 0 45%', padding: '4px 0', borderRadius: 6,
+                  border: '1px solid var(--border)', cursor: 'pointer',
+                  fontFamily: 'inherit', fontSize: 9, fontWeight: 700,
+                  background: channel === ch ? '#fef3c7' : 'var(--card)',
+                  color: channel === ch ? '#92400e' : 'var(--muted)',
+                }}>
+                {CATERING_LABEL[ch]}
+              </button>
+            ))}
+          </div>
+
           <input value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search items…" className="srch"
-            style={{ width: '100%', boxSizing: 'border-box' }} />
+            style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6 }} />
+
+          <button onClick={downloadActiveChannelCsv}
+            title="Download every unique modifier for this channel — menu, qty, unit cost, R365 recipe name"
+            style={{
+              width: '100%', padding: '5px 0', borderRadius: 6,
+              border: '1px solid var(--border)', cursor: 'pointer',
+              fontFamily: 'inherit', fontSize: 10, fontWeight: 700,
+              background: 'var(--card)', color: 'var(--fg)',
+            }}>
+            ⬇ Download CSV
+          </button>
         </div>
 
         <div style={{ overflowY: 'auto', flex: 1 }}>
-          {filteredItems.map(r => {
+          {isCatering ? filteredCateringItems.map(r => {
+            const isActive = r.canonical_name === (activeCateringItem?.canonical_name ?? '');
+            return (
+              <button key={r.canonical_name} onClick={() => setSelected(r.canonical_name)}
+                style={{
+                  display: 'block', width: '100%', textAlign: 'left',
+                  padding: '7px 10px', border: 'none', cursor: 'pointer',
+                  fontFamily: 'inherit', fontSize: 11,
+                  borderBottom: '1px solid var(--border)',
+                  background: isActive ? '#fef3c7' : 'var(--card)',
+                  color:      isActive ? '#92400e' : 'var(--fg)',
+                  fontWeight: isActive ? 700 : 400,
+                }}>
+                <div>{r.canonical_name}</div>
+                <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 1 }}>
+                  {r.qty.toLocaleString()} orders
+                </div>
+              </button>
+            );
+          }) : filteredItems.map(r => {
             const isActive = r.canonical_name === (activeItem?.canonical_name ?? '');
             const qty = channel === 'ih' ? r.ih_qty : r.online_qty;
             return (
@@ -242,7 +363,101 @@ export default function PinkSheets({ pinkSheets, details }: Props) {
 
       {/* ── Right: pink sheet detail ──────────────────────────────────────── */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '14px 18px' }}>
-        {!activeItem ? (
+        {isCatering ? (
+          /* ── Catering / Catering-3PD / Offsite / Open (admin+tester only) ──
+             Flat modifier list, no section segregation (owner request 2026-08-01) */
+          !activeCateringItem ? (
+            <div style={{ color: 'var(--muted)', fontSize: 12, textAlign: 'center', marginTop: 40 }}>
+              Select an item from the left to view its {CATERING_LABEL[channel as CateringChannel]} pink sheet.
+            </div>
+          ) : (
+            <>
+              <div style={{
+                background: '#fef3c7', borderRadius: 8, padding: '10px 16px',
+                marginBottom: 16, borderLeft: '4px solid #d97706',
+              }}>
+                <div style={{ fontSize: 15, fontWeight: 800, color: '#92400e' }}>
+                  {activeCateringItem.canonical_name} — {CATERING_LABEL[channel as CateringChannel]}
+                </div>
+                <div style={{ fontSize: 10, color: '#b45309', marginTop: 3, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  <span>Qty: <strong>{activeCateringItem.qty.toLocaleString()}</strong></span>
+                  <span>Base cost: <strong>{fmt$(activeCateringItem.base_cost)}</strong></span>
+                </div>
+              </div>
+
+              {activeCateringMods.length === 0 ? (
+                <div style={{ color: 'var(--muted)', fontSize: 12 }}>
+                  No modifier detail found for this item in the selected period.
+                </div>
+              ) : (
+                <div className="tw" style={{ marginBottom: 8 }}>
+                  <table style={{ width: '100%' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ minWidth: 220, textAlign: 'left' }}>Modifier</th>
+                        <th style={{ textAlign: 'center' }}>Qty</th>
+                        <th style={{ textAlign: 'center' }}>Unit Cost</th>
+                        <th style={{ textAlign: 'center' }}>Total Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeCateringMods.map(m => (
+                        <tr key={m.modifier_name}>
+                          <td style={{ paddingLeft: 20 }}>{m.modifier_name}</td>
+                          <td style={{ textAlign: 'center' }}>{m.qty.toLocaleString()}</td>
+                          <td style={{ textAlign: 'center', color: m.unit_cost === null ? 'var(--muted)' : 'inherit' }}>
+                            {m.unit_cost === null ? '—' : fmt$(m.unit_cost)}
+                          </td>
+                          <td style={{ textAlign: 'center', color: m.total_cost === null ? 'var(--muted)' : 'inherit' }}>
+                            {m.total_cost === null ? '—' : fmt$(m.total_cost)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="tw">
+                <table style={{ width: '100%' }}>
+                  <tbody>
+                    <tr style={{ background: '#fef3c7', borderTop: '2px solid #fde68a' }}>
+                      <td colSpan={2} style={{ fontWeight: 700, color: '#92400e', padding: '6px 8px' }}>
+                        BASE COST
+                      </td>
+                      <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>
+                        r365 {CATERING_LABEL[channel as CateringChannel]} base cost (0 if missing)
+                      </td>
+                      <td style={{ textAlign: 'center', fontWeight: 800, color: '#92400e' }}>
+                        {fmt$(activeCateringItem.base_cost)}
+                      </td>
+                    </tr>
+                    <tr style={{ background: '#fff7ed' }}>
+                      <td colSpan={2} style={{ fontWeight: 700, color: '#c2410c', padding: '6px 8px' }}>
+                        TOTAL MODIFIER COST
+                      </td>
+                      <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>Σ qty × unit cost (known costs only)</td>
+                      <td style={{ textAlign: 'center', fontWeight: 800, color: '#c2410c' }}>
+                        {fmt$(activeCateringItem.total_mod_cost)}
+                      </td>
+                    </tr>
+                    <tr style={{ background: '#ecfdf5', borderTop: '2px solid #6ee7b7' }}>
+                      <td colSpan={2} style={{ fontWeight: 800, fontSize: 13, color: '#065f46', padding: '8px 8px' }}>
+                        FINAL AVG COST WITH MODIFIER
+                      </td>
+                      <td style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center' }}>
+                        (base × qty + total mod cost) ÷ qty
+                      </td>
+                      <td style={{ textAlign: 'center', fontWeight: 900, fontSize: 14, color: '#065f46' }}>
+                        {fmt2(activeCateringItem.avg_cost)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )
+        ) : !activeItem ? (
           <div style={{ color: 'var(--muted)', fontSize: 12, textAlign: 'center', marginTop: 40 }}>
             Select an item from the left to view its pink sheet.
           </div>

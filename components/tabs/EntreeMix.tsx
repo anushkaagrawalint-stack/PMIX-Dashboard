@@ -439,6 +439,7 @@ function aggregateSections(
       modifier_name, qty,
       unit_cost:   qty > 0 ? total_cost / qty : 0,
       total_cost,
+      r365_recipe_name: null,
     })).sort((a, b) => b.qty - a.qty);
     return {
       rawKeys: [displayName], displayName,
