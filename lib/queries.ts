@@ -2292,34 +2292,53 @@ export async function getPayments(
   const db = pool();
   const dateCol = basis === 'paid' ? 'COALESCE(paid_business_date, business_date)' : 'business_date';
   const { rows } = await db.query(`
-    WITH grand AS (
-      SELECT SUM(amount) AS total
+    WITH pay AS (
+      SELECT
+        COALESCE(NULLIF(TRIM(alt_payment_name),''), payment_type, 'Unknown') AS payment_source,
+        payment_type,
+        COUNT(*)                       AS payment_count,
+        SUM(amount)                    AS total_amount,
+        COALESCE(SUM(tip_amount), 0)   AS tip_amount,
+        COALESCE(SUM(fees), 0)         AS fees,
+        COALESCE(SUM(withholdings), 0) AS withholdings
       FROM public.br_order_payment
       WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
         AND COALESCE(paid_status, 'CAPTURED') = ANY($3)
+      GROUP BY 1, 2
     ),
+    grand AS (
+      SELECT SUM(total_amount) AS total FROM pay
+    ),
+    -- Refunds are bucketed by their OWN refund_date, not the original
+    -- payment's business_date — a payment made in one period can be refunded
+    -- in a later one, and Toast's own Payout report attributes the refund to
+    -- the day it happened. bop is joined only for payment_source/payment_type
+    -- metadata, not date-filtered, so an out-of-period payment's refund still
+    -- surfaces here instead of silently vanishing from both periods.
     refunds AS (
-      SELECT payment_guid, SUM(refund_amount + COALESCE(tip_refund_amount, 0)) AS refund_amount
-      FROM public.order_refunds
-      WHERE refund_date BETWEEN $1::DATE AND $2::DATE
-      GROUP BY payment_guid
+      SELECT
+        COALESCE(NULLIF(TRIM(bop.alt_payment_name),''), bop.payment_type, 'Unknown') AS payment_source,
+        bop.payment_type,
+        SUM(r.refund_amount + COALESCE(r.tip_refund_amount, 0)) AS refund_amount
+      FROM public.order_refunds r
+      JOIN public.br_order_payment bop ON bop.payment_guid = r.payment_guid
+      WHERE r.refund_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY 1, 2
     )
     SELECT
-      COALESCE(NULLIF(TRIM(alt_payment_name),''), payment_type, 'Unknown') AS payment_source,
-      payment_type,
-      COUNT(*)::INT                                                          AS payment_count,
-      ROUND(SUM(amount)::NUMERIC, 2)                                        AS total_amount,
-      ROUND(COALESCE(SUM(tip_amount), 0)::NUMERIC, 2)                       AS tip_amount,
-      ROUND(COALESCE(SUM(fees), 0)::NUMERIC, 2)                             AS fees,
-      ROUND(COALESCE(SUM(withholdings), 0)::NUMERIC, 2)                     AS withholdings,
-      ROUND(COALESCE(SUM(rf.refund_amount), 0)::NUMERIC, 2)                 AS refunded_amount,
-      ROUND(SUM(amount)*100.0/NULLIF(g.total,0)::NUMERIC, 1)               AS pct
-    FROM public.br_order_payment
-    LEFT JOIN refunds rf ON rf.payment_guid = br_order_payment.payment_guid
+      COALESCE(pay.payment_source, refunds.payment_source) AS payment_source,
+      COALESCE(pay.payment_type, refunds.payment_type)     AS payment_type,
+      COALESCE(pay.payment_count, 0)::INT                  AS payment_count,
+      ROUND(COALESCE(pay.total_amount, 0)::NUMERIC, 2)     AS total_amount,
+      ROUND(COALESCE(pay.tip_amount, 0)::NUMERIC, 2)       AS tip_amount,
+      ROUND(COALESCE(pay.fees, 0)::NUMERIC, 2)             AS fees,
+      ROUND(COALESCE(pay.withholdings, 0)::NUMERIC, 2)     AS withholdings,
+      ROUND(COALESCE(refunds.refund_amount, 0)::NUMERIC, 2) AS refunded_amount,
+      ROUND(COALESCE(pay.total_amount, 0)*100.0/NULLIF(g.total,0)::NUMERIC, 1) AS pct
+    FROM pay
+    FULL OUTER JOIN refunds
+      ON refunds.payment_source = pay.payment_source AND refunds.payment_type = pay.payment_type
     CROSS JOIN grand g
-    WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
-      AND COALESCE(paid_status, 'CAPTURED') = ANY($3)
-    GROUP BY 1, 2, g.total
     ORDER BY total_amount DESC
     LIMIT 30
   `, [dr.start, dr.end, statuses]);
@@ -2350,26 +2369,39 @@ export async function getPaymentsByLocation(
   const db = pool();
   const dateCol = basis === 'paid' ? 'COALESCE(p.paid_business_date, p.business_date)' : 'p.business_date';
   const { rows } = await db.query(`
-    WITH refunds AS (
-      SELECT payment_guid, SUM(refund_amount + COALESCE(tip_refund_amount, 0)) AS refund_amount
+    WITH pay AS (
+      SELECT
+        p.location_code,
+        COUNT(DISTINCT p.order_guid)                                            AS payment_count,
+        SUM(p.amount)                                                           AS total_amount,
+        SUM(CASE WHEN p.payment_type = 'CREDIT' THEN p.amount ELSE 0 END)       AS card_amount,
+        SUM(CASE WHEN p.payment_type != 'CREDIT' THEN p.amount ELSE 0 END)      AS alt_amount
+      FROM public.br_order_payment p
+      WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
+        AND COALESCE(p.paid_status, 'CAPTURED') = ANY($3)
+      GROUP BY p.location_code
+    ),
+    -- Bucketed by the refund's own refund_date (Toast's own convention) —
+    -- order_refunds already carries location_code directly, so this doesn't
+    -- need to go through br_order_payment or its date filter at all, and an
+    -- out-of-period payment's refund still counts in the period it happened.
+    refunds AS (
+      SELECT location_code, SUM(refund_amount + COALESCE(tip_refund_amount, 0)) AS refund_amount
       FROM public.order_refunds
       WHERE refund_date BETWEEN $1::DATE AND $2::DATE
-      GROUP BY payment_guid
+      GROUP BY location_code
     )
     SELECT
-      p.location_code,
-      COALESCE(dl.display_name, p.location_code)            AS display_name,
-      COUNT(DISTINCT p.order_guid)::INT                      AS payment_count,
-      ROUND(SUM(p.amount)::NUMERIC, 2)                       AS total_amount,
-      ROUND(SUM(CASE WHEN p.payment_type = 'CREDIT' THEN p.amount ELSE 0 END)::NUMERIC, 2) AS card_amount,
-      ROUND(SUM(CASE WHEN p.payment_type != 'CREDIT' THEN p.amount ELSE 0 END)::NUMERIC, 2) AS alt_amount,
-      ROUND(COALESCE(SUM(rf.refund_amount), 0)::NUMERIC, 2)  AS refunded_amount
-    FROM public.br_order_payment p
-    LEFT JOIN public.dim_location dl ON dl.location_code = p.location_code
-    LEFT JOIN refunds rf ON rf.payment_guid = p.payment_guid
-    WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
-      AND COALESCE(p.paid_status, 'CAPTURED') = ANY($3)
-    GROUP BY p.location_code, dl.display_name
+      COALESCE(pay.location_code, refunds.location_code) AS location_code,
+      COALESCE(dl.display_name, pay.location_code, refunds.location_code) AS display_name,
+      COALESCE(pay.payment_count, 0)::INT                    AS payment_count,
+      ROUND(COALESCE(pay.total_amount, 0)::NUMERIC, 2)       AS total_amount,
+      ROUND(COALESCE(pay.card_amount, 0)::NUMERIC, 2)        AS card_amount,
+      ROUND(COALESCE(pay.alt_amount, 0)::NUMERIC, 2)         AS alt_amount,
+      ROUND(COALESCE(refunds.refund_amount, 0)::NUMERIC, 2)  AS refunded_amount
+    FROM pay
+    FULL OUTER JOIN refunds ON refunds.location_code = pay.location_code
+    LEFT JOIN public.dim_location dl ON dl.location_code = COALESCE(pay.location_code, refunds.location_code)
     ORDER BY total_amount DESC
   `, [dr.start, dr.end, statuses]);
   await db.end();
@@ -2394,30 +2426,52 @@ export async function getPaymentSourcesByLocation(
   const db = pool();
   const dateCol = basis === 'paid' ? 'COALESCE(p.paid_business_date, p.business_date)' : 'p.business_date';
   const { rows } = await db.query(`
-    WITH refunds AS (
-      SELECT payment_guid, SUM(refund_amount + COALESCE(tip_refund_amount, 0)) AS refund_amount
-      FROM public.order_refunds
-      WHERE refund_date BETWEEN $1::DATE AND $2::DATE
-      GROUP BY payment_guid
+    WITH pay AS (
+      SELECT
+        p.location_code,
+        COALESCE(NULLIF(TRIM(p.alt_payment_name),''), p.payment_type, 'Unknown') AS payment_source,
+        p.payment_type,
+        COUNT(*)                       AS payment_count,
+        SUM(p.amount)                  AS total_amount,
+        COALESCE(SUM(p.tip_amount), 0) AS tip_amount,
+        COALESCE(SUM(p.fees), 0)       AS fees,
+        COALESCE(SUM(p.withholdings), 0) AS withholdings
+      FROM public.br_order_payment p
+      WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
+        AND COALESCE(p.paid_status, 'CAPTURED') = ANY($3)
+      GROUP BY 1, 2, 3
+    ),
+    -- Bucketed by refund_date (see getPayments/getPaymentsByLocation) — bop
+    -- is joined only for payment_source/payment_type metadata, not date-filtered.
+    refunds AS (
+      SELECT
+        r.location_code,
+        COALESCE(NULLIF(TRIM(bop.alt_payment_name),''), bop.payment_type, 'Unknown') AS payment_source,
+        bop.payment_type,
+        SUM(r.refund_amount + COALESCE(r.tip_refund_amount, 0)) AS refund_amount
+      FROM public.order_refunds r
+      JOIN public.br_order_payment bop ON bop.payment_guid = r.payment_guid
+      WHERE r.refund_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY 1, 2, 3
     )
     SELECT
-      p.location_code,
-      COALESCE(dl.display_name, p.location_code)                              AS display_name,
-      COALESCE(NULLIF(TRIM(p.alt_payment_name),''), p.payment_type, 'Unknown') AS payment_source,
-      p.payment_type,
-      COUNT(*)::INT                                                           AS payment_count,
-      ROUND(SUM(p.amount)::NUMERIC, 2)                                       AS total_amount,
-      ROUND(COALESCE(SUM(p.tip_amount), 0)::NUMERIC, 2)                      AS tip_amount,
-      ROUND(COALESCE(SUM(p.fees), 0)::NUMERIC, 2)                            AS fees,
-      ROUND(COALESCE(SUM(p.withholdings), 0)::NUMERIC, 2)                    AS withholdings,
-      ROUND(COALESCE(SUM(rf.refund_amount), 0)::NUMERIC, 2)                  AS refunded_amount
-    FROM public.br_order_payment p
-    LEFT JOIN public.dim_location dl ON dl.location_code = p.location_code
-    LEFT JOIN refunds rf ON rf.payment_guid = p.payment_guid
-    WHERE ${dateCol} BETWEEN $1::DATE AND $2::DATE
-      AND COALESCE(p.paid_status, 'CAPTURED') = ANY($3)
-    GROUP BY p.location_code, dl.display_name, 3, p.payment_type
-    ORDER BY p.location_code, total_amount DESC
+      COALESCE(pay.location_code, refunds.location_code) AS location_code,
+      COALESCE(dl.display_name, pay.location_code, refunds.location_code) AS display_name,
+      COALESCE(pay.payment_source, refunds.payment_source) AS payment_source,
+      COALESCE(pay.payment_type, refunds.payment_type)     AS payment_type,
+      COALESCE(pay.payment_count, 0)::INT                  AS payment_count,
+      ROUND(COALESCE(pay.total_amount, 0)::NUMERIC, 2)     AS total_amount,
+      ROUND(COALESCE(pay.tip_amount, 0)::NUMERIC, 2)       AS tip_amount,
+      ROUND(COALESCE(pay.fees, 0)::NUMERIC, 2)             AS fees,
+      ROUND(COALESCE(pay.withholdings, 0)::NUMERIC, 2)     AS withholdings,
+      ROUND(COALESCE(refunds.refund_amount, 0)::NUMERIC, 2) AS refunded_amount
+    FROM pay
+    FULL OUTER JOIN refunds
+      ON refunds.location_code = pay.location_code
+      AND refunds.payment_source = pay.payment_source
+      AND refunds.payment_type = pay.payment_type
+    LEFT JOIN public.dim_location dl ON dl.location_code = COALESCE(pay.location_code, refunds.location_code)
+    ORDER BY location_code, total_amount DESC
   `, [dr.start, dr.end, statuses]);
   await db.end();
   return rows.map(r => ({
