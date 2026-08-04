@@ -19,9 +19,9 @@ const DEFAULT_STATUSES = ['CAPTURED', 'AUTHORIZED'];
 const ALL_STATUSES = ['CAPTURED', 'AUTHORIZED', 'DENIED', 'VOIDED'];
 const titleCase = (s: string) => s.charAt(0) + s.slice(1).toLowerCase();
 
-export default function PaymentSource({ payments, paymentsByLocation, paymentSourcesByLocation, selectedLocations = [], dateStart, dateEnd }: {
+export default function PaymentSource({ payments, paymentsByLocation, paymentSourcesByLocation, selectedLocations = [], dateStart, dateEnd, isAdmin = false }: {
   payments: PaymentRow[]; paymentsByLocation: PaymentByLocationRow[]; paymentSourcesByLocation: PaymentSourceLocationRow[];
-  selectedLocations?: string[]; dateStart: string; dateEnd: string;
+  selectedLocations?: string[]; dateStart: string; dateEnd: string; isAdmin?: boolean;
 }) {
   const [search, setSearch] = useState('');
   const [basis, setBasis] = useState<Basis>('event');
@@ -239,6 +239,8 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
         )}
       </div>
 
+      {isAdmin && <AskPayments />}
+
       {/* ── KPI row ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 12 }}>
         <div className="kc" style={{ borderLeft: '3px solid var(--accent)', borderLeftStyle: 'solid' }}>
@@ -435,6 +437,105 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
           </table>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Ask (natural-language -> SQL, admin/tester only) ─────────────────────────
+// Generates SQL against two read-only views (analytics.v_payments_llm,
+// analytics.v_refunds_llm — see pipeline sql/018_llm_readonly_payments.sql)
+// via /api/ask-payments. The generated SQL is always shown alongside the
+// result so a wrong answer is visibly wrong, not silently trusted.
+const MONEY_COL = /amount|total|sum|revenue|refund|fee|withhold|tip|payout|cost|price/i;
+function formatCell(col: string, value: unknown): string {
+  if (value === null || value === undefined || value === '') return '';
+  if (MONEY_COL.test(col) && !isNaN(Number(value))) {
+    return `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  return String(value);
+}
+
+function AskPayments() {
+  const [question, setQuestion] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ sql: string; rows: Record<string, unknown>[]; answer: string } | null>(null);
+
+  async function ask() {
+    if (!question.trim() || loading) return;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await fetch('/api/ask-payments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Request failed');
+      setResult(json);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const columns = result && result.rows.length > 0 ? Object.keys(result.rows[0]) : [];
+
+  return (
+    <div className="kc" style={{ marginBottom: 12 }}>
+      <div className="kl" style={{ marginBottom: 8 }}>Ask (payments &amp; refunds data)</div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input
+          type="text"
+          value={question}
+          onChange={e => setQuestion(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') ask(); }}
+          placeholder="e.g. total refunds at Mosaic in May 2026"
+          style={{ flex: 1, padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 6 }}
+        />
+        <button className="drb" onClick={ask} disabled={loading || !question.trim()}>
+          {loading ? 'Asking…' : 'Ask'}
+        </button>
+      </div>
+
+      {error && (
+        <div style={{ fontSize: 11, color: '#dc2626', marginTop: 8 }}>{error}</div>
+      )}
+
+      {result && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{
+            fontSize: 13, lineHeight: 1.5, padding: '10px 12px',
+            background: 'var(--accent-soft, rgba(99,102,241,0.08))', border: '1px solid var(--border)',
+            borderRadius: 8, marginBottom: 8,
+          }}>
+            {result.answer}
+          </div>
+          <details style={{ fontSize: 11, color: 'var(--muted)' }}>
+            <summary style={{ cursor: 'pointer' }}>Show details ({result.rows.length} row{result.rows.length === 1 ? '' : 's'})</summary>
+            <pre style={{ whiteSpace: 'pre-wrap', fontSize: 11, marginTop: 6 }}>{result.sql}</pre>
+            {result.rows.length > 0 && (
+              <div style={{ overflowX: 'auto', marginTop: 6 }}>
+                <table className="dt">
+                  <thead>
+                    <tr>{columns.map(c => <th key={c}>{c}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {result.rows.slice(0, 200).map((row, i) => (
+                      <tr key={i}>
+                        {columns.map(c => <td key={c}>{formatCell(c, row[c])}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </details>
+        </div>
+      )}
     </div>
   );
 }
