@@ -123,9 +123,12 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
   const cardAmountPlusTip = cardRevenue + cardTip;
   const cardNet       = cardAmountPlusTip - cardFees - cardWithholdings - cardRefunded;
   const altRevenue    = effectivePayments.filter(p => p.category !== 'Card').reduce((s, p) => s + p.total_amount, 0);
-  const avgTicket     = totalTxns > 0 ? totalRevenue / totalTxns : 0;
   const amountPlusTip = totalRevenue + totalTip;
   const netAfterFeesAndRefunds = amountPlusTip - totalFees - totalWithholdings - totalRefunded;
+  // Same basis as the per-row "Avg Ticket" in the table below — net of fees/
+  // withholdings/refunds, plus tip — not the bare pre-adjustment total_amount,
+  // so this KPI and that column agree when divided by their own displayed revenue.
+  const avgTicket     = totalTxns > 0 ? netAfterFeesAndRefunds / totalTxns : 0;
 
   // Donut: Card vs Alt Payment
   const donutData = useMemo(() => {
@@ -413,8 +416,8 @@ export default function PaymentSource({ payments, paymentsByLocation, paymentSou
             </thead>
             <tbody>
               {filtered.map(p => {
-                const avg = p.payment_count > 0 ? p.total_amount / p.payment_count : 0;
                 const revenue = p.total_amount + p.tip_amount - p.withholdings - p.refunded_amount - p.fees;
+                const avg = p.payment_count > 0 ? revenue / p.payment_count : 0;
                 return (
                   <tr key={p.payment_source}>
                     <td style={{ fontWeight: 600 }}>{p.payment_source}</td>

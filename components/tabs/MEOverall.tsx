@@ -661,7 +661,15 @@ export default function MEOverall({
           <h2 style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>Menu Engineering — Overall</h2>
           <p style={{ fontSize: 10, color: 'var(--muted)', margin: '2px 0 0' }}>
             {rows.length} items · {CH_LABELS[ch]}
-            &nbsp;·&nbsp;Margin threshold: <strong>{pct(marginThreshold)}</strong>
+            {ch === 'ALL' ? (
+              <>
+                &nbsp;·&nbsp;Margin threshold — IH: <strong>{pct(perChThresh.IH.mThresh)}</strong>
+                {' '}· RASA Digital: <strong>{pct(perChThresh.LO.mThresh)}</strong>
+                {' '}· 3PD: <strong>{pct(perChThresh['3PD'].mThresh)}</strong>
+              </>
+            ) : (
+              <>&nbsp;·&nbsp;Margin threshold: <strong>{pct(marginThreshold)}</strong></>
+            )}
             &nbsp;·&nbsp;Mix threshold: <strong>{(mixThreshold * 100).toFixed(3)}%</strong>
           </p>
         </div>

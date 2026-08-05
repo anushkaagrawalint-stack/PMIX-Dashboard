@@ -199,12 +199,12 @@ const BYO_FIX_CTE = `byo_fix(raw, clean) AS (VALUES
   ('Eurest APL Mango Lassi',                      'Mango Lassi'),
   -- Rahul: Aramark Marriott/Fooda Chicken Tikka Masala are different items — not merged.
   -- Rahul (confirmed): Masala Chai Cookies (incl. all vendor variants) is the same
-  -- dish as Chai Chocolate Chip Cookie Basket — consolidated here dashboard-side.
-  ('Masala Chai Cookies',                         'Chai Chocolate Chip Cookie Basket'),
-  ('Offsite Masala Chai Cookies',                 'Chai Chocolate Chip Cookie Basket'),
-  ('HUNGRY Masala Chai Cookies',                  'Chai Chocolate Chip Cookie Basket'),
-  ('USHOR Masala Chai Cookies',                   'Chai Chocolate Chip Cookie Basket'),
-  ('Fooda Aramark Eurest Masala Chai Cookies',    'Chai Chocolate Chip Cookie Basket'),
+  -- dish as Masala Chai Cookies — consolidated here dashboard-side.
+  ('Masala Chai Cookies',                         'Masala Chai Cookies'),
+  ('Offsite Masala Chai Cookies',                 'Masala Chai Cookies'),
+  ('HUNGRY Masala Chai Cookies',                  'Masala Chai Cookies'),
+  ('USHOR Masala Chai Cookies',                   'Masala Chai Cookies'),
+  ('Fooda Aramark Eurest Masala Chai Cookies',    'Masala Chai Cookies'),
   ('Fooda BYO Spicy Chicken Bowl',                'BYO Spicy Chicken Bowl'),
   ('Aramark Marriott BYO Spicy Chicken Bowl',     'BYO Spicy Chicken Bowl'),
   ('Fooda Chicken Curry Bowl',                    'Chicken Curry Bowl'),
@@ -245,6 +245,12 @@ const BYO_FIX_CTE = `byo_fix(raw, clean) AS (VALUES
 // Base WHERE for all main metric queries:
 //   - not voided, not deferred
 //   - either menu_name is a known menu OR (menu_name IS NULL AND sales_category IN ('Food','Drink'))
+//   - not a bag/utensil/delivery-fee/guarantee/surcharge line -- these carry a
+//     real known menu_name (CATERING/CATERING-3PD/OFFSITE/FOOD-IN HOUSE) so
+//     they'd otherwise pass the check above and get counted as a real menu
+//     item (owner request 2026-08-05). "Order notes: ..." and "Gift Card"
+//     don't need a rule here -- they already have menu_name IS NULL with no
+//     Food/Drink sales_category, so the OR branch above already excludes them.
 const BASE_WHERE = `
   NOT fol.is_voided
   AND NOT fol.is_deferred
@@ -257,6 +263,12 @@ const BASE_WHERE = `
     )
     OR (fol.menu_name IS NULL AND fol.sales_category IN ('Food','Drink'))
   )
+  AND fol.canonical_name <> 'Bag'
+  AND fol.canonical_name NOT ILIKE '%fee%'
+  AND fol.canonical_name NOT ILIKE '%guarantee%'
+  AND fol.canonical_name NOT ILIKE '%surcharge%'
+  AND fol.canonical_name NOT ILIKE '%utensil%'
+  AND fol.canonical_name NOT ILIKE '%chafing kit%'
 `;
 
 // ─── Date range ───────────────────────────────────────────────────────────────
@@ -1801,6 +1813,7 @@ const CATERING_MOD_ALIAS_CTE = `mod_alias(raw_norm, target_norm) AS (VALUES
   ('harvest vegetables - classic', 'roasted vegetables - classic'),
   ('harvest vegetables - party pack', 'roasted vegetables - party pack'),
   ('kokum vinaigrette - side', 'kokum vinaigrette'),
+  ('sweet tamarind - classic', 'sweet tamarind chutney'),
   ('tandoori paneer', 'organic tandoori paneer'),
   ('tandoori paneer - *', 'organic tandoori paneer'),
   ('unsweetened black tea', 'unsweetened spiced tea')
@@ -1922,7 +1935,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
     -- must NOT blend across CATERING/CATERING-3PD/OFFSITE/Open items (each is
     -- its own r365 menu value with its own costs; see getItemCosts for the same
     -- rule applied elsewhere). Missing -> 0, per owner instruction 2026-08-01.
-    -- Chai Chocolate Chip Cookie Basket is excluded here (owner confirmed
+    -- Masala Chai Cookies is excluded here (owner confirmed
     -- 2026-08-03) — its real cost is modifier picks only; r365 has a "Masala
     -- Chai Cookies" recipe-cost entry that consolidates into this name via
     -- byo_fix, but that recipe cost should NOT apply as this item's base cost.
@@ -1941,7 +1954,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'CATERING' AND avg_cost > 0
-          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
@@ -1955,7 +1968,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'CATERING - 3PD' AND avg_cost > 0
-          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
@@ -1969,7 +1982,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0
-          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
@@ -1983,7 +1996,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'Open items' AND avg_cost > 0
-          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
@@ -3240,7 +3253,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
     -- fall back to fallback_base/mi_base (which pick an arbitrary menu's cost with no
     -- regard for which channel is actually being costed). Each gets its own bucket,
     -- period-aware (freshest <= selected period), sourced strictly from its own menu.
-    -- Chai Chocolate Chip Cookie Basket excluded (owner confirmed 2026-08-03) — same
+    -- Masala Chai Cookies excluded (owner confirmed 2026-08-03) — same
     -- reasoning as getCateringPinkSheets: its real cost is modifier picks only, the
     -- "Masala Chai Cookies" r365 recipe-cost entry that consolidates into this name
     -- via byo_fix should not apply as this item's base cost.
@@ -3260,7 +3273,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'CATERING' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
-          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
@@ -3278,7 +3291,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'CATERING - 3PD' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
-          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
@@ -3312,7 +3325,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
-          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
@@ -3329,7 +3342,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'Open items' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
-          AND COALESCE(bf.clean, item_name_updated) <> 'Chai Chocolate Chip Cookie Basket'
+          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
@@ -3488,6 +3501,16 @@ export async function getAttachmentData(dr: DateRange): Promise<AttachmentData> 
   const db = pool();
   const { rows } = await db.query(`
     WITH
+    -- Scoped to IN_HOUSE/APP/TPD only (owner request 2026-08-05) -- attachment
+    -- rate is an a-la-carte upsell metric and doesn't apply to catering's bulk/
+    -- pre-set orders. An explicit allow-list here, not a "not CATERING_3PD"
+    -- exclusion -- that only blocked one channel and would've silently let
+    -- CATERING, OFFSITE, OPEN_ITEMS, or TPD_MARKUP back in too. Filtered here
+    -- in main_lines only: every downstream CTE (item_lines, mod_lines,
+    -- category_checks, ...) joins through main_checks, so restricting the
+    -- check set here is enough to keep every non-retail channel out of every
+    -- KPI, breakdown, and chart on the tab, including the blended Overall/
+    -- location figures.
     main_lines AS (
       SELECT fol.check_guid, fol.location_code, fol.selection_guid, (${CHO}) AS channel
       FROM public.fact_order_lines fol
@@ -3495,6 +3518,7 @@ export async function getAttachmentData(dr: DateRange): Promise<AttachmentData> 
       WHERE NOT fol.is_voided AND NOT fol.is_deferred
         AND fol.menu_group IN (${ATTACH_MAIN_LIST})
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+        AND (${CHO}) IN ('IN_HOUSE', 'APP', 'TPD')
     ),
     main_checks AS (
       SELECT DISTINCT ON (check_guid) check_guid, location_code, channel
@@ -3624,6 +3648,7 @@ export async function getAttachmentTrend(dr: DateRange): Promise<AttachmentTrend
   const db = pool();
   const { rows } = await db.query(`
     WITH
+    -- Scoped to IN_HOUSE/APP/TPD only -- see getAttachmentData's main_lines for why.
     main_lines AS (
       SELECT fol.check_guid, fol.location_code, fol.business_date, fol.selection_guid, (${CHO}) AS channel
       FROM public.fact_order_lines fol
@@ -3631,6 +3656,7 @@ export async function getAttachmentTrend(dr: DateRange): Promise<AttachmentTrend
       WHERE NOT fol.is_voided AND NOT fol.is_deferred
         AND fol.menu_group IN (${ATTACH_MAIN_LIST})
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+        AND (${CHO}) IN ('IN_HOUSE', 'APP', 'TPD')
     ),
     main_checks AS (
       SELECT DISTINCT ON (check_guid) check_guid, location_code, channel, business_date

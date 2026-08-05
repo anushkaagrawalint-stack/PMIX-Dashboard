@@ -449,7 +449,12 @@ function aggregateSections(
     };
   }).sort((a, b) => a.rank - b.rank);
 
-  const merged = mergeSections(sections);
+  // Same half-and-half backfill as the single-item view (ItemCard) -- "1/2 and
+  // 1/2 Base/Mains" are Non-Recipe placeholder picks with $0 cost on every
+  // item, so summing them across the selection above still gives $0 unless
+  // this runs on the pooled sections to price them off the pooled "1/2
+  // Base"/"1/2 Main" average, same as it does for a single item.
+  const merged = mergeSections(applyHalfHalf(sections));
   return modTypeFilter.size === 0
     ? merged
     : merged.filter(s => modTypeFilter.has(s.displayName));

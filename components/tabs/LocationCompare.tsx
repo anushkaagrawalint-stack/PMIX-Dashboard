@@ -198,15 +198,20 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
     return m;
   }, [effectiveLocationItems]);
 
-  const barData = useMemo(() =>
-    activeMeta.map(l => ({
-      name:  l.display_name,
-      value: metric === 'qty' || metric === 'mix_pct'
-        ? (locStats[l.location_code]?.qty ?? 0)
-        : (locStats[l.location_code]?.revenue ?? 0),
-      color: l.color,
-    })),
-  [activeMeta, locStats, metric]);
+  // mix_pct gets its own value (this location's % share of total qty across the
+  // selected locations) — previously reused the raw qty value, so the chart looked
+  // identical to the Qty Sold metric with no visible change on switching to it.
+  const barData = useMemo(() => {
+    const totalQty = activeMeta.reduce((s, l) => s + (locStats[l.location_code]?.qty ?? 0), 0);
+    return activeMeta.map(l => {
+      const qty = locStats[l.location_code]?.qty ?? 0;
+      const value =
+        metric === 'mix_pct' ? (totalQty > 0 ? (qty / totalQty) * 100 : 0) :
+        metric === 'qty'     ? qty :
+        (locStats[l.location_code]?.revenue ?? 0);
+      return { name: l.display_name, value, color: l.color };
+    });
+  }, [activeMeta, locStats, metric]);
 
   const topByLocation = useMemo(() => {
     const map: Record<string, Array<{ name: string; rev: number; qty: number; revPct: number; qtyPct: number }>> = {};
@@ -342,12 +347,15 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
             : (locStats[l.location_code]?.revenue ?? 0)), 0);
           const primary    = useQty ? qty : rev;
           const share      = totalGroup > 0 ? (primary / totalGroup) * 100 : 0;
+          // mix_pct gets its own headline (this location's share of qty across the
+          // selected locations) — previously fell into the useQty branch and showed
+          // the exact same number as the Qty Sold metric, looking like it never changed.
           return (
             <div key={loc.location_code} className="kc" style={{ borderLeftColor: loc.color, borderLeftWidth: 3, borderLeftStyle: 'solid' }}>
               <div className="kl" style={{ color: loc.color }}>{loc.display_name}</div>
-              <div className="kv">{useQty ? qty.toLocaleString() : fmt$(rev)}</div>
+              <div className="kv">{metric === 'mix_pct' ? `${share.toFixed(1)}%` : useQty ? qty.toLocaleString() : fmt$(rev)}</div>
               <div className="ks">{useQty ? 'items sold' : `${qty.toLocaleString()} items sold`}</div>
-              <div className="ks">{share.toFixed(1)}% of category {useQty ? 'qty' : 'revenue'}</div>
+              {metric !== 'mix_pct' && <div className="ks">{share.toFixed(1)}% of category {useQty ? 'qty' : 'revenue'}</div>}
               {mimQty > 0 && (
                 <div className="ks">+{mimQty.toLocaleString()} from Make It a Meal</div>
               )}
@@ -373,11 +381,11 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
               <CartesianGrid stroke="#f3f4f6" vertical={false} />
               <XAxis dataKey="name" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
               <YAxis
-                tickFormatter={v => metric === 'revenue' ? `$${Math.round(v).toLocaleString('en-US')}` : v.toLocaleString()}
+                tickFormatter={v => metric === 'revenue' ? `$${Math.round(v).toLocaleString('en-US')}` : metric === 'mix_pct' ? `${v.toFixed(0)}%` : v.toLocaleString()}
                 tick={{ fontSize: 9 }} tickLine={false} axisLine={false} width={40}
               />
               <Tooltip
-                formatter={(v) => [metric === 'revenue' ? fmt$(Number(v)) : Number(v).toLocaleString(), METRIC_LABELS[metric]]}
+                formatter={(v) => [metric === 'revenue' ? fmt$(Number(v)) : metric === 'mix_pct' ? `${Number(v).toFixed(1)}%` : Number(v).toLocaleString(), METRIC_LABELS[metric]]}
                 contentStyle={{ fontSize: 11, borderRadius: 8 }}
               />
               <Bar dataKey="value" radius={[6, 6, 0, 0]}>
@@ -395,7 +403,7 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
               onClick={() => setCatShowAmt(a => !a)}
               style={{ minWidth: 0, padding: '3px 10px', fontSize: 11 }}
             >
-              {catShowAmt ? '% Mix' : '$ Amount'}
+              {catShowAmt ? '% Mix' : metric === 'revenue' ? '$ Amount' : 'Qty'}
             </button>
           </div>
           <div className="tscroll">

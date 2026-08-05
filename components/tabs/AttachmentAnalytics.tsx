@@ -79,16 +79,22 @@ function csvDownload(filename: string, headers: string[], rows: (string | number
 
 // Same visual pattern as Overview.tsx's DeltaBadge (kept as a local copy since
 // that one isn't exported) — up=green when positiveGood, "vs {label}" suffix.
-function DeltaBadge({ curr, prev, vsLabel }: { curr: number; prev: number | undefined; vsLabel: string | null }) {
+// isRate: curr/prev are themselves percentages (attachment rates) — owner
+// wants a straight point difference (curr% - prev%) there, not a relative
+// change (which swings wildly on small-base metrics like Sweet %). Counts
+// (Main Checks, category check counts, etc.) keep the relative-% behavior —
+// only rate-on-rate deltas switch to point difference.
+function DeltaBadge({ curr, prev, vsLabel, isRate = false }: { curr: number; prev: number | undefined; vsLabel: string | null; isRate?: boolean }) {
   if (!prev) return null;
   const diff = curr - prev;
   const pct  = (diff / Math.abs(prev)) * 100;
-  const up   = pct >= 0;
+  const up   = diff >= 0;
   const color = up ? '#16a34a' : '#dc2626';
   const vs    = vsLabel ? `vs ${vsLabel}` : 'vs prev';
+  const shown = isRate ? Math.abs(diff).toFixed(1) : Math.abs(pct).toFixed(1);
   return (
     <div style={{ fontSize: 10, fontWeight: 600, marginTop: 1, color }}>
-      {up ? '↑' : '↓'} {Math.abs(pct).toFixed(1)}% {vs}
+      {up ? '↑' : '↓'} {shown}% {vs}
     </div>
   );
 }
@@ -232,16 +238,25 @@ export default function AttachmentAnalytics({
   // need for three separate tables.
   interface BreakdownRow {
     code: string; name: string; mainChecks: number; totalAttach: number;
-    drinkRate: number; sideRate: number; sweetRate: number; rate: number; prevRate?: number;
+    drinkRate: number; sideRate: number; sweetRate: number; rate: number;
+    prevDrinkRate?: number; prevSideRate?: number; prevSweetRate?: number; prevRate?: number;
+  }
+  // Shared with the "Overall (selected...)" summary row below, so both use the
+  // exact same rate calculation for a given aggregate() result.
+  function catRateOf(agg: ReturnType<typeof aggregate>, cat: string) {
+    return agg.mainChecks ? ((agg.catMap.get(cat) ?? 0) / agg.mainChecks) * 100 : 0;
   }
   function buildBreakdownRow(code: string, name: string, filter: (l: string, ch: string) => boolean): BreakdownRow {
     const agg = aggregate(data, filter);
     const prevAgg = prevData ? aggregate(prevData, filter) : null;
-    const catRate = (cat: string) => agg.mainChecks ? ((agg.catMap.get(cat) ?? 0) / agg.mainChecks) * 100 : 0;
     return {
       code, name, mainChecks: agg.mainChecks, totalAttach: agg.totalAttach,
-      drinkRate: catRate('Drink'), sideRate: catRate('Side'), sweetRate: catRate('Sweet'),
-      rate: agg.overallRate, prevRate: prevAgg?.overallRate,
+      drinkRate: catRateOf(agg, 'Drink'), sideRate: catRateOf(agg, 'Side'), sweetRate: catRateOf(agg, 'Sweet'),
+      rate: agg.overallRate,
+      prevDrinkRate: prevAgg ? catRateOf(prevAgg, 'Drink') : undefined,
+      prevSideRate:  prevAgg ? catRateOf(prevAgg, 'Side')  : undefined,
+      prevSweetRate: prevAgg ? catRateOf(prevAgg, 'Sweet') : undefined,
+      prevRate: prevAgg?.overallRate,
     };
   }
   const breakdownRows = useMemo(() => {
@@ -536,13 +551,13 @@ export default function AttachmentAnalytics({
           <div className="kl">Highest Attachment</div>
           <div className="kv" style={{ fontSize: 16 }}>{highest ? highest.name : '—'}</div>
           <div className="ks">{highest ? `${fmtPct(highest.rate)} attachment rate` : 'No data'}</div>
-          {highest && <DeltaBadge curr={highest.rate} prev={prevHighestRate} vsLabel={prevLabel} />}
+          {highest && <DeltaBadge curr={highest.rate} prev={prevHighestRate} vsLabel={prevLabel} isRate />}
         </div>
         <div className="kc p">
           <div className="kl">Best Performing Location</div>
           <div className="kv" style={{ fontSize: 16 }}>{bestLocation ? locName(bestLocation.code) : '—'}</div>
           <div className="ks">{bestLocation ? `${fmtPct(bestLocation.rate)} attachment rate` : 'No data'}</div>
-          {bestLocation && <DeltaBadge curr={bestLocation.rate} prev={bestLocation.prevRate} vsLabel={prevLabel} />}
+          {bestLocation && <DeltaBadge curr={bestLocation.rate} prev={bestLocation.prevRate} vsLabel={prevLabel} isRate />}
         </div>
         <div className="kc g">
           <div className="kl">Distinct Names</div>
@@ -666,12 +681,21 @@ export default function AttachmentAnalytics({
                 <tr key={r.code}>
                   <td style={{ fontWeight: 600 }}>{r.name}</td>
                   <td>{fmtInt(r.mainChecks)}</td>
-                  <td>{fmtPct(r.drinkRate)}</td>
-                  <td>{fmtPct(r.sideRate)}</td>
-                  <td>{fmtPct(r.sweetRate)}</td>
+                  <td>
+                    {fmtPct(r.drinkRate)}
+                    <DeltaBadge curr={r.drinkRate} prev={r.prevDrinkRate} vsLabel={prevLabel} isRate />
+                  </td>
+                  <td>
+                    {fmtPct(r.sideRate)}
+                    <DeltaBadge curr={r.sideRate} prev={r.prevSideRate} vsLabel={prevLabel} isRate />
+                  </td>
+                  <td>
+                    {fmtPct(r.sweetRate)}
+                    <DeltaBadge curr={r.sweetRate} prev={r.prevSweetRate} vsLabel={prevLabel} isRate />
+                  </td>
                   <td style={{ fontWeight: 700 }}>
                     {fmtPct(r.rate)}
-                    <DeltaBadge curr={r.rate} prev={r.prevRate} vsLabel={prevLabel} />
+                    <DeltaBadge curr={r.rate} prev={r.prevRate} vsLabel={prevLabel} isRate />
                   </td>
                 </tr>
               ))}
@@ -682,12 +706,21 @@ export default function AttachmentAnalytics({
                 <tr style={{ borderTop: '2px solid var(--border)' }}>
                   <td style={{ fontWeight: 700 }}>Overall (selected {breakdownView === 'channel' ? 'channels' : 'locations'})</td>
                   <td style={{ fontWeight: 700 }}>{fmtInt(totalMainChecks)}</td>
-                  <td style={{ fontWeight: 700 }}>{fmtPct(totalMainChecks ? ((current.catMap.get('Drink') ?? 0) / totalMainChecks) * 100 : 0)}</td>
-                  <td style={{ fontWeight: 700 }}>{fmtPct(totalMainChecks ? ((current.catMap.get('Side') ?? 0) / totalMainChecks) * 100 : 0)}</td>
-                  <td style={{ fontWeight: 700 }}>{fmtPct(totalMainChecks ? ((current.catMap.get('Sweet') ?? 0) / totalMainChecks) * 100 : 0)}</td>
+                  <td style={{ fontWeight: 700 }}>
+                    {fmtPct(catRateOf(current, 'Drink'))}
+                    <DeltaBadge curr={catRateOf(current, 'Drink')} prev={prev ? catRateOf(prev, 'Drink') : undefined} vsLabel={prevLabel} isRate />
+                  </td>
+                  <td style={{ fontWeight: 700 }}>
+                    {fmtPct(catRateOf(current, 'Side'))}
+                    <DeltaBadge curr={catRateOf(current, 'Side')} prev={prev ? catRateOf(prev, 'Side') : undefined} vsLabel={prevLabel} isRate />
+                  </td>
+                  <td style={{ fontWeight: 700 }}>
+                    {fmtPct(catRateOf(current, 'Sweet'))}
+                    <DeltaBadge curr={catRateOf(current, 'Sweet')} prev={prev ? catRateOf(prev, 'Sweet') : undefined} vsLabel={prevLabel} isRate />
+                  </td>
                   <td style={{ fontWeight: 700 }}>
                     {fmtPct(current.overallRate)}
-                    <DeltaBadge curr={current.overallRate} prev={prev?.overallRate} vsLabel={prevLabel} />
+                    <DeltaBadge curr={current.overallRate} prev={prev?.overallRate} vsLabel={prevLabel} isRate />
                   </td>
                 </tr>
               )}
