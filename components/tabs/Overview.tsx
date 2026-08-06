@@ -21,22 +21,27 @@ interface Props {
 }
 
 function DeltaBadge({
-  curr, prev, positiveGood = true, neutral = false, showCount = false, vsLabel,
-}: { curr: number; prev: number; positiveGood?: boolean; neutral?: boolean; showCount?: boolean; vsLabel?: string | null }) {
+  curr, prev, positiveGood = true, neutral = false, showCount = false, vsLabel, isRate = false,
+}: { curr: number; prev: number; positiveGood?: boolean; neutral?: boolean; showCount?: boolean; vsLabel?: string | null; isRate?: boolean }) {
   if (!prev) return null;
   const diff = curr - prev;
   const pct  = (diff / Math.abs(prev)) * 100;
-  const up   = pct >= 0;
+  // Rate-on-rate comparisons (e.g. Avg Margin, a % already) show the point
+  // difference (curr - prev) directly, not a relative "% change of a %" --
+  // same convention as Attachment Rate's DeltaBadge. Count/volume badges
+  // keep the relative % change.
+  const up   = isRate ? diff >= 0 : pct >= 0;
   const good = positiveGood ? up : !up;
   const color = neutral ? 'var(--muted)' : good ? '#16a34a' : '#dc2626';
   const vs    = vsLabel ? `vs ${vsLabel}` : 'vs prev';
+  const shown = isRate
+    ? `${Math.abs(diff * 100).toFixed(1)}pp`
+    : showCount
+      ? `${Math.abs(Math.round(diff)).toLocaleString()} items`
+      : `${Math.abs(pct).toFixed(1)}%`;
   return (
     <div style={{ fontSize: 10, fontWeight: 600, marginTop: 1, color }}>
-      {up ? '↑' : '↓'}{' '}
-      {showCount
-        ? `${Math.abs(Math.round(diff)).toLocaleString()} items`
-        : `${Math.abs(pct).toFixed(1)}%`
-      }{' '}{vs}
+      {up ? '↑' : '↓'}{' '}{shown}{' '}{vs}
     </div>
   );
 }
@@ -427,9 +432,9 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
         <div className="kc b">
           <div className="kl">Avg Margin</div>
           <div className="kv">{(kpiAvgMargin * 100).toFixed(1)}%</div>
-          {showDelta && prevKpi!.avgMargin !== null
-            ? <DeltaBadge curr={kpiAvgMargin} prev={prevKpi!.avgMargin} vsLabel={prevLabel} />
-            : <div className="ks">{isFiltered ? 'filtered' : 'blended · all items'}</div>}
+          <div className="ks">{isFiltered ? 'filtered' : 'In-House · RASA Digital · 3PD only'}</div>
+          {showDelta && prevKpi!.avgMargin !== null &&
+            <DeltaBadge curr={kpiAvgMargin} prev={prevKpi!.avgMargin} vsLabel={prevLabel} isRate />}
         </div>
         <div className="kc p">
           <div className="kl">Unique Items</div>
