@@ -37,6 +37,15 @@ function effectiveDisplayName(s: string): string {
   return CANONICAL[stripped.toLowerCase()] ?? stripped;
 }
 
+// Items whose ENTIRE modifier scope is a single "which flavor?" choice -- no
+// Base/Main/Veggie/Sauce section ever applies, "Make It Meal" (the bucket a
+// bowl's own drink/side/sweet add-on picks fall into) is a misleading label
+// here since the item itself IS the drink, not an add-on to one. Rename display
+// only -- section_base/rank/cost are untouched, this is purely cosmetic.
+const FLAVOR_ONLY_ITEMS = new Set([
+  'Homemade Juice', 'Handcrafted Juice for a Group - 1/2 Gallon', 'Maine Root Fountain Soda',
+]);
+
 interface SectionData {
   rawKeys: string[]; displayName: string; rank: number;
   mods: PinkSheetDetailRow[]; sectionTotal: number;
@@ -44,7 +53,8 @@ interface SectionData {
 function buildSections(dets: PinkSheetDetailRow[]): SectionData[] {
   const by: Record<string, { rawKeys: Set<string>; rank: number; mods: PinkSheetDetailRow[] }> = {};
   for (const d of dets) {
-    const dn = effectiveDisplayName(d.section);
+    let dn = effectiveDisplayName(d.section);
+    if (dn === 'Make It Meal' && FLAVOR_ONLY_ITEMS.has(d.parent_item)) dn = 'Flavor';
     if (!by[dn]) by[dn] = { rawKeys: new Set(), rank: sectionRank(d.section), mods: [] };
     by[dn].rawKeys.add(d.section);
     by[dn].mods.push(d);
@@ -98,7 +108,7 @@ type QtyMode = '%' | '#';
 
 const RECOGNIZED_SECTIONS = new Set([
   'Base','1/2 Base','Main','1/2 Main','Extra Main','Extra Veggie',
-  'Sauce','Veggie','Topping','Chutney + Dressing','Make It Meal',
+  'Sauce','Veggie','Topping','Chutney + Dressing','Make It Meal','Flavor',
 ]);
 
 function mergeSections(sections: SectionData[]): SectionData[] {
@@ -141,7 +151,7 @@ function ChCol({ label, qty, accent, bg, color, sections, qtyMode }: {
 }
 
 const GROUP_ORDER   = ['BYO Bowls','Bowls','Classic Indian Plates','Plates','Burritos','Specialty Items','Kids','Drinks','Sides','Retail'];
-const ALL_MOD_TYPES = ['Base','1/2 Base','Main','1/2 Main','Extra Main','Extra Veggie','Sauce','Veggie','Topping','Chutney + Dressing','Make It Meal'];
+const ALL_MOD_TYPES = ['Base','1/2 Base','Main','1/2 Main','Extra Main','Extra Veggie','Sauce','Veggie','Topping','Chutney + Dressing','Make It Meal','Flavor'];
 
 // getMEPinkSheets returns menu_group straight from Toast (raw, all-caps: 'BUILD YOUR
 // OWN BOWL', 'BOWLS', 'CLASSIC INDIAN PLATES'...) — map to the pretty names GROUP_THEME
@@ -421,12 +431,18 @@ function aggregateSections(
   allDetails: PinkSheetDetailRow[],
   modTypeFilter: Set<string>,
 ): SectionData[] {
-  // Sum qty + total_cost per (displayName, modifier_name) across all selected items
+  // Sum qty + total_cost per (displayName, modifier_name) across all selected items.
+  // Only rename Make It Meal -> Flavor when EVERY selected item is flavor-only --
+  // a mixed selection (a bowl + Homemade Juice) genuinely pools a bowl's real
+  // Make It Meal add-on picks together with juice flavor picks, so "Make It
+  // Meal" stays the honest label there.
+  const allFlavorOnly = names.every(n => FLAVOR_ONLY_ITEMS.has(n));
   const bySecMod: Record<string, Record<string, { qty: number; total_cost: number }>> = {};
   allDetails
     .filter(d => names.includes(d.parent_item) && d.channel === ch)
     .forEach(d => {
-      const dn = effectiveDisplayName(d.section);
+      let dn = effectiveDisplayName(d.section);
+      if (dn === 'Make It Meal' && allFlavorOnly) dn = 'Flavor';
       if (!bySecMod[dn]) bySecMod[dn] = {};
       if (!bySecMod[dn][d.modifier_name]) bySecMod[dn][d.modifier_name] = { qty: 0, total_cost: 0 };
       bySecMod[dn][d.modifier_name].qty        += d.qty;

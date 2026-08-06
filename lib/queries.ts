@@ -1088,7 +1088,8 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
                        )
                        OR cs.canonical_name IN (
                          'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-                         'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
+                         'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon',
+                         'Maine Root Fountain Soda'
                        )
                      )
                      THEN COALESCE(cmc_ih.total_ih_mod_cost, 0) / NULLIF(iq.total_qty, 0)
@@ -1105,7 +1106,8 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
                        )
                        OR cs.canonical_name IN (
                          'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-                         'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
+                         'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon',
+                         'Maine Root Fountain Soda'
                        )
                      )
                      THEN COALESCE(cmc.total_mod_cost, 0) / NULLIF(oq.total_qty, 0)
@@ -1411,7 +1413,8 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
           )
           OR fol.canonical_name IN (
             'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
+            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon',
+            'Maine Root Fountain Soda'
           )
         )
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
@@ -1435,7 +1438,8 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
           )
           OR fol.canonical_name IN (
             'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
+            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon',
+            'Maine Root Fountain Soda'
           )
         )
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
@@ -1471,7 +1475,8 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
           )
           OR fol.canonical_name IN (
             'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
+            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon',
+            'Maine Root Fountain Soda'
           )
         )
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
@@ -1497,7 +1502,8 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
           )
           OR fol.canonical_name IN (
             'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
-            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon'
+            'Homemade Juice','Handcrafted Juice for a Group - 1/2 Gallon',
+            'Maine Root Fountain Soda'
           )
         )
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE

@@ -63,6 +63,15 @@ export function effectiveDisplayName(s: string): string {
   return CANONICAL[stripped.toLowerCase()] ?? stripped;
 }
 
+// Items whose ENTIRE modifier scope is a single "which flavor?" choice -- no
+// Base/Main/Veggie/Sauce section ever applies, "Make It Meal" (the bucket a
+// bowl's own drink/side/sweet add-on picks fall into) is a misleading label
+// here since the item itself IS the drink, not an add-on to one. Rename display
+// only -- section_base/rank/cost are untouched, this is purely cosmetic.
+const FLAVOR_ONLY_ITEMS = new Set([
+  'Homemade Juice', 'Handcrafted Juice for a Group - 1/2 Gallon', 'Maine Root Fountain Soda',
+]);
+
 export interface SectionData {
   rawKeys:      string[];
   displayName:  string;
@@ -75,7 +84,8 @@ export function buildSections(dets: PinkSheetDetailRow[]): SectionData[] {
   const byDisplay: Record<string, { rawKeys: Set<string>; rank: number; mods: PinkSheetDetailRow[] }> = {};
 
   for (const d of dets) {
-    const dn   = effectiveDisplayName(d.section);
+    let dn = effectiveDisplayName(d.section);
+    if (dn === 'Make It Meal' && FLAVOR_ONLY_ITEMS.has(d.parent_item)) dn = 'Flavor';
     const rank = sectionRank(d.section);
     if (!byDisplay[dn]) byDisplay[dn] = { rawKeys: new Set(), rank, mods: [] };
     byDisplay[dn].rawKeys.add(d.section);
