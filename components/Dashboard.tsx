@@ -2,7 +2,7 @@
 import { useState, useMemo } from 'react';
 import Image from 'next/image';
 import type { DashboardData, ItemRow, MERow, ChannelRow, ChannelItemRow, ChannelCategoryRow } from '@/lib/types';
-import { CHANNELS, CHANNEL_LABEL, normalizeCategory } from '@/lib/constants';
+import { CHANNELS, CHANNEL_LABEL, normalizeCategory, isSupplyOrFeeItem } from '@/lib/constants';
 import { TAB_META } from '@/lib/tabsMeta';
 import type { Role } from '@/lib/auth';
 import DatePicker from './DatePicker';
@@ -109,6 +109,24 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
     && selectedChannels.length === realMenuChannelCodes.length
     && realMenuChannelCodes.every(c => selectedChannels.includes(c));
 
+  // Supply/fee lines (Bag, Catering Utensils, Delivery Fee, Guarantees,
+  // Surcharges, Chafing Kits) are visible by default -- only stripped out when
+  // "Real Menu Items" is checked (owner request 2026-08-09). Every tab that
+  // used to read data.items/data.channelItems/data.locationItems directly now
+  // reads these instead, so the toggle applies consistently everywhere at once.
+  const realItems = useMemo(
+    () => isRealMenuSelected ? data.items.filter(i => !isSupplyOrFeeItem(i.canonical_name)) : data.items,
+    [isRealMenuSelected, data.items],
+  );
+  const realChannelItems = useMemo(
+    () => isRealMenuSelected ? data.channelItems.filter(i => !isSupplyOrFeeItem(i.canonical_name)) : data.channelItems,
+    [isRealMenuSelected, data.channelItems],
+  );
+  const realLocationItems = useMemo(
+    () => isRealMenuSelected ? data.locationItems.filter(i => !isSupplyOrFeeItem(i.canonical_name)) : data.locationItems,
+    [isRealMenuSelected, data.locationItems],
+  );
+
   const locLabel = selectedLocations.length === 0
     ? 'All Locations'
     : selectedLocations.length === 1
@@ -134,7 +152,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
   const categoryOptions = useMemo(() => {
     const cats = new Set<string>();
     const chFilter = new Set(selectedChannels);
-    data.items.forEach(i => {
+    realItems.forEach(i => {
       if (chFilter.size > 0 && !chFilter.has(i.channel)) return;
       const cat = VENDOR_CHANNELS.has(i.channel)
         ? 'Other'
@@ -142,28 +160,28 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       cats.add(cat);
     });
     return [...cats].sort();
-  }, [data.items, selectedChannels]);
+  }, [realItems, selectedChannels]);
 
   // Item meta map (canonical_name → item metadata)
   const itemMetaMap = useMemo(() => {
     const m = new Map<string, ItemRow>();
-    data.items.forEach(i => { if (!m.has(i.canonical_name)) m.set(i.canonical_name, i); });
+    realItems.forEach(i => { if (!m.has(i.canonical_name)) m.set(i.canonical_name, i); });
     return m;
-  }, [data.items]);
+  }, [realItems]);
 
-  // Location base items: per-channel rows from data.items, scaled to selected location(s).
+  // Location base items: per-channel rows from realItems, scaled to selected location(s).
   // Uses exact (canonical_name, channel) location totals from locationItems.
   // Proportional split is only needed within same (canonical_name, channel) across different
   // menu_groups — which is uncommon and much more accurate than channel-level approximation.
   const locationBaseItems = useMemo((): ItemRow[] => {
-    if (selectedLocations.length === 0) return data.items;
+    if (selectedLocations.length === 0) return realItems;
 
     // Exact location totals per (canonical_name, channel) — denominator for scaling.
     // gross_sales scaled here too (owner report 2026-07-15: "location dropdown not
     // updating the gross item amount column") — it used to pass through unscaled
     // from the global item, so it never moved when a location filter was applied.
     const locChannelAgg = new Map<string, { qty: number; revenue: number; gross_sales: number; refunds: number }>();
-    data.locationItems
+    realLocationItems
       .filter(li => selectedLocations.includes(li.location_code))
       .forEach(li => {
         const key = `${li.canonical_name}||${li.channel}`;
@@ -177,7 +195,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
 
     // Global totals per (canonical_name, channel) from channelItems (already aggregated by channel)
     const totChannelAgg = new Map<string, { qty: number; revenue: number; gross_sales: number }>();
-    data.channelItems.forEach(ci => {
+    realChannelItems.forEach(ci => {
       const key = `${ci.canonical_name}||${ci.channel}`;
       totChannelAgg.set(key, { qty: ci.qty, revenue: ci.revenue, gross_sales: ci.gross_sales });
     });
@@ -185,7 +203,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
     const totalLocRev   = [...locChannelAgg.values()].reduce((s, v) => s + v.revenue, 0);
     const totalLocQty   = [...locChannelAgg.values()].reduce((s, v) => s + v.qty,     0);
 
-    return data.items.flatMap(i => {
+    return realItems.flatMap(i => {
       const key = `${i.canonical_name}||${i.channel}`;
       const loc = locChannelAgg.get(key);
       if (!loc) return [];
@@ -206,12 +224,12 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
         net_after_refunds: Math.round((revenue - loc.refunds) * 100) / 100,
       }];
     }).sort((a, b) => b.revenue - a.revenue);
-  }, [selectedLocations, data.locationItems, data.channelItems, data.items]);
+  }, [selectedLocations, realLocationItems, realChannelItems, realItems]);
 
   // Summary KPIs adjusted for selected location(s)
   const locationAdjustedSummary = useMemo(() => {
     if (selectedLocations.length === 0) return data.summary;
-    const locItems = data.locationItems.filter(li => selectedLocations.includes(li.location_code));
+    const locItems = realLocationItems.filter(li => selectedLocations.includes(li.location_code));
     const totalRev = locItems.reduce((s, li) => s + li.revenue, 0);
     const totalQty = locItems.reduce((s, li) => s + li.qty,     0);
     const totalRefunds = locItems.reduce((s, li) => s + li.refunds, 0);
@@ -236,7 +254,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       refunds:          totalRefunds,
       net_revenue:      Math.round((totalRev - totalRefunds) * 100) / 100,
     };
-  }, [selectedLocations, data.locationItems, data.summary]);
+  }, [selectedLocations, realLocationItems, data.summary]);
 
   // Same location adjustment, for the previous-period comparison summary — without
   // this, Overview's "vs prev X" deltas compared a location-adjusted current period
@@ -275,7 +293,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
   const locationAdjustedChannels = useMemo((): ChannelRow[] => {
     if (selectedLocations.length === 0) return data.channels;
     const agg = new Map<string, { qty: number; revenue: number }>();
-    data.locationItems
+    realLocationItems
       .filter(li => selectedLocations.includes(li.location_code))
       .forEach(li => {
         const e = agg.get(li.channel) ?? { qty: 0, revenue: 0 };
@@ -288,11 +306,11 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       channel, qty, revenue,
       pct: totalRev > 0 ? Math.round(revenue / totalRev * 1000) / 10 : 0,
     })).sort((a, b) => b.revenue - a.revenue);
-  }, [selectedLocations, data.locationItems, data.channels]);
+  }, [selectedLocations, realLocationItems, data.channels]);
 
   // Location-adjusted per-channel item rows (locationBaseItems already has location-scaled per-channel revenue)
   const locationAdjustedChannelItems = useMemo((): ChannelItemRow[] => {
-    if (selectedLocations.length === 0) return data.channelItems;
+    if (selectedLocations.length === 0) return realChannelItems;
     return locationBaseItems.map(i => ({
       canonical_name: i.canonical_name,
       channel:        i.channel,
@@ -302,7 +320,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       refunds:            i.refunds,
       net_after_refunds:  i.net_after_refunds,
     }));
-  }, [selectedLocations, locationBaseItems, data.channelItems]);
+  }, [selectedLocations, locationBaseItems, realChannelItems]);
 
   // Location-adjusted channel × category revenue (aggregated from locationBaseItems)
   const locationAdjustedChannelCategories = useMemo((): ChannelCategoryRow[] => {
@@ -469,15 +487,15 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
   // *also* sold via 3PD elsewhere — LocationCompare then summed every channel's revenue
   // for it, not just the selected one).
   const filteredLocationItems = useMemo(() => {
-    if (selectedChannels.length === 0 && categoryFilter === 'all') return data.locationItems;
-    return data.locationItems.filter(li => {
+    if (selectedChannels.length === 0 && categoryFilter === 'all') return realLocationItems;
+    return realLocationItems.filter(li => {
       if (selectedChannels.length > 0 && !selectedChannels.includes(li.channel)) return false;
       if (categoryFilter !== 'all') {
         return normCat(itemMetaMap.get(li.canonical_name)?.category) === categoryFilter;
       }
       return true;
     });
-  }, [selectedChannels, categoryFilter, data.locationItems, itemMetaMap]);
+  }, [selectedChannels, categoryFilter, realLocationItems, itemMetaMap]);
 
   // Same channel+category scoping as filteredLocationItems (NOT selectedLocations —
   // LocationCompare compares across every location regardless of the global location
@@ -577,8 +595,8 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
 
   // Per-item qty scale ratios (IH bucket vs combined online bucket = APP+TPD+TPD_MARKUP)
   // for the selected location(s), built from the same exact per-location totals
-  // (data.locationItems) used everywhere else, against the all-location total
-  // (data.channelItems). Pink Sheet unit costs (avg_cost_ih/online/3pd) are genuinely
+  // (realLocationItems) used everywhere else, against the all-location total
+  // (realChannelItems). Pink Sheet unit costs (avg_cost_ih/online/3pd) are genuinely
   // location-invariant — r365 costs carry no location dimension at all — so only qty
   // (and $ totals derived from qty × rate) can honestly be rescaled to a location's share.
   const pinkSheetLocationRatios = useMemo(() => {
@@ -587,7 +605,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
 
     const isOnlineCh = (c: string) => c === 'APP' || c === 'TPD' || c === 'TPD_MARKUP';
     const locAgg = new Map<string, { ih: number; online: number }>();
-    data.locationItems
+    realLocationItems
       .filter(li => selectedLocations.includes(li.location_code))
       .forEach(li => {
         const e = locAgg.get(li.canonical_name) ?? { ih: 0, online: 0 };
@@ -597,7 +615,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       });
 
     const totAgg = new Map<string, { ih: number; online: number }>();
-    data.channelItems.forEach(ci => {
+    realChannelItems.forEach(ci => {
       const e = totAgg.get(ci.canonical_name) ?? { ih: 0, online: 0 };
       if (ci.channel === 'IN_HOUSE') e.ih += ci.qty;
       else if (isOnlineCh(ci.channel)) e.online += ci.qty;
@@ -613,7 +631,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       });
     });
     return m;
-  }, [selectedLocations, data.locationItems, data.channelItems]);
+  }, [selectedLocations, realLocationItems, realChannelItems]);
 
   // Pink Sheets, genuinely rescaled to the selected location(s): ih_qty/online_qty (and
   // the modifier cost totals, scaled by the same ratio so avg_cost stays mathematically
@@ -886,7 +904,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
       {tab === 'entreemix'  && <EntreeMix        pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} meItems={data.meItems} />}
       {tab === 'loccompare' && <LocationCompare  data={filteredData} makeItMealModifiers={channelCategoryFilteredMakeItMealModifiers} />}
       {tab === 'chanmenu'   && <ChannelMenu      data={filteredData} makeItMealModifiers={locationFilteredMakeItMealModifiers} />}
-      {tab === 'byo'        && visibleTabs.includes('byo')        && <BYOBreakdown modifiers={data.modifiers} items={data.items} pinkSheets={data.pinkSheets} meItems={data.meItems} selectedLocations={[]} />}
+      {tab === 'byo'        && visibleTabs.includes('byo')        && <BYOBreakdown modifiers={data.modifiers} items={realItems} pinkSheets={data.pinkSheets} meItems={data.meItems} selectedLocations={[]} />}
       {tab === 'payment'    && <PaymentSource    payments={data.payments} paymentsByLocation={data.paymentsByLocation} paymentSourcesByLocation={data.paymentSourcesByLocation} selectedLocations={selectedLocations} dateStart={dr.start} dateEnd={dr.end} isAdmin={isAdmin} />}
       {tab === 'meoverall'  && <MEOverall meItems={data.meItems} pinkSheets={data.pinkSheets} pinkSheetDetails={data.pinkSheetDetails} itemCosts={data.itemCosts} role={role} />}
       {tab === 'pinksheets' && visibleTabs.includes('pinksheets') && (

@@ -68,6 +68,21 @@ export const CHANNEL_COLOR: Record<string, string> = Object.fromEntries(
 export const normalizeCategory = (c: string | null | undefined): string =>
   c === 'Kids Meal' ? 'Entrees' : (c || 'Other');
 
+// Supply/fee lines that carry a real menu_name (so BASE_WHERE's Food/Drink
+// check alone wouldn't catch them) but aren't a real menu item -- Bag,
+// Catering Utensils, Delivery Fee, vendor Guarantees, Surcharges, Chafing Kits.
+// Visible by default; hidden only when "Real Menu Items" is checked (owner
+// request 2026-08-09 -- was unconditionally excluded everywhere until then).
+export const isSupplyOrFeeItem = (canonicalName: string): boolean => {
+  const n = canonicalName.toLowerCase();
+  return n === 'bag'
+    || n.includes('fee')
+    || n.includes('guarantee')
+    || n.includes('surcharge')
+    || n.includes('utensil')
+    || n.includes('chafing kit');
+};
+
 // Location colors (ordered alphabetically by location code: BALLPARK, MOSAIC, MVT, NL, ROCKVILLE)
 export const LOCATION_COLORS: Record<string, string> = {
   BALLPARK:  '#ef4444',

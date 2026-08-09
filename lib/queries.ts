@@ -245,12 +245,13 @@ const BYO_FIX_CTE = `byo_fix(raw, clean) AS (VALUES
 // Base WHERE for all main metric queries:
 //   - not voided, not deferred
 //   - either menu_name is a known menu OR (menu_name IS NULL AND sales_category IN ('Food','Drink'))
-//   - not a bag/utensil/delivery-fee/guarantee/surcharge line -- these carry a
-//     real known menu_name (CATERING/CATERING-3PD/OFFSITE/FOOD-IN HOUSE) so
-//     they'd otherwise pass the check above and get counted as a real menu
-//     item (owner request 2026-08-05). "Order notes: ..." and "Gift Card"
-//     don't need a rule here -- they already have menu_name IS NULL with no
-//     Food/Drink sales_category, so the OR branch above already excludes them.
+// Bag/utensil/delivery-fee/guarantee/surcharge/chafing-kit lines are NOT excluded
+// here (was, until 2026-08-09) -- owner wants them visible by default and only
+// hidden when "Real Menu Items" is checked, not unconditionally everywhere.
+// See isSupplyOrFeeItem (lib/constants.ts), applied client-side in Dashboard.tsx
+// gated on isRealMenuSelected. "Order notes: ..." and "Gift Card" don't need a
+// rule here -- they already have menu_name IS NULL with no Food/Drink
+// sales_category, so the OR branch above already excludes them.
 const BASE_WHERE = `
   NOT fol.is_voided
   AND NOT fol.is_deferred
@@ -263,12 +264,6 @@ const BASE_WHERE = `
     )
     OR (fol.menu_name IS NULL AND fol.sales_category IN ('Food','Drink'))
   )
-  AND fol.canonical_name <> 'Bag'
-  AND fol.canonical_name NOT ILIKE '%fee%'
-  AND fol.canonical_name NOT ILIKE '%guarantee%'
-  AND fol.canonical_name NOT ILIKE '%surcharge%'
-  AND fol.canonical_name NOT ILIKE '%utensil%'
-  AND fol.canonical_name NOT ILIKE '%chafing kit%'
 `;
 
 // ─── Date range ───────────────────────────────────────────────────────────────
