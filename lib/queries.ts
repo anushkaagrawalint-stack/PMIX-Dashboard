@@ -1936,10 +1936,13 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
     -- must NOT blend across CATERING/CATERING-3PD/OFFSITE/Open items (each is
     -- its own r365 menu value with its own costs; see getItemCosts for the same
     -- rule applied elsewhere). Missing -> 0, per owner instruction 2026-08-01.
-    -- Masala Chai Cookies is excluded here (owner confirmed
-    -- 2026-08-03) — its real cost is modifier picks only; r365 has a "Masala
-    -- Chai Cookies" recipe-cost entry that consolidates into this name via
-    -- byo_fix, but that recipe cost should NOT apply as this item's base cost.
+    -- Masala Chai Cookies previously excluded here (owner confirmed
+    -- 2026-08-03, on the assumption its real cost was modifier picks only).
+    -- Reversed 2026-08-17: pc_modifier_daily has no real priced modifiers for
+    -- this item under TPD — only customer special-instruction text notes
+    -- ("please label for donna" etc.), so total_mod_cost was always $0 and
+    -- this item never got a cost anywhere. Now sourced from base r365
+    -- cost like every other item.
     -- Harvest Chicken Bowl - Catering / - Club Feast are excluded too (owner
     -- confirmed 2026-08-04) — same ambiguity as the IH "Harvest Chicken Bowl -
     -- In House" case above: r365 stores Harvest Chicken Bowl's OWN recipe cost
@@ -1955,7 +1958,6 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'CATERING' AND avg_cost > 0
-          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
@@ -1969,7 +1971,6 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'CATERING - 3PD' AND avg_cost > 0
-          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
@@ -1983,7 +1984,6 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0
-          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
@@ -1997,7 +1997,6 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
         WHERE menu = 'Open items' AND avg_cost > 0
-          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
       ) t
@@ -3254,10 +3253,9 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
     -- fall back to fallback_base/mi_base (which pick an arbitrary menu's cost with no
     -- regard for which channel is actually being costed). Each gets its own bucket,
     -- period-aware (freshest <= selected period), sourced strictly from its own menu.
-    -- Masala Chai Cookies excluded (owner confirmed 2026-08-03) — same
-    -- reasoning as getCateringPinkSheets: its real cost is modifier picks only, the
-    -- "Masala Chai Cookies" r365 recipe-cost entry that consolidates into this name
-    -- via byo_fix should not apply as this item's base cost.
+    -- Masala Chai Cookies: see getCateringPinkSheets comment above — the
+    -- 2026-08-03 modifier-picks exclusion was reversed 2026-08-17 (no real
+    -- modifier cost data exists for this item), now sourced from base r365 cost.
     -- Harvest Chicken Bowl - Catering / - Club Feast excluded too (owner confirmed
     -- 2026-08-04) — r365 stores Harvest Chicken Bowl's own recipe cost with
     -- item_name_updated = 'BYO Greens + Grains Bowl' (same as the real Greens+Grains
@@ -3274,7 +3272,6 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'CATERING' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
-          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
@@ -3292,7 +3289,6 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'CATERING - 3PD' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
-          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
@@ -3326,7 +3322,6 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
-          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
@@ -3343,7 +3338,6 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN max_pk
         WHERE menu = 'Open items' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
-          AND COALESCE(bf.clean, item_name_updated) <> 'Masala Chai Cookies'
           AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
       ) t
       ORDER BY canonical,
