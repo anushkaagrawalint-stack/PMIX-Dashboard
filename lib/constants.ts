@@ -80,7 +80,8 @@ export const isSupplyOrFeeItem = (canonicalName: string): boolean => {
     || n.includes('guarantee')
     || n.includes('surcharge')
     || n.includes('utensil')
-    || n.includes('chafing kit');
+    || n.includes('chafing kit')
+    || n.includes('self checkout');
 };
 
 // Location colors (ordered alphabetically by location code: BALLPARK, MOSAIC, MVT, NL, ROCKVILLE)
