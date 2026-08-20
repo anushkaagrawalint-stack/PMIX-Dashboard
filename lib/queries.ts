@@ -1813,6 +1813,7 @@ const CATERING_MOD_ALIAS_CTE = `mod_alias(raw_norm, target_norm) AS (VALUES
   ('ginger tamarind chutney - side', 'ginger tamarind chutney'),
   ('harvest vegetables - classic', 'roasted vegetables - classic'),
   ('harvest vegetables - party pack', 'roasted vegetables - party pack'),
+  ('hungry tomato garlic', 'hungry tomato garlic sauce'),
   ('kokum vinaigrette - side', 'kokum vinaigrette'),
   ('sweet tamarind - classic', 'sweet tamarind chutney'),
   ('tandoori paneer', 'organic tandoori paneer'),
