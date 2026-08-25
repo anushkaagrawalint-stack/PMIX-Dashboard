@@ -46,13 +46,14 @@ const CH_LABEL: Record<string, string> = {
   CATERING:    'Catering',
   CATERING_3PD:'Catering 3PD',
   OFFSITE:     'Offsite',
+  EZCATER:     'EzCater',
   OPEN_ITEMS:  'Open Items',
 };
 
-const CH_ORDER  = ['IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP', 'CATERING', 'CATERING_3PD', 'OFFSITE', 'OPEN_ITEMS'];
+const CH_ORDER  = ['IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP', 'CATERING', 'CATERING_3PD', 'OFFSITE', 'EZCATER', 'OPEN_ITEMS'];
 const CAT_ORDER = ['Entrees', 'Sides', 'NA Drinks', 'Sweets', 'Alc Drinks', 'Retail', 'Other'];
 const normCat = normalizeCategory;
-const VENDOR_CH = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE']);
+const VENDOR_CH = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE', 'EZCATER']);
 
 function itemCat(i: ItemRow): string {
   if (VENDOR_CH.has(i.channel)) return i.menu_group || 'Other';
@@ -236,6 +237,12 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
       if (cfc && cfc > 0) return cfc;
       const ic = icMap.get(key);
       return ic && ic.offsite_cost > 0 ? ic.offsite_cost : undefined;
+    }
+    if (item.channel === 'EZCATER') {
+      const cfc = catFcMap.get(`${item.canonical_name}|ezcater`);
+      if (cfc && cfc > 0) return cfc;
+      const ic = icMap.get(key);
+      return ic && ic.ezcater_cost > 0 ? ic.ezcater_cost : undefined;
     }
     if (item.channel === 'OPEN_ITEMS') {
       const cfc = catFcMap.get(`${item.canonical_name}|open`);

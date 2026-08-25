@@ -11,6 +11,7 @@ export const CHANNEL_FROM_MENU_SQL = `
     WHEN menu_name = 'CATERING'                                THEN 'CATERING'
     WHEN menu_name = 'CATERING - 3PD'                          THEN 'CATERING_3PD'
     WHEN menu_name = 'OFFSITE POP-UPS'                         THEN 'OFFSITE'
+    WHEN menu_name = 'EZCATER'                                  THEN 'EZCATER'
     WHEN menu_name IS NULL                                      THEN 'OPEN_ITEMS'
     ELSE 'OFFSITE'
   END
@@ -46,6 +47,7 @@ export const CHANNELS = [
   { code: 'CATERING',    label: 'Catering',      color: '#f5a623' },
   { code: 'CATERING_3PD',label: 'Catering 3PD', color: '#e08f00' },
   { code: 'OFFSITE',     label: 'Offsite',       color: '#2ec4b6' },
+  { code: 'EZCATER',     label: 'EzCater',       color: '#e11d48' },
   { code: 'OPEN_ITEMS',  label: 'Open Items',    color: '#94a3b8' },
 ] as const;
 

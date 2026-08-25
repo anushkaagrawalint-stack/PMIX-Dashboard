@@ -9,13 +9,13 @@ const fmt2 = (v: number) =>
   `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 type ChannelMode = 'online' | 'ih' | CateringChannel;
-const CATERING_MODES: CateringChannel[] = ['catering', 'catering_3pd', 'offsite', 'open'];
+const CATERING_MODES: CateringChannel[] = ['catering', 'catering_3pd', 'offsite', 'ezcater', 'open'];
 const CATERING_LABEL: Record<CateringChannel, string> = {
-  catering: 'CATERING', catering_3pd: 'CATERING-3PD', offsite: 'OFFSITE', open: 'OPEN',
+  catering: 'CATERING', catering_3pd: 'CATERING-3PD', offsite: 'OFFSITE', ezcater: 'EZCATER', open: 'OPEN',
 };
 const CHANNEL_FILE_LABEL: Record<ChannelMode, string> = {
   ih: 'in_house', online: 'online',
-  catering: 'catering', catering_3pd: 'catering_3pd', offsite: 'offsite', open: 'open',
+  catering: 'catering', catering_3pd: 'catering_3pd', offsite: 'offsite', ezcater: 'ezcater', open: 'open',
 };
 
 // Validation export — every unique modifier for the active channel, one row per

@@ -42,11 +42,12 @@ const BUCKET_MENUS: Record<MissingCostRow['bucket'], string[]> = {
   catering:     ['CATERING'],
   catering_3pd: ['CATERING - 3PD'],
   offsite:      ['OFFSITE POP-UPS'],
+  ezcater:      ['EZCATER'],
 };
 
 const BUCKET_LABEL: Record<MissingCostRow['bucket'], string> = {
   ih: 'In-House', online: 'Online (LO/3PD)', catering: 'Catering',
-  catering_3pd: 'Catering 3PD', offsite: 'Offsite',
+  catering_3pd: 'Catering 3PD', offsite: 'Offsite', ezcater: 'EzCater',
 };
 
 // FiscalPeriodRow → r365's period string format, e.g. period=5, fiscal_year=2026 → 'P05-2026'
@@ -451,7 +452,7 @@ export default function NeedsReview({ needsReview, uncategorizedItems, uncategor
                   }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                        <div className={`nr-tag${r.current_channel === 'OFFSITE' ? ' offsite' : ''}`}>
+                        <div className={`nr-tag${r.current_channel === 'OFFSITE' ? ' offsite' : r.current_channel === 'EZCATER' ? ' ezcater' : ''}`}>
                           {r.current_channel}
                         </div>
                         {isDone && !isEdit && (

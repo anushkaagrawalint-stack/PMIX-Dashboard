@@ -195,7 +195,7 @@ export interface PinkSheetRow {
 // 2026-08-01 — modifier-type segregation may come later), and a missing modifier
 // cost is left `null` (not defaulted to 0) so it's visibly blank in the UI. A
 // missing base_cost IS defaulted to 0 (same convention as IH/Online base costs).
-export type CateringChannel = 'catering' | 'catering_3pd' | 'offsite' | 'open';
+export type CateringChannel = 'catering' | 'catering_3pd' | 'offsite' | 'ezcater' | 'open';
 
 export interface CateringPinkSheetDetailRow {
   parent_item:   string;
@@ -388,6 +388,7 @@ export interface ItemCostRow {
   catering_cost:       number;   // r365 menu = 'CATERING'
   catering_3pd_cost:   number;   // r365 menu = 'CATERING - 3PD'
   offsite_cost:        number;   // r365 menu = 'OFFSITE POP-UPS'
+  ezcater_cost:        number;   // r365 menu = 'EZCATER'
   open_items_cost:     number;   // r365 menu = 'Open items'
 }
 
@@ -422,7 +423,7 @@ export interface MissingCostRow {
   canonical_name: string;
   category:       string;
   menu_group:     string;
-  bucket:         'ih' | 'online' | 'catering' | 'catering_3pd' | 'offsite';
+  bucket:         'ih' | 'online' | 'catering' | 'catering_3pd' | 'offsite' | 'ezcater';
   qty:            number;
   net_sales:      number;
 }

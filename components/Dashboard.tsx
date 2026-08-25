@@ -148,7 +148,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
 
   // Category options: vendor channels (catering/offsite/markup) collapse to 'Other'
   // to keep the dropdown short. Only IH/RASA Digital/3PD show real categories.
-  const VENDOR_CHANNELS = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE', 'TPD_MARKUP']);
+  const VENDOR_CHANNELS = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE', 'EZCATER', 'TPD_MARKUP']);
   const categoryOptions = useMemo(() => {
     const cats = new Set<string>();
     const chFilter = new Set(selectedChannels);

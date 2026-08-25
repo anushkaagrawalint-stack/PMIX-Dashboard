@@ -66,6 +66,7 @@ export default function ChannelsTab({ channels, channelItems, channelCategories,
   const appCats      = catForChannel('APP');
   const cateringCats = catForChannel('CATERING');
   const offsiteCats  = catForChannel('OFFSITE');
+  const ezcaterCats  = catForChannel('EZCATER');
 
   return (
     <div>
@@ -114,8 +115,8 @@ export default function ChannelsTab({ channels, channelItems, channelCategories,
         </div>
       )}
 
-      {/* Category breakdown charts — row 2: Catering, Offsite */}
-      {(cateringCats.length > 0 || offsiteCats.length > 0) && (
+      {/* Category breakdown charts — row 2: Catering, Offsite, EzCater */}
+      {(cateringCats.length > 0 || offsiteCats.length > 0 || ezcaterCats.length > 0) && (
         <div className="gr3">
           {cateringCats.length > 0 && (
             <div className="cc">
@@ -130,6 +131,14 @@ export default function ChannelsTab({ channels, channelItems, channelCategories,
               <h3>Offsite by category</h3>
               <div style={{ position: 'relative', height: 200 }}>
                 <HBarChart data={offsiteCats} color="#10b981" height={200} />
+              </div>
+            </div>
+          )}
+          {ezcaterCats.length > 0 && (
+            <div className="cc">
+              <h3>EzCater by category</h3>
+              <div style={{ position: 'relative', height: 200 }}>
+                <HBarChart data={ezcaterCats} color="#e11d48" height={200} />
               </div>
             </div>
           )}
