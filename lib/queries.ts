@@ -261,7 +261,7 @@ const BASE_WHERE = `
       'FOOD - IN HOUSE','DRINKS - IN HOUSE',
       'APP','FOOD - TOAST ONLINE ORDERING',
       'DELIVERY','3PD OPEN MARKUP',
-      'CATERING','CATERING - 3PD','OFFSITE POP-UPS'
+      'CATERING','CATERING - 3PD','OFFSITE POP-UPS','EZCATER'
     )
     OR (fol.menu_name IS NULL AND fol.sales_category IN ('Food','Drink'))
   )
@@ -1789,6 +1789,7 @@ const CATERING_CHANNEL_CASE = `
     WHEN 'CATERING'     THEN 'catering'
     WHEN 'CATERING_3PD' THEN 'catering_3pd'
     WHEN 'OFFSITE'      THEN 'offsite'
+    WHEN 'EZCATER'      THEN 'ezcater'
     WHEN 'OPEN_ITEMS'   THEN 'open'
   END
 `;
@@ -1862,7 +1863,7 @@ export async function getCateringPinkSheetDetails(dr: DateRange): Promise<Cateri
       LEFT JOIN recipe_lookup rl
              ON rl.norm_name = COALESCE(ma.target_norm, d.mod_norm) AND rl.pnum = uc.src_pnum
       WHERE d.business_date BETWEEN $1::DATE AND $2::DATE
-        AND d.channel IN ('CATERING', 'CATERING_3PD', 'OFFSITE', 'OPEN_ITEMS')
+        AND d.channel IN ('CATERING', 'CATERING_3PD', 'OFFSITE', 'EZCATER', 'OPEN_ITEMS')
     )
     SELECT
       parent_item, modifier_name,
@@ -1914,7 +1915,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
       LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
       ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE NOT fol.is_voided AND NOT fol.is_deferred
-        AND (${CHO}) IN ('CATERING', 'CATERING_3PD', 'OFFSITE', 'OPEN_ITEMS')
+        AND (${CHO}) IN ('CATERING', 'CATERING_3PD', 'OFFSITE', 'EZCATER', 'OPEN_ITEMS')
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
       GROUP BY 1, 2
     ),
@@ -1930,7 +1931,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
       LEFT JOIN analytics.pc_modifier_unit_cost uc
              ON uc.norm_name = COALESCE(ma.target_norm, d.mod_norm) AND uc.pnum = sp.pnum
       WHERE d.business_date BETWEEN $1::DATE AND $2::DATE
-        AND d.channel IN ('CATERING', 'CATERING_3PD', 'OFFSITE', 'OPEN_ITEMS')
+        AND d.channel IN ('CATERING', 'CATERING_3PD', 'OFFSITE', 'EZCATER', 'OPEN_ITEMS')
       GROUP BY 1, 2
     ),
     -- Base item cost, freshest row <= selected period, own menu bucket only —
@@ -1997,6 +1998,19 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
       ) t
       ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
     ),
+    ezcater_base AS (
+      SELECT DISTINCT ON (canonical) canonical AS name, avg_cost AS cost
+      FROM (
+        SELECT COALESCE(bf.clean, item_name_updated) AS canonical, avg_cost, period
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN selected_period sp
+        WHERE menu = 'EZCATER' AND avg_cost > 0
+          AND item_name NOT IN ('Harvest Chicken Bowl - Catering', 'Harvest Chicken Bowl - Club Feast')
+          AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= sp.pnum
+      ) t
+      ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    ),
     open_base AS (
       SELECT DISTINCT ON (canonical) canonical AS name, avg_cost AS cost
       FROM (
@@ -2035,6 +2049,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
           WHEN 'CATERING'     THEN COALESCE(hcc.avg_cost, cb.cost)
           WHEN 'CATERING_3PD' THEN COALESCE(hc3.avg_cost, c3.cost)
           WHEN 'OFFSITE'      THEN ob.cost
+          WHEN 'EZCATER'      THEN ezb.cost
           WHEN 'OPEN_ITEMS'   THEN opb.cost
         END, 0)::NUMERIC AS base_cost,
       ROUND(COALESCE(mc.total_mod_cost, 0)::NUMERIC, 4) AS total_mod_cost
@@ -2043,6 +2058,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
     LEFT JOIN catering_base     cb  ON LOWER(cb.name)  = LOWER(o.parent_item)
     LEFT JOIN catering_3pd_base c3  ON LOWER(c3.name)  = LOWER(o.parent_item)
     LEFT JOIN offsite_base      ob  ON LOWER(ob.name)  = LOWER(o.parent_item)
+    LEFT JOIN ezcater_base      ezb ON LOWER(ezb.name) = LOWER(o.parent_item)
     LEFT JOIN open_base         opb ON LOWER(opb.name) = LOWER(o.parent_item)
     LEFT JOIN LATERAL (
       SELECT avg_cost FROM harvest_chicken_catering WHERE o.parent_item = 'Harvest Chicken Bowl'
@@ -3062,7 +3078,7 @@ export async function getUncategorizedItems(dr: DateRange): Promise<Uncategorize
       ${CH_OVERRIDE_JOIN('fol.selection_guid')}
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-        AND (${CHO}) NOT IN ('OFFSITE', 'OPEN_ITEMS')
+        AND (${CHO}) NOT IN ('OFFSITE', 'EZCATER', 'OPEN_ITEMS')
         AND il.raw_item_name  IS NULL
         AND mlt.modifier_name IS NULL
         AND (${GRP_TO_CAT_SQL}) IS NULL
@@ -3339,6 +3355,22 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
       ORDER BY canonical,
                RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
     ),
+    ezcater_base AS (
+      SELECT DISTINCT ON (canonical)
+        canonical AS name, avg_cost AS cost
+      FROM (
+        SELECT
+          COALESCE(bf.clean, item_name_updated) AS canonical,
+          avg_cost, period
+        FROM analytics.r365_item_cost
+        LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
+        CROSS JOIN max_pk
+        WHERE menu = 'EZCATER' AND avg_cost > 0 AND item_name <> 'Harvest Chicken Bowl - In House'
+          AND (RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT) <= max_pk.pk
+      ) t
+      ORDER BY canonical,
+               RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+    ),
     open_items_base AS (
       SELECT DISTINCT ON (canonical)
         canonical AS name, avg_cost AS cost
@@ -3363,6 +3395,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
       UNION SELECT name FROM catering_base
       UNION SELECT name FROM catering_3pd_base
       UNION SELECT name FROM offsite_base
+      UNION SELECT name FROM ezcater_base
       UNION SELECT name FROM open_items_base
       UNION SELECT 'Harvest Chicken Bowl' FROM harvest_chicken_catering
       UNION SELECT 'Harvest Chicken Bowl' FROM harvest_chicken_catering_3pd
@@ -3374,6 +3407,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
       COALESCE(hcc.avg_cost, ct.cost, 0)::NUMERIC               AS catering_cost,
       COALESCE(hc3.avg_cost, c3.cost, 0)::NUMERIC               AS catering_3pd_cost,
       COALESCE(off.cost, 0)::NUMERIC                            AS offsite_cost,
+      COALESCE(ezb.cost, 0)::NUMERIC                            AS ezcater_cost,
       COALESCE(oi.cost, 0)::NUMERIC                             AS open_items_cost
     FROM all_names n
     LEFT JOIN ih_base          ih  ON LOWER(ih.name)  = LOWER(n.name)
@@ -3383,6 +3417,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
     LEFT JOIN catering_base    ct  ON LOWER(ct.name)  = LOWER(n.name)
     LEFT JOIN catering_3pd_base c3 ON LOWER(c3.name)  = LOWER(n.name)
     LEFT JOIN offsite_base     off ON LOWER(off.name) = LOWER(n.name)
+    LEFT JOIN ezcater_base     ezb ON LOWER(ezb.name) = LOWER(n.name)
     LEFT JOIN open_items_base  oi  ON LOWER(oi.name)  = LOWER(n.name)
     LEFT JOIN LATERAL (
       SELECT avg_cost FROM harvest_chicken_catering WHERE n.name = 'Harvest Chicken Bowl'
@@ -3390,7 +3425,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
     LEFT JOIN LATERAL (
       SELECT avg_cost FROM harvest_chicken_catering_3pd WHERE n.name = 'Harvest Chicken Bowl'
     ) hc3 ON true
-    WHERE COALESCE(hcc.avg_cost, ih.cost, ol.cost, ct.cost, hc3.avg_cost, c3.cost, off.cost, oi.cost, fb.cost, mi.cost, 0) > 0
+    WHERE COALESCE(hcc.avg_cost, ih.cost, ol.cost, ct.cost, hc3.avg_cost, c3.cost, off.cost, ezb.cost, oi.cost, fb.cost, mi.cost, 0) > 0
   `, [dr.end]);
   await db.end();
   return rows.map(r => ({
@@ -3400,6 +3435,7 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
     catering_cost:       Number(r.catering_cost),
     catering_3pd_cost:   Number(r.catering_3pd_cost),
     offsite_cost:        Number(r.offsite_cost),
+    ezcater_cost:        Number(r.ezcater_cost),
     open_items_cost:     Number(r.open_items_cost),
   }));
 }
@@ -3426,6 +3462,7 @@ export async function getMissingItemCosts(dr: DateRange): Promise<MissingCostRow
           WHEN fol.menu_name = 'CATERING'                                                     THEN 'catering'
           WHEN fol.menu_name = 'CATERING - 3PD'                                               THEN 'catering_3pd'
           WHEN fol.menu_name = 'OFFSITE POP-UPS'                                              THEN 'offsite'
+          WHEN fol.menu_name = 'EZCATER'                                                       THEN 'ezcater'
         END AS bucket,
         SUM(fol.quantity)::BIGINT                AS qty,
         ROUND(SUM(fol.line_total)::NUMERIC, 2)   AS net_sales
@@ -3436,7 +3473,7 @@ export async function getMissingItemCosts(dr: DateRange): Promise<MissingCostRow
         AND fol.menu_name IN (
           'FOOD - IN HOUSE','DRINKS - IN HOUSE',
           'APP','FOOD - TOAST ONLINE ORDERING','DELIVERY','3PD OPEN MARKUP',
-          'CATERING','CATERING - 3PD','OFFSITE POP-UPS'
+          'CATERING','CATERING - 3PD','OFFSITE POP-UPS','EZCATER'
         )
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
       GROUP BY COALESCE(bf.clean, fol.canonical_name), bucket
@@ -3463,6 +3500,10 @@ export async function getMissingItemCosts(dr: DateRange): Promise<MissingCostRow
         ELSE item_name_updated END AS item_name_updated
       FROM analytics.r365_item_cost
       WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0
+    ),
+    has_ezcater AS (
+      SELECT DISTINCT item_name_updated FROM analytics.r365_item_cost
+      WHERE menu = 'EZCATER' AND avg_cost > 0
     )
     SELECT s.canonical_name, s.category, s.menu_group, s.bucket, s.qty, s.net_sales
     FROM sales s
@@ -3471,13 +3512,15 @@ export async function getMissingItemCosts(dr: DateRange): Promise<MissingCostRow
     LEFT JOIN has_catering     hcat ON hcat.item_name_updated = s.canonical_name
     LEFT JOIN has_catering_3pd hc3  ON hc3.item_name_updated  = s.canonical_name
     LEFT JOIN has_offsite      hoff ON hoff.item_name_updated = s.canonical_name
+    LEFT JOIN has_ezcater      hez  ON hez.item_name_updated  = s.canonical_name
     WHERE s.bucket IS NOT NULL
       AND (
         (s.bucket = 'ih'           AND hih.item_name_updated  IS NULL) OR
         (s.bucket = 'online'       AND honl.item_name_updated IS NULL) OR
         (s.bucket = 'catering'     AND hcat.item_name_updated IS NULL) OR
         (s.bucket = 'catering_3pd' AND hc3.item_name_updated  IS NULL) OR
-        (s.bucket = 'offsite'      AND hoff.item_name_updated IS NULL)
+        (s.bucket = 'offsite'      AND hoff.item_name_updated IS NULL) OR
+        (s.bucket = 'ezcater'      AND hez.item_name_updated  IS NULL)
       )
     ORDER BY s.net_sales DESC
   `, [dr.start, dr.end]);

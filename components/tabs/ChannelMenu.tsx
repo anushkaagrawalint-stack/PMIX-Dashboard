@@ -10,13 +10,13 @@ const fmt$ = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 
 type SortKey = string; // 'total' or any channel code
 
-const CH_ORDER = ['IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP', 'CATERING', 'CATERING_3PD', 'OFFSITE', 'OPEN_ITEMS'];
+const CH_ORDER = ['IN_HOUSE', 'APP', 'TPD', 'TPD_MARKUP', 'CATERING', 'CATERING_3PD', 'OFFSITE', 'EZCATER', 'OPEN_ITEMS'];
 
 // These channels use menu_group as primary breakdown (vendor names) instead of
 // category. APP (RASA Digital) was here too, but its menu_group values are
 // real menu categories (SIDES, DRINKS, CHEF CURATED BOWLS, ...), not vendor
 // names — so it now shows canonical item names like In-House/3PD instead.
-const MENU_GROUP_CHANNELS = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE']);
+const MENU_GROUP_CHANNELS = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE', 'EZCATER']);
 
 const thC: React.CSSProperties = { textAlign: 'center', fontSize: 9, color: 'var(--muted)', fontWeight: 600, padding: '0 4px 6px' };
 const tdC: React.CSSProperties = { textAlign: 'center', padding: '4px' };

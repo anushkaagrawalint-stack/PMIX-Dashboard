@@ -13,6 +13,7 @@ const BUCKET_MENUS: Record<string, string[]> = {
   catering:     ['CATERING'],
   catering_3pd: ['CATERING - 3PD'],
   offsite:      ['OFFSITE POP-UPS'],
+  ezcater:      ['EZCATER'],
 };
 
 // r365 period strings look like 'P05-2026' (zero-padded 2-digit period, dash, year)
