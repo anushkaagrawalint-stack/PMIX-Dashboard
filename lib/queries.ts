@@ -5,6 +5,7 @@ import {
   GRP_TO_CAT_SQL, ITEM_SUBCAT_SQL, GRP_TO_SUBCAT_SQL,
 } from './constants';
 import { modifierAliasCaseSQL } from './modifierCost';
+import { computeFinalAvgCost } from './pinkSheetCost';
 import { listDir, getFileRaw } from './github';
 import {
   parseBikkyCsv, bikkyFolderFor, parseBikkyFileName, bikkyPeriodLabel,
@@ -1977,9 +1978,16 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
       ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
     ),
     offsite_base AS (
+      -- Fooda Set Price Bowl (bare) is how these orders are actually recorded
+      -- under Offsite, but r365 only ever prices a vendor-specific variant
+      -- ("Fooda Qualtrics - Set Price Bowl") under this menu -- Offsite-only
+      -- remap so it doesn't touch Catering-3PD, where the bare name already
+      -- has its own correctly-priced row (owner-reported 2026-08-25).
       SELECT DISTINCT ON (canonical) canonical AS name, avg_cost AS cost
       FROM (
-        SELECT COALESCE(bf.clean, item_name_updated) AS canonical, avg_cost, period
+        SELECT COALESCE(bf.clean, CASE
+          WHEN item_name_updated = 'Fooda Qualtrics - Set Price Bowl' THEN 'Fooda Set Price Bowl'
+          ELSE item_name_updated END) AS canonical, avg_cost, period
         FROM analytics.r365_item_cost
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
         CROSS JOIN selected_period sp
@@ -3312,11 +3320,15 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
       LIMIT 1
     ),
     offsite_base AS (
+      -- Fooda Set Price Bowl (bare) Offsite-only remap -- see getCateringPinkSheets'
+      -- offsite_base comment for why (owner-reported 2026-08-25).
       SELECT DISTINCT ON (canonical)
         canonical AS name, avg_cost AS cost
       FROM (
         SELECT
-          COALESCE(bf.clean, item_name_updated) AS canonical,
+          COALESCE(bf.clean, CASE
+            WHEN item_name_updated = 'Fooda Qualtrics - Set Price Bowl' THEN 'Fooda Set Price Bowl'
+            ELSE item_name_updated END) AS canonical,
           avg_cost, period
         FROM analytics.r365_item_cost
         LEFT JOIN byo_fix bf ON bf.raw = item_name_updated
@@ -3446,7 +3458,10 @@ export async function getMissingItemCosts(dr: DateRange): Promise<MissingCostRow
       WHERE menu = 'CATERING - 3PD' AND avg_cost > 0
     ),
     has_offsite AS (
-      SELECT DISTINCT item_name_updated FROM analytics.r365_item_cost
+      SELECT DISTINCT CASE
+        WHEN item_name_updated = 'Fooda Qualtrics - Set Price Bowl' THEN 'Fooda Set Price Bowl'
+        ELSE item_name_updated END AS item_name_updated
+      FROM analytics.r365_item_cost
       WHERE menu = 'OFFSITE POP-UPS' AND avg_cost > 0
     )
     SELECT s.canonical_name, s.category, s.menu_group, s.bucket, s.qty, s.net_sales
@@ -3809,6 +3824,23 @@ export async function loadDashboardData(
     getMakeItMealModifiers(dr),
   ]);
 
+  // Homemade Juice's own base+modifier data is sparse/nonexistent under every
+  // Catering Pink Sheet channel (Catering/Catering-3PD/Offsite/EZCater/Open
+  // Items) for the same reason IH's figure already mirrors Online instead of
+  // computing its own (see ZERO_BASE_ITEMS in pinkSheetCost.ts) -- extends that
+  // same "borrow Online's real number" rule here too (owner-reported
+  // 2026-08-25), reusing the identical online final-avg-cost calculation IH
+  // already uses rather than a re-derived approximation.
+  const homemadeJuicePs = pinkSheets.find(p => p.canonical_name === 'Homemade Juice');
+  const homemadeJuiceOnlineCost = homemadeJuicePs
+    ? computeFinalAvgCost(homemadeJuicePs, pinkSheetDetails, 'online')
+    : 0;
+  const cateringPinkSheetsFixed = cateringPinkSheets.map(r =>
+    r.canonical_name === 'Homemade Juice'
+      ? { ...r, base_cost: 0, total_mod_cost: homemadeJuiceOnlineCost * r.qty, avg_cost: homemadeJuiceOnlineCost }
+      : r
+  );
+
   const totalMargin   = meItems.reduce((s, i) => s + i.total_margin, 0);
   const totalNetSales = meItems.reduce((s, i) => s + i.net_sales,    0);
   const avgMargin     = totalNetSales > 0 ? totalMargin / totalNetSales : 0;
@@ -3822,7 +3854,7 @@ export async function loadDashboardData(
     channels,
     weekly, daily, weeklyByChannel, dailyByChannel,
     items, channelItems, locationItems, locations,
-    meItems, pinkSheets, pinkSheetDetails, cateringPinkSheets, cateringPinkSheetDetails, avgMargin,
+    meItems, pinkSheets, pinkSheetDetails, cateringPinkSheets: cateringPinkSheetsFixed, cateringPinkSheetDetails, avgMargin,
     modifiers, payments, paymentsByLocation, paymentSourcesByLocation, bikky,
     categories, channelCategories,
     renames, renamesDemo, needsReview,
