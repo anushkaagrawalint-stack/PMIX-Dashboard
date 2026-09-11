@@ -20,6 +20,24 @@ export const CHANNEL_FROM_MENU_SQL = `
 // Same expression for a named alias — use in SELECT as: ${CHANNEL_SQL} AS channel
 export const CHANNEL_SQL = CHANNEL_FROM_MENU_SQL.trim();
 
+// JS mirror of CHANNEL_FROM_MENU_SQL above — lets client code recompute what
+// channel a row would derive to from its raw menu_name alone, so it can tell
+// whether the row's actual `channel` (which reflects a channel_overrides
+// correction, if any) differs from that raw derivation. Used by ItemMix to
+// detect Needs-Review-corrected rows.
+export function deriveChannelFromMenuName(menuName: string | null | undefined): string {
+  if (menuName == null) return 'OPEN_ITEMS';
+  if (menuName === 'FOOD - IN HOUSE' || menuName === 'DRINKS - IN HOUSE') return 'IN_HOUSE';
+  if (menuName === 'APP' || menuName === 'FOOD - TOAST ONLINE ORDERING') return 'APP';
+  if (menuName === 'DELIVERY') return 'TPD';
+  if (menuName === '3PD OPEN MARKUP') return 'TPD_MARKUP';
+  if (menuName === 'CATERING') return 'CATERING';
+  if (menuName === 'CATERING - 3PD') return 'CATERING_3PD';
+  if (menuName === 'OFFSITE POP-UPS') return 'OFFSITE';
+  if (menuName === 'EZCATER') return 'EZCATER';
+  return 'OFFSITE';
+}
+
 // ─── Channel overrides (Needs Review "wrong channel" fixes) ──────────────────
 // analytics.channel_overrides (selection_guid PK, order_guid, correct_channel)
 // lets an admin permanently reassign a SPECIFIC LINE's channel from the Needs

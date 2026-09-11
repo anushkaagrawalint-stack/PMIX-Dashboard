@@ -2,7 +2,7 @@
 import { useState, useMemo } from 'react';
 import type { ItemRow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow, MakeItMealModifierRow, CateringPinkSheetRow } from '@/lib/types';
 import { computeFinalAvgCost } from '@/lib/pinkSheetCost';
-import { normalizeCategory } from '@/lib/constants';
+import { normalizeCategory, deriveChannelFromMenuName } from '@/lib/constants';
 import { downloadCsv } from '@/lib/csvExport';
 
 const fmt$  = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
@@ -55,9 +55,20 @@ const CAT_ORDER = ['Entrees', 'Sides', 'NA Drinks', 'Sweets', 'Alc Drinks', 'Ret
 const normCat = normalizeCategory;
 const VENDOR_CH = new Set(['CATERING', 'CATERING_3PD', 'OFFSITE', 'EZCATER']);
 
+// Vendor channels group by raw menu_group (e.g. "Ez Cater + Relish Individually
+// Packaged Bowls") since that's descriptive for genuine vendor-menu items. But a
+// row whose channel came from a Needs Review correction (channel_overrides) still
+// carries its ORIGINAL menu_group (e.g. plain "BOWLS" from an in-house-style
+// menu) — grouping it by that stale raw value looks wrong once it's displayed
+// under its corrected vendor channel. Detect that case by comparing the row's
+// actual channel against what its raw menu_name alone would derive to; if they
+// differ, treat it like a normal (non-vendor-grouped) row everywhere below.
+function usesRawMenuGroup(i: ItemRow): boolean {
+  return VENDOR_CH.has(i.channel) && deriveChannelFromMenuName(i.menu_name) === i.channel;
+}
+
 function itemCat(i: ItemRow): string {
-  if (VENDOR_CH.has(i.channel)) return i.menu_group || 'Other';
-  if (i.channel === 'OPEN_ITEMS') return normCat(i.category);
+  if (usesRawMenuGroup(i)) return i.menu_group || 'Other';
   return normCat(i.category);
 }
 
@@ -289,7 +300,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     filtered.forEach(item => {
       const ch  = item.channel;
       const cat = itemCat(item);
-      const sub = (VENDOR_CH.has(ch) || ch === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
+      const sub = (usesRawMenuGroup(item) || ch === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
       const key = `${item.canonical_name}|${ch}|${cat}|${sub}`;
       const ex  = map.get(key);
       if (!ex) {
@@ -340,7 +351,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     dedupedFiltered.forEach(i => {
       const ch  = i.channel;
       const cat = itemCat(i);
-      const sub = (VENDOR_CH.has(ch) || ch === 'OPEN_ITEMS') ? '' : (i.sub_category || '');
+      const sub = (usesRawMenuGroup(i) || ch === 'OPEN_ITEMS') ? '' : (i.sub_category || '');
       if (!out[ch])           out[ch]           = {};
       if (!out[ch][cat])      out[ch][cat]      = {};
       if (!out[ch][cat][sub]) out[ch][cat][sub] = [];
@@ -531,7 +542,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     // Same uniqueness key dedupedFiltered already guarantees (canonical_name +
     // channel + category + sub_category) — menu_name/menu_group alone can repeat
     // across different channels for the same item, causing duplicate React keys.
-    const sub = (VENDOR_CH.has(item.channel) || item.channel === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
+    const sub = (usesRawMenuGroup(item) || item.channel === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
     return (
       <tr key={`${item.canonical_name}||${item.channel}||${cat}||${sub}`}>
         <td style={{ paddingLeft: 60, fontWeight: 500 }}>{item.canonical_name}</td>
