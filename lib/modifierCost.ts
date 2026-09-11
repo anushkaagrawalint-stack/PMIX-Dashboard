@@ -41,7 +41,7 @@ export function modifierCostBatchSQL(): string {
   ),
   _mod_raw AS (
     SELECT DISTINCT
-      LOWER(REGEXP_REPLACE(fm.canonical_name, ' -\\*$', '')) AS norm_name,
+      LOWER(REGEXP_REPLACE(fm.canonical_name, '\\s*-\\s*\\*+$', '')) AS norm_name,
       fp.fiscal_year * 100 + fp.period                        AS target_pnum
     FROM public.fact_modifiers fm
     JOIN public.fact_order_lines fol ON fm.parent_selection = fol.selection_guid
@@ -123,8 +123,10 @@ export function modifierCostBatchSQL(): string {
  * @returns          A SQL scalar expression that resolves the per-unit cost.
  */
 export function modifierUnitCostSQL(nameExpr: string, periodExpr: string): string {
-  // §1.1 Normalize: strip Toast auto-select suffix ' -*' and lowercase.
-  const b = `LOWER(REGEXP_REPLACE(${nameExpr}, ' -\\*$', ''))`;
+  // §1.1 Normalize: strip Toast auto-select suffix ' -*' (and its spaced
+  // variant ' - *', observed live in the data — e.g. "Avocado - *",
+  // "Spicy Chili Chicken - *") and lowercase.
+  const b = `LOWER(REGEXP_REPLACE(${nameExpr}, '\\s*-\\s*\\*+$', ''))`;
 
   // §1.3 Alias: Toast display name → R365 recipe clean_name.
   // ELSE = b itself, so IN(b, b) deduplicates to IN(b) effectively.
