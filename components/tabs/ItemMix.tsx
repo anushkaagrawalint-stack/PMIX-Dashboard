@@ -1,6 +1,6 @@
 'use client';
 import { useState, useMemo } from 'react';
-import type { ItemRow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow, MakeItMealModifierRow, CateringPinkSheetRow } from '@/lib/types';
+import type { ItemRow, PinkSheetRow, PinkSheetDetailRow, ItemCostRow, ItemModifierRow, CateringPinkSheetRow } from '@/lib/types';
 import { computeFinalAvgCost } from '@/lib/pinkSheetCost';
 import { normalizeCategory, deriveChannelFromMenuName } from '@/lib/constants';
 import { downloadCsv } from '@/lib/csvExport';
@@ -17,11 +17,15 @@ type SortKey     = ItemSortKey | 'avg_cost' | 'cogs' | 'qty_mix' | 'gross_mix' |
 // modifier pick's own real fact_modifiers.price folded in (so every existing
 // calculation that reads those three fields — dedup, category/channel
 // totals, sort, COGS% — picks it up with no further changes); qty stays the
-// real standalone qty, with makeItMealQty/combinedQty reported as their own
-// separate columns.
+// real standalone qty.
+//
+// Item Mix renders modifiers nested under the item they were ordered on, the way
+// Toast's Product Mix does. Verified against Toast 2026-09-29: a modifier's qty
+// and revenue are NOT rolled into its parent — they are shown as child rows only.
+// Rolling them up would have moved FOOD - IN HOUSE from 16,456/$178,819 to
+// 24,108/$185,190, which is not what Toast reports.
 interface ItemRowX extends ItemRow {
-  makeItMealQty: number;
-  combinedQty:   number;
+  modifiers: ItemModifierRow[];
 }
 
 interface Props {
@@ -30,7 +34,7 @@ interface Props {
   pinkSheetDetails:   PinkSheetDetailRow[];
   cateringPinkSheets: CateringPinkSheetRow[];
   itemCosts:          ItemCostRow[];
-  makeItMealModifiers: MakeItMealModifierRow[];
+  itemModifiers:      ItemModifierRow[];
   selectedChannels:   string[];
   categoryFilter:     string;
   isAdmin?:           boolean;
@@ -72,100 +76,71 @@ function itemCat(i: ItemRow): string {
   return normCat(i.category);
 }
 
-export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringPinkSheets = [], itemCosts = [], makeItMealModifiers, selectedChannels, categoryFilter, isAdmin = false }: Props) {
+export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringPinkSheets = [], itemCosts = [], itemModifiers = [], selectedChannels, categoryFilter, isAdmin = false }: Props) {
   const [search,          setSearch]          = useState('');
+  const [cogsOutlierOnly, setCogsOutlierOnly] = useState(false);
   const [sortKey,         setSortKey]         = useState<SortKey>('gross_sales');
   const [sortDir,         setSortDir]         = useState<'asc' | 'desc'>('desc');
   const [collapsed,       setCollapsed]       = useState<Record<string, boolean>>({});
   const [menuGroupFilter, setMenuGroupFilter] = useState('__ALL__');
-  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(false);
+  // Which levels of the hierarchy to show, mirroring Toast's "Menu hierarchy"
+  // control. Items/Open items/Modifiers default on; Special requests (free text
+  // a guest typed, which Toast records as a modifier with no option group) is
+  // off by default because it is thousands of one-off strings.
+  const [showItems,     setShowItems]     = useState(true);
+  const [showOpenItems, setShowOpenItems] = useState(true);
+  const [showModifiers, setShowModifiers] = useState(true);
+  const [showSpecial,   setShowSpecial]   = useState(false);
+  const [hierOpen,      setHierOpen]      = useState(false);
+  // Item rows start COLLAPSED (the group levels above default open) — with
+  // modifiers on, expanding every item at once would render tens of thousands
+  // of rows. Keyed the same way the row itself is.
+  const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
+  const itemKeyOf = (i: ItemRowX, cat: string) => {
+    const sub = (usesRawMenuGroup(i) || i.channel === 'OPEN_ITEMS') ? '' : (i.sub_category || '');
+    return `${i.canonical_name}||${i.channel}||${cat}||${sub}`;
+  };
+  const toggleItem = (k: string) => setExpandedItems(e => ({ ...e, [k]: !e[k] }));
 
-  // canonical_name|channel → total "make it a meal" modifier-pick qty + the
-  // modifier's own real price (public.fact_modifiers.price, already a
-  // line-level total — WHERE option_group_name = 'Make it a Meal'), NOT
-  // avg_price and NOT unit cost.
-  const makeItMealMap = useMemo(() => {
-    const m = new Map<string, { qty: number; price: number }>();
-    makeItMealModifiers.forEach(r => {
-      const key = `${r.canonical_name}|${r.channel}`;
-      const ex  = m.get(key) ?? { qty: 0, price: 0 };
-      m.set(key, { qty: ex.qty + r.qty, price: ex.price + r.price });
-    });
-    return m;
-  }, [makeItMealModifiers]);
-
-  // Descriptive fields borrowed by canonical_name from wherever this item
-  // exists as a real standalone line — needed below to place a synthetic row
-  // for a "Make it a Meal" pick that has no standalone line of its own in
-  // that channel (e.g. Naan/Mini Samosas picked as a Catering meal add-on —
-  // Catering never sells them ala carte, so they'd otherwise have nowhere to
-  // attach and their modifier data would be silently dropped).
-  const descriptorByName = useMemo(() => {
-    const m = new Map<string, { menu_name: string; menu_group: string; category: string; sub_category: string }>();
-    items.forEach(i => {
-      if (!m.has(i.canonical_name)) {
-        m.set(i.canonical_name, { menu_name: i.menu_name, menu_group: i.menu_group, category: i.category, sub_category: i.sub_category });
+  // parent item|channel → its modifiers, ordered biggest first.
+  //
+  // Rows arrive one per location (they have to, so the location filter can apply
+  // to them), so they MUST be summed back together here — otherwise one modifier
+  // renders once per store, e.g. Chicken Tikka appearing four times at 507/391/
+  // 357/260 instead of once at 1,515. Avg price is recomputed from the combined
+  // totals rather than averaged, since averaging per-location averages would
+  // weight a quiet store the same as a busy one.
+  const modifiersByItem = useMemo(() => {
+    const combined = new Map<string, ItemModifierRow>();
+    itemModifiers.forEach(r => {
+      if (r.is_special_request && !showSpecial) return;
+      if (!r.is_special_request && !showModifiers) return;
+      const key = `${r.parent_item}|${r.channel}|${r.modifier_name}`;
+      const ex  = combined.get(key);
+      if (!ex) {
+        combined.set(key, { ...r });
+      } else {
+        ex.qty         += r.qty;
+        ex.gross_sales += r.gross_sales;
+        ex.option_group = ex.option_group ?? r.option_group;
       }
     });
-    return m;
-  }, [items]);
 
-  // Augments every item with its Make-It-a-Meal qty + a combined qty. When
-  // the (admin/tester-only) checkbox is on, gross_sales/revenue/
-  // net_after_refunds have the modifier's own real fact_modifiers.price
-  // folded in, so every existing calculation reading those three fields
-  // (dedup, category/channel totals, sort, COGS%) picks it up automatically —
-  // qty itself is left as real standalone qty; combinedQty is the new,
-  // separate total.
-  const itemsWithMakeItMeal = useMemo((): ItemRowX[] => {
-    const rows: ItemRowX[] = items.map(i => {
-      const mm = makeItMealMap.get(`${i.canonical_name}|${i.channel}`);
-      const makeItMealQty = mm?.qty ?? 0;
-      const addedAmount = includeMakeItMeal ? (mm?.price ?? 0) : 0;
-      return {
-        ...i,
-        makeItMealQty,
-        combinedQty: i.qty + makeItMealQty,
-        gross_sales: i.gross_sales + addedAmount,
-        revenue: i.revenue + addedAmount,
-        net_after_refunds: i.net_after_refunds + addedAmount,
-      };
+    const m = new Map<string, ItemModifierRow[]>();
+    combined.forEach(r => {
+      r.gross_sales = Math.round(r.gross_sales * 100) / 100;
+      r.avg_price   = r.qty > 0 ? Math.round((r.gross_sales / r.qty) * 100) / 100 : 0;
+      const key = `${r.parent_item}|${r.channel}`;
+      const arr = m.get(key);
+      if (arr) arr.push(r); else m.set(key, [r]);
     });
+    m.forEach(arr => arr.sort((a, b) => b.qty - a.qty));
+    return m;
+  }, [itemModifiers, showModifiers, showSpecial]);
 
-    // Modifier-only picks (no standalone ItemRow to attach to) only surface
-    // once the checkbox is on — nothing about this feature, including a
-    // whole new row, should appear while it's unchecked.
-    if (includeMakeItMeal) {
-      const existingKeys = new Set(items.map(i => `${i.canonical_name}|${i.channel}`));
-      makeItMealMap.forEach((mm, key) => {
-        if (existingKeys.has(key)) return;
-        const sep           = key.lastIndexOf('|');
-        const canonicalName = key.slice(0, sep);
-        const channel        = key.slice(sep + 1);
-        const desc = descriptorByName.get(canonicalName);
-        rows.push({
-          canonical_name: canonicalName,
-          menu_name:      desc?.menu_name   ?? '',
-          menu_group:     desc?.menu_group  ?? '',
-          channel,
-          category:       desc?.category     ?? 'Other',
-          sub_category:   desc?.sub_category ?? '',
-          qty:            0,
-          revenue:        mm.price,
-          gross_sales:    mm.price,
-          avg_price:      0,
-          revenue_pct:    0,
-          qty_pct:        0,
-          is_open_item:   false,
-          refunds:            0,
-          net_after_refunds:  mm.price,
-          makeItMealQty:  mm.qty,
-          combinedQty:    mm.qty,
-        });
-      });
-    }
-    return rows;
-  }, [items, makeItMealMap, includeMakeItMeal, descriptorByName]);
+  const itemsWithModifiers = useMemo((): ItemRowX[] =>
+    items.map(i => ({ ...i, modifiers: modifiersByItem.get(`${i.canonical_name}|${i.channel}`) ?? [] })),
+  [items, modifiersByItem]);
 
   const allMenuGroups = useMemo(() => {
     const s = new Set<string>();
@@ -277,7 +252,10 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
   // the search box: mix %/totals must stay stable as you type a search, only the
   // set of rows actually rendered should narrow. See matchesSearch() below.
   const filtered = useMemo(() => {
-    return itemsWithMakeItMeal.filter(i => {
+    return itemsWithModifiers.filter(i => {
+      // Hierarchy toggles: an open item is a line Toast had no menu entry for
+      // (menu_name IS NULL); everything else is a regular menu item.
+      if (i.is_open_item ? !showOpenItems : !showItems) return false;
       if (selectedChannels.length > 0 && !selectedChannels.includes(i.channel)) return false;
       if (categoryFilter !== 'all') {
         if (itemCat(i) !== categoryFilter) return false;
@@ -285,12 +263,16 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
       if (menuGroupFilter !== '__ALL__' && (i.menu_group ?? '') !== menuGroupFilter) return false;
       return true;
     });
-  }, [itemsWithMakeItMeal, selectedChannels, categoryFilter, menuGroupFilter]);
+  }, [itemsWithModifiers, selectedChannels, categoryFilter, menuGroupFilter, showItems, showOpenItems]);
 
   function matchesSearch(i: ItemRow): boolean {
     const q = search.trim().toLowerCase();
-    if (!q) return true;
-    return i.canonical_name.toLowerCase().includes(q) || i.menu_group.toLowerCase().includes(q);
+    if (q && !(i.canonical_name.toLowerCase().includes(q) || i.menu_group.toLowerCase().includes(q))) return false;
+    if (cogsOutlierOnly) {
+      const c = getCogsPct(i);
+      if (c == null || (c >= 0.10 && c <= 0.60)) return false;
+    }
+    return true;
   }
 
   // Merge rows that share canonical_name + channel + category + sub_category
@@ -310,7 +292,6 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
         const revenue      = ex.revenue      + item.revenue;
         const gross_sales  = ex.gross_sales  + item.gross_sales;
         const refunds      = ex.refunds      + item.refunds;
-        const makeItMealQty= ex.makeItMealQty+ item.makeItMealQty;
         map.set(key, {
           ...ex,
           qty,
@@ -321,8 +302,8 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
           qty_pct:     ex.qty_pct     + item.qty_pct,
           refunds,
           net_after_refunds: Math.round((revenue - refunds) * 100) / 100,
-          makeItMealQty,
-          combinedQty: qty + makeItMealQty,
+          // Same item arriving under two raw menu names keeps one modifier list.
+          modifiers: ex.modifiers.length ? ex.modifiers : item.modifiers,
         });
       }
     });
@@ -330,6 +311,17 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
   }, [filtered]);
 
   const totalGrossSales = useMemo(() => dedupedFiltered.reduce((s, i) => s + i.gross_sales, 0), [dedupedFiltered]);
+
+  // What the caption reports: distinct dishes vs rows actually drawn. They differ
+  // because a dish gets a row per channel it sold in — reporting only the row
+  // count as "items" invited the comparison against the Overview header's item
+  // count, which is a genuinely different figure (owner request 2026-09-28).
+  const visibleCounts = useMemo(() => {
+    const rows = (search.trim() || cogsOutlierOnly)
+      ? dedupedFiltered.filter(matchesSearch)
+      : dedupedFiltered;
+    return { rows: rows.length, items: new Set(rows.map(r => r.canonical_name)).size };
+  }, [dedupedFiltered, search, cogsOutlierOnly]);
 
   // Category-level totals for category-wise mix %
   const catTotals = useMemo(() => {
@@ -351,6 +343,8 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     dedupedFiltered.forEach(i => {
       const ch  = i.channel;
       const cat = itemCat(i);
+      // Vendor channels group by their raw Toast menu group, and open items have
+      // no sub-category at all — both sit directly under their category.
       const sub = (usesRawMenuGroup(i) || ch === 'OPEN_ITEMS') ? '' : (i.sub_category || '');
       if (!out[ch])           out[ch]           = {};
       if (!out[ch][cat])      out[ch][cat]      = {};
@@ -432,7 +426,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
   }
 
   const channelsToShow = CH_ORDER.filter(c => tree[c]);
-  const COL = includeMakeItMeal ? 15 : 13; // total columns — the 2 Make It a Meal cols only exist once the checkbox is on
+  const COL = 13; // total columns
 
   const tableRows: React.ReactNode[] = [];
 
@@ -509,7 +503,13 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
 
         // No sub-category — render items directly under category
         if (!sub) {
-          rows.forEach(item => { if (matchesSearch(item)) tableRows.push(renderItemRow(item, cat)); });
+          rows.forEach(item => {
+            if (!matchesSearch(item)) return;
+            tableRows.push(renderItemRow(item, cat));
+            if (expandedItems[itemKeyOf(item, cat)]) {
+              renderModifierRows(item, cat).forEach(r => tableRows.push(r));
+            }
+          });
           return;
         }
 
@@ -526,10 +526,51 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
         );
 
         if (!isOpen(subKey)) return;
-        rows.forEach(item => { if (matchesSearch(item)) tableRows.push(renderItemRow(item, cat)); });
+        rows.forEach(item => {
+          if (!matchesSearch(item)) return;
+          tableRows.push(renderItemRow(item, cat));
+          if (expandedItems[itemKeyOf(item, cat)]) {
+            renderModifierRows(item, cat).forEach(r => tableRows.push(r));
+          }
+        });
       });
     });
   });
+
+  // Modifiers shown beneath the item they were ordered on, matching Toast's
+  // Product Mix. Display-only: only the columns that mean something for a
+  // modifier are filled (qty, gross, avg price); the rest stay blank rather than
+  // showing a zero that reads like real data. Nothing here feeds any total.
+  function renderModifierRows(item: ItemRowX, cat: string): React.ReactNode[] {
+    if (!item.modifiers.length) return [];
+    const sub = (usesRawMenuGroup(item) || item.channel === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
+    const blank = <td style={{ color: 'var(--muted)' }}>—</td>;
+    return item.modifiers.map(m => (
+      <tr key={`mod||${item.canonical_name}||${item.channel}||${cat}||${sub}||${m.modifier_name}`}
+          style={{ background: 'var(--card)' }}>
+        <td style={{ paddingLeft: 96, fontSize: 11, color: 'var(--muted)' }}>
+          {m.is_special_request && (
+            <span style={{
+              display: 'inline-block', background: '#f3f4f6', color: '#6b7280', borderRadius: 3,
+              padding: '0 4px', fontSize: 8, fontWeight: 700, marginRight: 5, verticalAlign: 'middle',
+            }}>REQ</span>
+          )}
+          {m.modifier_name}
+        </td>
+        <td style={{ fontSize: 9, color: 'var(--muted)' }}>{m.option_group ?? ''}</td>
+        <td style={{ textAlign: 'center', fontSize: 11, color: 'var(--muted)' }}>{m.qty.toLocaleString()}</td>
+        {blank}
+        <td style={{ textAlign: 'right', fontSize: 11, color: 'var(--muted)' }}>
+          {m.gross_sales > 0 ? fmt$2(m.gross_sales) : '—'}
+        </td>
+        {blank}{blank}{blank}{blank}{blank}
+        <td style={{ textAlign: 'right', fontSize: 11, color: 'var(--muted)' }}>
+          {m.avg_price > 0 ? fmt$2(m.avg_price) : '—'}
+        </td>
+        {blank}{blank}
+      </tr>
+    ));
+  }
 
   function renderItemRow(item: ItemRowX, cat: string): React.ReactNode {
     const catQ     = catTotals.qty.get(cat)   ?? 0;
@@ -543,19 +584,25 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     // channel + category + sub_category) — menu_name/menu_group alone can repeat
     // across different channels for the same item, causing duplicate React keys.
     const sub = (usesRawMenuGroup(item) || item.channel === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
+    const key      = itemKeyOf(item, cat);
+    const hasMods  = item.modifiers.length > 0;
+    const expanded = !!expandedItems[key];
     return (
-      <tr key={`${item.canonical_name}||${item.channel}||${cat}||${sub}`}>
-        <td style={{ paddingLeft: 60, fontWeight: 500 }}>{item.canonical_name}</td>
+      <tr key={`${item.canonical_name}||${item.channel}||${cat}||${sub}`}
+          onClick={hasMods ? () => toggleItem(key) : undefined}
+          style={hasMods ? { cursor: 'pointer' } : undefined}>
+        <td style={{ paddingLeft: hasMods ? 46 : 60, fontWeight: 500 }}>
+          {hasMods && (
+            <span style={{
+              marginRight: 5, display: 'inline-block', fontSize: 8,
+              transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform .15s',
+              color: 'var(--muted)',
+            }}>▶</span>
+          )}
+          {item.canonical_name}
+        </td>
         <td style={{ fontSize: 10, color: 'var(--muted)' }}>{item.menu_group}</td>
         <td style={{ textAlign: 'center' }}>{item.qty.toLocaleString()}</td>
-        {includeMakeItMeal && (
-          <>
-            <td style={{ textAlign: 'center', fontSize: 11, color: item.makeItMealQty > 0 ? 'var(--accent)' : 'var(--muted)' }}>
-              {item.makeItMealQty > 0 ? item.makeItMealQty.toLocaleString() : '—'}
-            </td>
-            <td style={{ textAlign: 'center', fontWeight: 600, fontSize: 11 }}>{item.combinedQty.toLocaleString()}</td>
-          </>
-        )}
         <td style={{ fontSize: 10, textAlign: 'center' }}>{qtyMix.toFixed(1)}%</td>
         <td style={{ fontWeight: 600, textAlign: 'center' }}>{fmt$(item.gross_sales)}</td>
         <td style={{ fontSize: 10, textAlign: 'center' }}>{grossMix.toFixed(1)}%</td>
@@ -586,7 +633,6 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
   function exportCsv() {
     const header = [
       'item', 'channel', 'category', 'sub_category', 'menu_group', 'qty',
-      ...(includeMakeItMeal ? ['make_it_meal_qty', 'combined_qty'] : []),
       'qty_mix_pct', 'gross_sales', 'gross_mix_pct', 'net_sales', 'refunds',
       'net_after_refunds', 'gross_mix_all_pct', 'avg_price', 'avg_cost', 'cogs_pct',
     ];
@@ -601,7 +647,6 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
       const cogsPct = getCogsPct(item);
       return [
         item.canonical_name, item.channel, cat, item.sub_category || '', item.menu_group, item.qty,
-        ...(includeMakeItMeal ? [item.makeItMealQty, item.combinedQty] : []),
         Math.round(qtyMix * 10) / 10, Math.round(item.gross_sales * 100) / 100,
         Math.round(grossMix * 10) / 10, Math.round(item.revenue * 100) / 100,
         Math.round(item.refunds * 100) / 100, Math.round(item.net_after_refunds * 100) / 100,
@@ -639,6 +684,37 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     <div>
       {/* Controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+        {/* Menu hierarchy — which levels of the tree to render, mirroring Toast's
+            Product Mix control so the two read the same way. */}
+        <div className="drw" style={{ position: 'relative' }}>
+          <button className="drb" onClick={() => setHierOpen(o => !o)} style={{ minWidth: 150 }}>
+            Menu hierarchy
+            <i className="ti ti-chevron-down" style={{ fontSize: 11, marginLeft: 4 }} />
+          </button>
+          {hierOpen && (
+            <>
+              <div style={{ position: 'fixed', inset: 0, zIndex: 199 }} onClick={() => setHierOpen(false)} />
+              <div className="drm open" style={{ minWidth: 230, zIndex: 200 }}>
+                {([
+                  ['Items',           showItems,     setShowItems,     ''],
+                  ['Open items',      showOpenItems, setShowOpenItems, ''],
+                  ['Modifiers',       showModifiers, setShowModifiers, ''],
+                  ['Special requests', showSpecial,  setShowSpecial,   'Free text a guest typed on the order — Toast records it as a modifier with no group'],
+                ] as const).map(([label, val, set, hint]) => (
+                  <label key={label} className="dr-it" style={{ gap: 8, userSelect: 'none', alignItems: 'flex-start' }}>
+                    <input type="checkbox" checked={val}
+                      onChange={() => (set as (v: boolean) => void)(!val)}
+                      style={{ accentColor: 'var(--accent)', marginTop: 2 }} />
+                    <span>
+                      {label}
+                      {hint && <div style={{ fontSize: 9, color: 'var(--muted)', lineHeight: 1.3 }}>{hint}</div>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
         <input
           value={search} onChange={e => setSearch(e.target.value)}
           placeholder="Search items…"
@@ -677,8 +753,24 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
         >
           {sortDir === 'desc' ? '↓' : '↑'}
         </button>
-        <span style={{ fontSize: 10, color: 'var(--muted)' }}>
-          {search.trim() ? dedupedFiltered.filter(matchesSearch).length : dedupedFiltered.length} items
+        <button
+          className="drb"
+          onClick={() => setCogsOutlierOnly(v => !v)}
+          title="Show only items with COGS% under 10% or over 60%"
+          style={{
+            minWidth: 0, padding: '4px 10px', fontSize: 11, fontWeight: 600,
+            background: cogsOutlierOnly ? '#dc2626' : undefined,
+            color: cogsOutlierOnly ? '#fff' : undefined,
+            borderColor: cogsOutlierOnly ? '#dc2626' : undefined,
+          }}
+        >
+          COGS Outliers
+        </button>
+        <span
+          style={{ fontSize: 10, color: 'var(--muted)' }}
+          title="A dish appears once per channel it sold in, so the table draws more rows than there are distinct items. The item count is the same figure the Overview header and Location Compare report."
+        >
+          {visibleCounts.items} items · {visibleCounts.rows} rows
         </span>
         {isAdmin && (
           <button className="drb" onClick={exportCsv}
@@ -687,10 +779,6 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
             ⬇ Export CSV
           </button>
         )}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, cursor: 'pointer', width: '100%' }}>
-          <input type="checkbox" checked={includeMakeItMeal} onChange={e => setIncludeMakeItMeal(e.target.checked)} />
-          Include &quot;Make It a Meal&quot; picks in Gross Sales / Net Sales / Net after Refunds (adds the modifier&apos;s own real price from fact_modifiers)
-        </label>
       </div>
 
       <div className="tw">
@@ -700,8 +788,6 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
               <col style={{ width: '16%' }} />
               <col style={{ width: '7%' }} />
               <col style={{ width: '5%' }} />
-              {includeMakeItMeal && <col style={{ width: '6%' }} />}
-              {includeMakeItMeal && <col style={{ width: '6%' }} />}
               <col style={{ width: '6%' }} />
               <col style={{ width: '6%' }} />
               <col style={{ width: '6%' }} />
@@ -718,12 +804,6 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
                 <th style={thBase}>Item</th>
                 <th style={thBase}>Menu Group</th>
                 {thSort('qty', 'QTY', 'Total quantity sold (SUM of order line quantity)')}
-                {includeMakeItMeal && (
-                  <>
-                    <th style={{ ...thBase, textAlign: 'center', fontSize: 10, whiteSpace: 'normal' }} title="Times this item was picked as a &quot;make it a meal&quot; modifier (side/drink/sweet add-on), sourced from public.fact_modifiers">Make It a Meal Qty</th>
-                    <th style={{ ...thBase, textAlign: 'center', fontSize: 10 }} title="QTY + Make It a Meal Qty">Combined Qty</th>
-                  </>
-                )}
                 {thSort('qty_mix', 'Mix % (Qty)', 'Item qty ÷ category total qty')}
                 {thSort('gross_sales', 'Gross Sales', 'SUM of pre-discount revenue (ties to Toast gross sales reports)')}
                 {thSort('gross_mix', 'Mix % Revenue by Category', 'Item gross sales ÷ category gross sales (pre-discount, ties to Toast)', { wrap: true })}

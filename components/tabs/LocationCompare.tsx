@@ -105,7 +105,13 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
     [locations],
   );
 
-  const [selectedLocs, setSelectedLocs] = useState<string[]>([]);
+  // Default to Open Locations only from P7 onward (owner request 2026-09-28) —
+  // Ballpark closed around then, so earlier periods still default to All
+  // Locations (every location was genuinely active), but P7+ periods should
+  // not silently drag averages down with a closed store's $0.
+  const [selectedLocs, setSelectedLocs] = useState<string[]>(() =>
+    data.dateRange.start >= '2026-06-29' ? openLocationCodes : []
+  );
   const [locOpen, setLocOpen]           = useState(false);
   const [metric, setMetric]             = useState<Metric>('revenue');
   const [search, setSearch]             = useState('');
@@ -137,9 +143,11 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
 
   const locLabel = selectedLocs.length === 0
     ? 'All Locations'
-    : selectedLocs.length === 1
-      ? locMeta.find(l => l.location_code === selectedLocs[0])?.display_name ?? 'Location'
-      : `${selectedLocs.length} Locations`;
+    : isOpenLocationsSelected
+      ? 'Open Locations'
+      : selectedLocs.length === 1
+        ? locMeta.find(l => l.location_code === selectedLocs[0])?.display_name ?? 'Location'
+        : `${selectedLocs.length} Locations`;
 
   const locStats = useMemo(() => {
     // Aggregate per (location, item) first so topItem reflects item totals, not channel-specific revenue
@@ -245,7 +253,15 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
     const q    = search.toLowerCase();
     const seen = new Set<string>();
     const names: string[] = [];
+    // Only items that actually sold in the CHOSEN locations. Listing every item
+    // regardless padded the count with rows that are all zeros — an item sold
+    // only at a closed store still appeared while comparing the open ones
+    // (owner request 2026-09-28). dataMap is keyed name → location, so an item
+    // qualifies when it has data under at least one selected location.
+    const soldInScope = (name: string) =>
+      activeMeta.some(l => dataMap[name]?.[l.location_code]);
     for (const i of items) {
+      if (!soldInScope(i.canonical_name)) continue;
       if (!seen.has(i.canonical_name)) { seen.add(i.canonical_name); names.push(i.canonical_name); }
     }
     // A Make It a Meal pick with no standalone line anywhere has no entry in
@@ -254,6 +270,7 @@ export default function LocationCompare({ data, makeItMealModifiers }: { data: D
     // effectiveLocationItems), so pick up any name `items` didn't cover.
     if (includeMakeItMeal) {
       for (const name of Object.keys(dataMap)) {
+        if (!soldInScope(name)) continue;
         if (!seen.has(name)) { seen.add(name); names.push(name); }
       }
     }

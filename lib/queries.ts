@@ -18,6 +18,7 @@ import type {
   MERow, ModifierRow, PaymentRow, PaymentByLocationRow, PaymentSourceLocationRow, BikkyRow,
   CategoryRow, ChannelCategoryRow,
   RenameRow, RenameNameHistoryEntry, RenameDemoRow, NeedsReviewRow, NeedsReviewLineItem,
+  MergeDecisionRow, MergeSuggestionRow, ReusedButtonRow, ItemModifierRow,
   OpenItemRow, OpenItemsSummary,
   UncategorizedItemRow, UncategorizedModifierRow,
   FiscalPeriodRow, VendorRow, PinkSheetRow, PinkSheetDetailRow,
@@ -146,101 +147,19 @@ const GRP_TO_SUBCAT_MAP: Record<string, string> = {
 const IS_OPEN = `(fol.menu_name IS NULL)`;
 
 // Canonical name normalisations applied to fact_order_lines.canonical_name.
-// Maps Toast raw names (online short names + IH "- In House" variants) to PMIX canonical names.
-// Used in getItems / getChannelItems / getLocationItems so item rows merge correctly.
-const BYO_FIX_CTE = `byo_fix(raw, clean) AS (VALUES
-  ('Grain Bowl',                                  'BYO Grain Bowl'),
-  ('Salad Bowl',                                  'BYO Salad Bowl'),
-  ('Greens + Grains Bowl',                        'BYO Greens + Grains Bowl'),
-  ('Cauliflower + Quinoa',                        'Spiced Cauli + Quinoa Bowl'),
-  ('Cauliflower + Quinoa Bowl',                   'Spiced Cauli + Quinoa Bowl'),
-  ('Kids BYO',                                    'Kids Meal'),
-  ('Burrito',                                     'BYO Indian Burrito'),
-  ('Grain Bowl - In House',                       'BYO Grain Bowl'),
-  ('Salad Bowl - In House',                       'BYO Salad Bowl'),
-  ('Greens + Grains Bowl - In House',             'BYO Greens + Grains Bowl'),
-  ('Cauliflower + Quinoa - In House',             'Spiced Cauli + Quinoa Bowl'),
-  ('Burrito - In House',                          'BYO Indian Burrito'),
-  ('Kids BYO - In House',                         'Kids Meal'),
-  ('Homemade Juice - In House',                   'Homemade Juice'),
-  ('Chicken Tikka Bowl - In House',               'Chicken Tikka Bowl'),
-  ('Spicy Chili Chicken Bowl - In House',         'Spicy Chili Chicken Bowl'),
-  ('Paneer Tikka Bowl - In House',                'Paneer Tikka Bowl'),
-  ('Lamb Kebab Bowl - In House',                  'Lamb Kebab Bowl'),
-  ('Chicken Tikka + Avocado Salad - In House',    'Chicken Tikka + Avocado Salad'),
-  ('Butter Chicken - In House',                   'Butter Chicken'),
-  ('Chicken Tikka Masala - In House',             'Chicken Tikka Masala'),
-  ('Aloo Gobhi - In House',                       'Aloo Gobhi'),
-  ('Saag Paneer - In House',                      'Saag Paneer'),
-  ('Paneer Butter Masala - In House',             'Paneer Butter Masala'),
-  ('Saag Chole - In House',                       'Saag Chole'),
-  ('Pick 2 Combo Plate - In House',               'Pick 2 Combo Plate'),
-  ('Tandoori Paneer Burrito - In House',          'Tandoori Paneer Burrito'),
-  ('Butter Chicken Burrito - In House',           'Butter Chicken Burrito'),
-  -- Vendor-prefix consolidation (dashboard-display-only — fact_order_lines.canonical_name
-  -- keeps the original vendor-labeled name; this layer normalizes for reporting only).
-  -- Rule: same dish sold under 2+ vendor labels -> bare name. Single-vendor items left alone.
-  ('HUNGRY Chicken Tikka Bowl',                   'Chicken Tikka Bowl'),
-  ('Sharebite Chicken Tikka Bowl',                'Chicken Tikka Bowl'),
-  ('HUNGRY Chicken Tikka + Avocado Salad',        'Chicken Tikka + Avocado Salad'),
-  ('HUNGRY Lamb Kebab Bowl',                      'Lamb Kebab Bowl'),
-  ('HUNGRY GO Lamb Kebab Bowl',                   'Lamb Kebab Bowl'),
-  ('Sharebite Grain Bowl',                        'BYO Grain Bowl'),
-  -- Rahul: Tandoori Paneer Bowl and Paneer Tikka Bowl are the same dish — merged here.
-  ('Sharebite Tandoori Paneer Bowl',              'Paneer Tikka Bowl'),
-  ('Cureate Tandoori Paneer Bowl',                'Paneer Tikka Bowl'),
-  ('Fooda Tandoori Paneer Bowl',                  'Paneer Tikka Bowl'),
-  ('Aramark Tandoori Paneer Bowl',                'Paneer Tikka Bowl'),
-  ('Aramark Marriott Tandoori Paneer Bowl',       'Paneer Tikka Bowl'),
-  ('Tandoori Paneer Bowl - Club Feast',           'Paneer Tikka Bowl'),
-  ('HUNGRY Garlic Naan',                          'Garlic Naan'),
-  ('HUNGRY Naan',                                 'Naan'),
-  ('Offsite Pop-Up Mango Lassi',                  'Mango Lassi'),
-  ('Aramark Mango Lassi',                         'Mango Lassi'),
-  ('Eurest APL Mango Lassi',                      'Mango Lassi'),
-  -- Rahul: Aramark Marriott/Fooda Chicken Tikka Masala are different items — not merged.
-  -- Rahul (confirmed): Masala Chai Cookies (incl. all vendor variants) is the same
-  -- dish as Masala Chai Cookies — consolidated here dashboard-side.
-  ('Masala Chai Cookies',                         'Masala Chai Cookies'),
-  ('Offsite Masala Chai Cookies',                 'Masala Chai Cookies'),
-  ('HUNGRY Masala Chai Cookies',                  'Masala Chai Cookies'),
-  ('USHOR Masala Chai Cookies',                   'Masala Chai Cookies'),
-  ('Fooda Aramark Eurest Masala Chai Cookies',    'Masala Chai Cookies'),
-  ('Fooda BYO Spicy Chicken Bowl',                'BYO Spicy Chicken Bowl'),
-  ('Aramark Marriott BYO Spicy Chicken Bowl',     'BYO Spicy Chicken Bowl'),
-  ('Fooda Chicken Curry Bowl',                    'Chicken Curry Bowl'),
-  ('Aramark Marriott Chicken Curry Bowl',         'Chicken Curry Bowl'),
-  ('Fooda BYO Chicken Bowl',                      'BYO Chicken Bowl'),
-  ('Aramark Marriott BYO Chicken Bowl',           'BYO Chicken Bowl'),
-  ('Fooda BYO Harvest Veg Bowl',                  'BYO Harvest Veg Bowl'),
-  ('Aramark Marriott BYO Harvest Veg Bowl',       'BYO Harvest Veg Bowl'),
-  ('Aramark Chicken Bowl',                        'BYO Chicken Bowl'),
-  ('Cureate Chicken Bowl',                        'BYO Chicken Bowl'),
-  ('Fooda BYO Paneer Bowl',                       'BYO Paneer Bowl'),
-  ('Aramark Marriott BYO Paneer Bowl',            'BYO Paneer Bowl'),
-  ('Fooda Extra Chicken',                         'Extra Chicken'),
-  ('Aramark Marriott Extra Chicken',              'Extra Chicken'),
-  ('Fooda Extra Spicy Chicken',                   'Extra Spicy Chicken'),
-  ('Aramark Marriott Extra Spicy Chicken',        'Extra Spicy Chicken'),
-  ('Fooda Extra Paneer',                          'Extra Paneer'),
-  ('Aramark Marriott Extra Paneer',               'Extra Paneer'),
-  ('Eurest Premium Bowl',                         'Premium Bowl'),
-  ('Eurest APL Premium Bowl',                     'Premium Bowl'),
-  ('Aramark Harvest Vegetables Bowl',             'BYO Harvest Veg Bowl'),
-  ('Cureate Harvest Vegetables Bowl',             'BYO Harvest Veg Bowl'),
-  ('Aramark Marriott Spicy Chicken Avocado Bowl', 'Spicy Chicken Avocado Bowl'),
-  ('Fooda Guarantee',                             'Guarantee'),
-  ('HUNGRY Guarantee',                            'Guarantee'),
-  ('Aramark Marriott Avocado',                    'Avocado'),
-  ('Fooda MOD Spicy Chili Chicken',               'Spicy Chili Chicken'),
-  -- Catering/Club Feast suffix variants (Rahul Notes, PMIX Name Normalisation.xlsx).
-  ('Cauliflower + Quinoa - Club Feast',           'Spiced Cauli + Quinoa Bowl'),
-  ('Cauliflower + Quinoa Bowl - Catering',        'Spiced Cauli + Quinoa Bowl'),
-  ('Grain Bowl - Catering',                       'BYO Grain Bowl'),
-  ('Grain Bowl - Club Feast',                     'BYO Grain Bowl'),
-  ('Greens + Grains Bowl - Catering',             'BYO Greens + Grains Bowl'),
-  ('Salad Bowl - Catering',                       'BYO Salad Bowl'),
-  ('Salad Bowl - Club Feast',                     'BYO Salad Bowl')
+// Maps Toast raw names (online short names, "- In House" variants, vendor-prefixed
+// catering labels) to PMIX canonical names, so item rows merge correctly.
+//
+// Read from analytics.name_merge_decisions, NOT hardcoded — the Renames Audit tab
+// writes to that table, so a merge can be confirmed, rejected or undone without a
+// code change (owner request 2026-09-28). Only 'confirmed' rows merge; 'rejected'
+// rows are a record that a pair was reviewed and deliberately NOT merged, so the
+// suggestion engine stops re-proposing it.
+//
+// This table is the single source of truth for display-side merging and must stay
+// seeded — an empty table silently un-merges every item across all 10 queries below.
+const BYO_FIX_CTE = `byo_fix(raw, clean) AS (
+  SELECT raw_name, clean_name FROM analytics.name_merge_decisions WHERE decision = 'confirmed'
 )`;
 
 // Base WHERE for all main metric queries:
@@ -309,8 +228,14 @@ export async function getDateRange(
 export async function getSummary(dr: DateRange): Promise<Summary> {
   const db = pool();
   const [sumRes, topRes] = await Promise.all([
+    // Counts the CONSOLIDATED name (byo_fix), not the raw one — otherwise the
+    // header reports a different item count than Location Compare and Item Mix,
+    // and flips definition the moment a location filter is applied (which
+    // recomputes it off locationItems, already consolidated). Owner request
+    // 2026-09-28: one definition everywhere.
     db.query(`
-      WITH refunds AS (
+      WITH ${BYO_FIX_CTE},
+      refunds AS (
         SELECT COALESCE(SUM(rs.sales_refund), 0) AS refunds
         FROM analytics.refund_sales rs
         JOIN public.fact_order_lines fol ON fol.selection_guid = rs.selection_guid
@@ -320,30 +245,34 @@ export async function getSummary(dr: DateRange): Promise<Summary> {
       SELECT
         SUM(fol.quantity)::BIGINT                                          AS total_qty,
         ROUND(SUM(fol.line_total)::NUMERIC, 2)                            AS total_revenue,
-        COUNT(DISTINCT fol.canonical_name)::INT                           AS unique_items,
+        COUNT(DISTINCT COALESCE(bf.clean, fol.canonical_name))::INT       AS unique_items,
         MAX(fol.business_date)::TEXT                                      AS last_date,
         (SELECT refunds FROM refunds)                                     AS refunds,
         ROUND(SUM(fol.line_total)::NUMERIC - (SELECT refunds FROM refunds), 2) AS net_revenue
       FROM public.fact_order_lines fol
+      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
     `, [dr.start, dr.end]),
 
     db.query(`
-      WITH grand AS (
+      WITH ${BYO_FIX_CTE},
+      grand AS (
         SELECT SUM(line_total) AS total
         FROM public.fact_order_lines fol
         WHERE ${BASE_WHERE}
           AND fol.business_date BETWEEN $1::DATE AND $2::DATE
       )
       SELECT
-        fol.canonical_name,
+        COALESCE(bf.clean, fol.canonical_name)                          AS canonical_name,
         ROUND(SUM(fol.line_total)::NUMERIC, 2)                          AS revenue,
         ROUND(SUM(fol.line_total)*100.0/NULLIF(g.total,0)::NUMERIC, 1) AS mix_pct
-      FROM public.fact_order_lines fol, grand g
+      FROM public.fact_order_lines fol
+      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      CROSS JOIN grand g
       WHERE ${BASE_WHERE}
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
-      GROUP BY fol.canonical_name, g.total
+      GROUP BY COALESCE(bf.clean, fol.canonical_name), g.total
       ORDER BY revenue DESC
       LIMIT 1
     `, [dr.start, dr.end]),
@@ -1248,7 +1177,11 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
     -- Step 7: ME thresholds on the blended master (all items)
     -- medM  = (totNS − totTC) / totNS   revenue-weighted avg margin
     -- medMM = (1/n) × 0.7               n = distinct item count in blended master
-    item_count AS (SELECT COUNT(*) AS n FROM pivoted),
+    -- $0-cost items (recipe not yet in R365) excluded from n so a missing
+    -- recipe doesn't shrink the threshold and make it easier for every other
+    -- item to clear it (owner request 2026-09-28) — quadrant assignment for
+    -- $0-cost items themselves is unchanged for now, this only fixes the count.
+    item_count AS (SELECT COUNT(*) AS n FROM pivoted WHERE total_cost > 0),
     thresholds AS (
       SELECT
         SUM(net_sales - total_cost) / NULLIF(SUM(net_sales),0) AS margin_threshold,
@@ -1696,9 +1629,35 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
   }));
 }
 
+// analytics.pc_modifier_daily is DROPPED and rebuilt by every pipeline run, so
+// whether it has toast_group depends on which version of pc_refresh.sql that run
+// used. A dashboard deploy can therefore meet an older pipeline (or vice versa),
+// and referencing a missing column fails the whole query — which takes down
+// loadDashboardData, and with it every tab, not just the modifier sections.
+// Checked per call rather than memoised: the column genuinely comes and goes as
+// the pipeline runs, and loadDashboardData is cached for hours anyway, so this
+// costs one trivial lookup per rebuild.
+async function pcModifierDailyHasToastGroup(db: ReturnType<typeof pool>): Promise<boolean> {
+  try {
+    const { rows } = await db.query(`
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'analytics'
+        AND table_name  = 'pc_modifier_daily'
+        AND column_name = 'toast_group'
+      LIMIT 1
+    `);
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Pink Sheet Detail (modifier-level breakdown per item) ───────────────────
 export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDetailRow[]> {
   const db = pool();
+  // Falls back to the old blanket 'Topping' when the pipeline hasn't supplied
+  // Toast's group yet, rather than erroring.
+  const toastGroupExpr = (await pcModifierDailyHasToastGroup(db)) ? 'd.toast_group' : "NULL::TEXT";
   const { rows } = await db.query(`
     WITH
     ${BYO_FIX_CTE},
@@ -1729,9 +1688,18 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
     rows_ AS (
       SELECT
         COALESCE(bf.clean, d.raw_parent) AS parent_item,
+        -- When our own lookup has no entry for a modifier, don't dump it into
+        -- "Topping" — work out the section from the group Toast filed it under
+        -- (owner request 2026-09-28). Toast is usually far closer to the truth:
+        -- "Yes, Please Include Utensils" is an utensils question, not a topping,
+        -- and "Saag Chole" sits in "Pick a Main".
+        --   1. the group→section mapping below (owner-defined 2026-09-28)
+        --   2. failing that, Toast's own group name verbatim
+        --   3. failing that (no group at all — free-text order notes), 'Other'
         CASE WHEN d.from_item_type AND COALESCE(uc.unit_cost, 0) > 0
                   AND d.pit_item_type ILIKE '%online%'
-             THEN CASE WHEN d.pit_item_type ILIKE 'kids meal%' THEN 'Drink' ELSE 'Topping' END
+             THEN CASE WHEN d.pit_item_type ILIKE 'kids meal%' THEN 'Drink'
+                       ELSE ${toastGroupSectionSql(toastGroupExpr)} END
              ELSE d.section_base
         END AS section,
         d.mod_display AS modifier_name,
@@ -2150,19 +2118,76 @@ export async function getMakeItMealModifiers(dr: DateRange): Promise<MakeItMealM
   }));
 }
 
+// ─── Item Mix modifier rows ──────────────────────────────────────────────────
+// Modifiers grouped under the item they were ordered on, for Item Mix's
+// modifier-level hierarchy. Parent name goes through byo_fix so a modifier hangs
+// off the same item name Item Mix shows everywhere else.
+export async function getItemModifiers(dr: DateRange): Promise<ItemModifierRow[]> {
+  const db = pool();
+  try {
+    const { rows } = await db.query(`
+      WITH ${BYO_FIX_CTE}
+      SELECT
+        COALESCE(bf.clean, fol.canonical_name)                        AS parent_item,
+        fm.canonical_name                                             AS modifier_name,
+        (${CHO})                                                      AS channel,
+        -- Carried so the location filter applies to modifier rows too. Without it
+        -- they showed every location regardless of the filter, while the item row
+        -- above them respected it (owner-reported 2026-09-30).
+        fol.location_code                                             AS location_code,
+        MIN(fm.option_group_name)                                     AS option_group,
+        SUM(fm.quantity)::BIGINT                                      AS qty,
+        ROUND(SUM(fm.price)::NUMERIC, 2)                              AS gross_sales,
+        ROUND((SUM(fm.price) / NULLIF(SUM(fm.quantity), 0))::NUMERIC, 2) AS avg_price,
+        -- No option group at all means Toast never offered this as a choice — it
+        -- is free text the guest typed onto the order.
+        BOOL_AND(fm.option_group_name IS NULL)                        AS is_special_request
+      FROM public.fact_modifiers fm
+      JOIN public.fact_order_lines fol ON fol.selection_guid = fm.parent_selection
+      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
+      ${CH_OVERRIDE_JOIN('fol.selection_guid')}
+      WHERE NOT fm.is_voided
+        AND ${BASE_WHERE}
+        AND fol.business_date BETWEEN $1::DATE AND $2::DATE
+      GROUP BY 1, 2, 3, 4
+    `, [dr.start, dr.end]);
+    await db.end();
+    return rows.map(r => ({
+      parent_item:        r.parent_item   as string,
+      modifier_name:      r.modifier_name as string,
+      channel:            r.channel       as string,
+      location_code:      r.location_code as string,
+      option_group:       (r.option_group ?? null) as string | null,
+      qty:                Number(r.qty),
+      gross_sales:        Number(r.gross_sales),
+      avg_price:          Number(r.avg_price ?? 0),
+      is_special_request: Boolean(r.is_special_request),
+    }));
+  } catch (err) {
+    console.error('getItemModifiers error:', err);
+    await db.end().catch(() => {});
+    return [];
+  }
+}
+
 // ─── BYO Modifiers ────────────────────────────────────────────────────────────
 export async function getModifiers(dr: DateRange): Promise<ModifierRow[]> {
   const db = pool();
   try {
     const { rows } = await db.query(`
-      WITH raw_mods AS (
+      WITH ${BYO_FIX_CTE},
+      raw_mods AS (
         SELECT
           byo_type          AS raw_type,
           mod_display        AS modifier_name,
           qty                AS quantity,
-          raw_parent         AS parent_item,
+          -- Parent item consolidated the same way every other tab consolidates it,
+          -- so a modifier's parent doesn't appear under a name Item Mix no longer
+          -- shows (owner request 2026-09-28).
+          COALESCE(bf.clean, d.raw_parent) AS parent_item,
           COALESCE(location_code, '') AS location_code
-        FROM analytics.pc_modifier_daily
+        FROM analytics.pc_modifier_daily d
+        LEFT JOIN byo_fix bf ON bf.raw = d.raw_parent
         WHERE byo_type IS NOT NULL
           AND business_date BETWEEN $1::DATE AND $2::DATE
       ),
@@ -2789,6 +2814,305 @@ export async function getRenamesDemo(): Promise<RenameDemoRow[]> {
   }
 }
 
+// ─── Toast modifier group → our section name ─────────────────────────────────
+// Used only when analytics.modifier_type has no entry for a modifier. Toast files
+// every modifier under a group ("Pick a Main", "Get Saucy", "Top It Off"), and
+// that group is a far better guide than the old blanket "Topping" default.
+// Mapping owner-defined 2026-09-28, walking the full group list for In-House /
+// RASA Digital / 3PD. Matching is case-insensitive, and "Any Chutney or
+// Dressings? <parent>" variants are matched by prefix since Toast appends the
+// parent item with a "?" rather than the " - " that pc_refresh already strips.
+// A group that isn't listed keeps Toast's own wording rather than being forced
+// into one of ours — deliberately visible, so a new group shows up as itself.
+function toastGroupSectionSql(src: string): string {
+  return `(
+  CASE
+    WHEN ${src} ILIKE 'Any Chutney or Dressings%'                    THEN 'Chutney + Dressing'
+    WHEN LOWER(${src}) IN ('choose chutneys','extra chutney on the side')
+                                                                            THEN 'Chutney + Dressing'
+    WHEN LOWER(${src}) IN ('pick a main','choose mains','kids mains',
+                                  'kids mains in-house','pick your plate entrees',
+                                  'side of main')                           THEN 'Main'
+    -- 'spread' (Masala Yogurt / No Spread, burritos) sits with Base: that is where
+    -- the lookup has classified Masala Yogurt since P01, so treating it as its own
+    -- section would have moved ~4,900 historical units out of Base.
+    WHEN LOWER(${src}) IN ('build your base','choose base','choose bases',
+                                  'greens base','kids base','side of grain',
+                                  'spread')                                   THEN 'Base'
+    WHEN LOWER(${src}) = '1/2 mains'                                  THEN '1/2 Main'
+    WHEN LOWER(${src}) IN ('1/2 base','1/2 grains','1/2 salad greens') THEN '1/2 Base'
+    WHEN LOWER(${src}) IN ('add veggies','choose veggies','which veggie?',
+                                  'kids veggies','side of veggie')           THEN 'Veggie'
+    WHEN LOWER(${src}) = 'add extra veggies'                          THEN 'Extra Veggie'
+    WHEN LOWER(${src}) = 'add an extra main'                          THEN 'Extra Main'
+    WHEN LOWER(${src}) IN ('get saucy','choose sauces','side of sauce') THEN 'Sauce'
+    WHEN LOWER(${src}) IN ('make it a meal','round it out')           THEN 'Make It Meal'
+    WHEN LOWER(${src}) IN ('top it off','choose toppings','kids toppings',
+                                  'add extras')                              THEN 'Topping'
+    WHEN LOWER(${src}) LIKE 'flavor?%'
+      OR LOWER(${src}) LIKE 'juice flavor?%'
+      OR LOWER(${src}) IN ('maine root flavor?','kids homemade juice')  THEN 'Flavor'
+    ELSE COALESCE(${src}, 'Other')
+  END
+)`;
+}
+
+// ─── Merge decisions + suggestions (Renames Audit review workflow) ───────────
+// Vendor/event labels Toast puts in front of an otherwise-normal item name. Used
+// to spot "same dish under a caterer's label" candidates. Longest first so
+// "Aramark Marriott" is stripped before the shorter "Aramark" can match it.
+const VENDOR_LABELS = [
+  'Aramark Georgetown', 'Aramark Marriott', 'Eurest APL', 'Offsite Pop-Up',
+  'Guest Services', 'HUNGRY GO', 'Cater Cow', 'ZeroCater', 'Sharebite',
+  'Foodworks', 'Territory', 'Aramark', 'Cureate', 'Eurest', 'HUNGRY',
+  'Offsite', 'USHOR', 'Fooda', 'NSA', 'WCK', 'Relish',
+];
+
+// Suffixes that mark the SAME dish under a different label — safe to propose a
+// merge across. Derived by scanning every distinct item name (2026-09-28), not
+// guessed. Deliberately EXCLUDED because they mark a genuinely different product,
+// not a relabel: " - 1 Gallon" / " - 1/2 Gallon" (portion size),
+// " - Grapefruit" (flavour), " - NO/YES utensils" (order note).
+const LABEL_SUFFIXES = [
+  ' - In House', ' - Online', ' - Catering', ' - Club Feast', ' - Fooda',
+  ' - EzCater', ' - Gameday', ' - Set Price Bowl',
+  ' Old',   // retired-recipe marker: "Lamb Kebab Bowl Old - In House"
+];
+
+// Strips labels REPEATEDLY, because they stack: "Lamb Kebab Bowl Old - In House"
+// needs both " - In House" and " Old" removed before it matches "Lamb Kebab Bowl".
+// A single pass would leave "Lamb Kebab Bowl Old" and the merge would never be
+// suggested.
+function stripVendorLabel(name: string): {
+  base: string; label: string | null; suffix: string | null; affixes: number;
+} {
+  let out = name, label: string | null = null, suffix: string | null = null, affixes = 0;
+
+  for (const p of VENDOR_LABELS) {
+    if (out.startsWith(p + ' ')) { out = out.slice(p.length + 1); label = p; affixes++; break; }
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const s of LABEL_SUFFIXES) {
+      if (out.length > s.length && out.endsWith(s)) {
+        out = out.slice(0, -s.length);
+        suffix = suffix ?? s;
+        affixes++;
+        changed = true;
+        break;
+      }
+    }
+  }
+  return { base: out.trim(), label, suffix, affixes };
+}
+
+// How canonical a name is — LOWER wins, measured as the NUMBER of labels stacked
+// on it. A vendor label ("Cater Cow …") or a channel suffix ("… - In House")
+// marks a name as the variant, so the plainer name always survives a merge no
+// matter how much the variant sold: "Homemade Juice - In House" (8,576) still
+// merges INTO "Homemade Juice" (999) (owner correction 2026-09-28).
+//
+// Counting rather than flagging matters for stacked labels: "Harvest Chicken Bowl
+// Old - In House" carries two, "Harvest Chicken Bowl - In House" one, and plain
+// "Harvest Chicken Bowl" none — a boolean would tie the first two and could pick
+// the more-labelled one as the target. Volume only breaks ties at equal depth.
+function canonicalRank(affixes: number): number {
+  return affixes;
+}
+
+// Collapses wording that differs without meaning anything — "Veggies"/"Vegetables",
+// and the BYO/Bowl noise words that appear inconsistently across vendor labels.
+function normalizeForMatch(s: string): string {
+  return s.toLowerCase()
+    .replace(/veggies|vegetables|vegetable/g, 'veg')
+    .replace(/\bbyo\b/g, '')
+    .replace(/\bbowl\b/g, '')
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+export async function getMergeDecisions(): Promise<MergeDecisionRow[]> {
+  const db = pool();
+  try {
+    const { rows } = await db.query(`
+      SELECT d.raw_name, d.clean_name, d.decision, d.source, d.decided_by,
+             d.updated_at::TEXT AS updated_at,
+             COALESCE(q.qty, 0) AS qty
+      FROM analytics.name_merge_decisions d
+      LEFT JOIN (
+        SELECT canonical_name, SUM(quantity) AS qty
+        FROM public.fact_order_lines
+        WHERE NOT is_voided AND NOT is_deferred
+        GROUP BY canonical_name
+      ) q ON q.canonical_name = d.raw_name
+      ORDER BY d.decision, d.clean_name, d.raw_name
+    `);
+    await db.end();
+    return rows.map(r => ({
+      raw_name:   r.raw_name   as string,
+      clean_name: r.clean_name as string,
+      decision:   r.decision   as MergeDecisionRow['decision'],
+      source:     r.source     as MergeDecisionRow['source'],
+      decided_by: (r.decided_by ?? null) as string | null,
+      updated_at: r.updated_at as string,
+      qty:        Number(r.qty),
+    }));
+  } catch (err) {
+    console.error('getMergeDecisions error:', err);
+    await db.end().catch(() => {});
+    return [];
+  }
+}
+
+// Candidates awaiting a yes/no, plus the reused-button groups that should never
+// be presented as renames at all. Detection runs in TS rather than SQL because
+// the name-matching is string work over a few hundred rows, not set work.
+export async function getMergeSuggestions(): Promise<{
+  suggestions: MergeSuggestionRow[];
+  reusedButtons: ReusedButtonRow[];
+}> {
+  const db = pool();
+  try {
+    const [decidedRes, histRes, namesRes] = await Promise.all([
+      db.query(`SELECT raw_name, clean_name, decision FROM analytics.name_merge_decisions`),
+      db.query(`
+        SELECT item_guid,
+               array_agg(display_name ORDER BY first_seen) AS names,
+               array_agg(lifetime_qty ORDER BY first_seen) AS qtys,
+               array_agg(first_seen::TEXT ORDER BY first_seen) AS firsts,
+               array_agg(last_seen::TEXT  ORDER BY first_seen) AS lasts
+        FROM analytics.item_name_history
+        WHERE names_for_item > 1
+        GROUP BY item_guid
+      `),
+      db.query(`
+        SELECT canonical_name, SUM(quantity) AS qty
+        FROM public.fact_order_lines
+        WHERE NOT is_voided AND NOT is_deferred
+        GROUP BY canonical_name
+      `),
+    ]);
+    await db.end();
+
+    const liveNames = new Set(namesRes.rows.map(r => r.canonical_name as string));
+    const decided  = new Set(decidedRes.rows.map(r => r.raw_name as string));
+    const confirmed = new Map(
+      decidedRes.rows.filter(r => r.decision === 'confirmed')
+                     .map(r => [r.raw_name as string, r.clean_name as string]),
+    );
+    // Bucket on the POST-merge name, so something already absorbed into another
+    // item is never offered as a merge target.
+    const resolve = (n: string) => confirmed.get(n) ?? n;
+
+    const suggestions: MergeSuggestionRow[] = [];
+    const reusedButtons: ReusedButtonRow[] = [];
+
+    // ── GUID-based: one Toast button, two names, non-overlapping date ranges ──
+    for (const r of histRes.rows) {
+      const names  = r.names  as string[];
+      const qtys   = (r.qtys as (string | number)[]).map(Number);
+      const firsts = r.firsts as string[];
+      const lasts  = r.lasts  as string[];
+
+      const overlapDays =
+        (new Date(lasts[0]).getTime() - new Date(firsts[1] ?? lasts[0]).getTime()) / 86_400_000;
+      const sequential = names.length === 2 && overlapDays <= 7 && Math.min(...qtys) >= 5;
+
+      if (sequential) {
+        // Newer name wins by default (it IS the rename), but a plain name still
+        // beats a labelled/suffixed one — otherwise "Homemade Juice" would merge
+        // into "Homemade Juice - In House" just because the suffixed variant came
+        // later and sold more (owner correction 2026-09-28).
+        // On equal labelling the NEWER name wins — that is the rename. The older
+        // name only wins when it is strictly plainer, which is what keeps
+        // "Homemade Juice" from being absorbed into "Homemade Juice - In House".
+        const meta = names.map(n => canonicalRank(stripVendorLabel(n).affixes));
+        const targetIdx = meta[1] <= meta[0] ? 1 : 0;
+        const sourceIdx = targetIdx === 0 ? 1 : 0;
+        if (decided.has(names[sourceIdx])) continue;
+        // A name the pipeline already consolidated away survives in the history
+        // table but has no rows left to merge, so suggesting it is pure noise.
+        if (!liveNames.has(names[sourceIdx])) continue;
+        suggestions.push({
+          raw_name:       names[sourceIdx],
+          suggested_name: names[targetIdx],
+          kind:           'guid_rename',
+          raw_qty:        qtys[sourceIdx],
+          suggested_qty:  qtys[targetIdx],
+          detail: `Same Toast button. "${names[0]}" ran to ${lasts[0]}, "${names[1]}" started ${firsts[1]}.`,
+        });
+      } else {
+        reusedButtons.push({
+          item_guid:  r.item_guid as string,
+          names,
+          total_qty:  qtys.reduce((a, b) => a + b, 0),
+          first_seen: firsts[0],
+          last_seen:  lasts[lasts.length - 1],
+        });
+      }
+    }
+
+    // ── Vendor-label pattern: same base name once a caterer's label is removed ──
+    const qtyByName = new Map<string, number>();
+    for (const r of namesRes.rows) {
+      const name = resolve(r.canonical_name as string);
+      qtyByName.set(name, (qtyByName.get(name) ?? 0) + Number(r.qty));
+    }
+
+    const buckets = new Map<string, { name: string; label: string | null; qty: number; rank: number }[]>();
+    for (const [name, qty] of qtyByName) {
+      const { base, label, affixes } = stripVendorLabel(name);
+      const key = normalizeForMatch(base);
+      if (!key) continue;
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key)!.push({ name, label, qty, rank: canonicalRank(affixes) });
+    }
+
+    for (const members of buckets.values()) {
+      if (members.length < 2) continue;
+      // Most canonical name wins; volume only breaks ties among equally plain names.
+      const target = members.reduce((a, b) =>
+        b.rank !== a.rank ? (b.rank < a.rank ? b : a) : (b.qty > a.qty ? b : a));
+      for (const m of members) {
+        if (m.name === target.name || decided.has(m.name)) continue;
+        suggestions.push({
+          raw_name:       m.name,
+          suggested_name: target.name,
+          kind:           'vendor_label',
+          raw_qty:        m.qty,
+          suggested_qty:  target.qty,
+          detail: m.label
+            ? `Same name once the "${m.label}" label is removed.`
+            : 'Same name once vendor labels are removed.',
+        });
+      }
+    }
+
+    // One row per name: a name can be picked up by both detectors, so keep the
+    // suggestion whose target is the most canonical (fewest labels), and prefer
+    // the GUID-backed one when they are equally canonical.
+    const best = new Map<string, MergeSuggestionRow>();
+    for (const s of suggestions) {
+      const prev = best.get(s.raw_name);
+      if (!prev) { best.set(s.raw_name, s); continue; }
+      const a = stripVendorLabel(s.suggested_name).affixes;
+      const b = stripVendorLabel(prev.suggested_name).affixes;
+      if (a < b || (a === b && s.kind === 'guid_rename' && prev.kind !== 'guid_rename')) {
+        best.set(s.raw_name, s);
+      }
+    }
+    const deduped = [...best.values()];
+    deduped.sort((a, b) =>
+      (a.kind === b.kind ? 0 : a.kind === 'guid_rename' ? -1 : 1) || b.raw_qty - a.raw_qty);
+    reusedButtons.sort((a, b) => b.names.length - a.names.length);
+    return { suggestions: deduped, reusedButtons };
+  } catch (err) {
+    console.error('getMergeSuggestions error:', err);
+    await db.end().catch(() => {});
+    return { suggestions: [], reusedButtons: [] };
+  }
+}
+
 // ─── Needs Review ────────────────────────────────────────────────────────────
 // Items where the derived channel (menu_name) and channel_code disagree,
 // or where alt_payment_name contradicts the menu_name channel.
@@ -2952,9 +3276,10 @@ export async function getOpenItems(dr: DateRange): Promise<{ summary: OpenItemsS
   const db = pool();
   try {
     const { rows } = await db.query(`
-      WITH open_raw AS (
+      WITH ${BYO_FIX_CTE},
+      open_raw AS (
         SELECT
-          fol.canonical_name,
+          COALESCE(bf.clean, fol.canonical_name) AS canonical_name,
           fol.sales_category,
           fol.menu_group,
           fol.dining_option,
@@ -2962,6 +3287,7 @@ export async function getOpenItems(dr: DateRange): Promise<{ summary: OpenItemsS
           fol.line_total,
           fol.business_date
         FROM public.fact_order_lines fol
+        LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
         WHERE NOT fol.is_voided
           AND NOT fol.is_deferred
           AND fol.menu_name IS NULL
@@ -3553,7 +3879,7 @@ const ATTACH_DRINK_LIST = sqlList(ATTACHMENT_DRINK_GROUPS);
 export async function getAttachmentData(dr: DateRange): Promise<AttachmentData> {
   const db = pool();
   const { rows } = await db.query(`
-    WITH
+    WITH ${BYO_FIX_CTE},
     -- Scoped to IN_HOUSE/APP/TPD only (owner request 2026-08-05) -- attachment
     -- rate is an a-la-carte upsell metric and doesn't apply to catering's bulk/
     -- pre-set orders. An explicit allow-list here, not a "not CATERING_3PD"
@@ -3592,9 +3918,10 @@ export async function getAttachmentData(dr: DateRange): Promise<AttachmentData> 
           WHEN fol.menu_group = 'SIDES'  THEN 'Side'
           WHEN fol.menu_group IN (${ATTACH_MAIN_LIST}) THEN 'Main'
         END AS category,
-        fol.canonical_name AS name,
+        COALESCE(bf.clean, fol.canonical_name) AS name,
         fol.check_guid
       FROM public.fact_order_lines fol
+      LEFT JOIN byo_fix bf ON bf.raw = fol.canonical_name
       JOIN main_checks mc ON mc.check_guid = fol.check_guid
       WHERE NOT fol.is_voided AND NOT fol.is_deferred
         AND fol.business_date BETWEEN $1::DATE AND $2::DATE
@@ -3812,6 +4139,7 @@ export async function loadDashboardData(
     modifiers, payments, paymentsByLocation, paymentSourcesByLocation, bikky,
     categories, channelCategories,
     renames, renamesDemo, needsReview,
+    mergeDecisions, mergeSuggestionsResult,
     openItemsResult,
     uncategorizedItems,
     uncategorizedModifiers,
@@ -3819,7 +4147,7 @@ export async function loadDashboardData(
     itemCosts, missingCosts,
     prevChannelItems, prevLocationItems, prevMEItems,
     attachment, prevAttachment, attachmentTrend,
-    beverageModifiers, makeItMealModifiers,
+    beverageModifiers, makeItMealModifiers, itemModifiers,
   ] = await Promise.all([
     getSummary(dr),
     prevDr ? getSummary(prevDr) : Promise.resolve(null),
@@ -3847,6 +4175,8 @@ export async function loadDashboardData(
     getRenames(),
     getRenamesDemo(),
     getNeedsReview(dr),
+    getMergeDecisions(),
+    getMergeSuggestions(),
     getOpenItems(dr),
     getUncategorizedItems(dr),
     getUncategorizedModifiers(dr),
@@ -3865,6 +4195,7 @@ export async function loadDashboardData(
     getAttachmentTrend(dr),
     getBeverageModifiers(dr),
     getMakeItMealModifiers(dr),
+    getItemModifiers(dr),
   ]);
 
   // Homemade Juice's own base+modifier data is sparse/nonexistent under every
@@ -3901,6 +4232,8 @@ export async function loadDashboardData(
     modifiers, payments, paymentsByLocation, paymentSourcesByLocation, bikky,
     categories, channelCategories,
     renames, renamesDemo, needsReview,
+    mergeDecisions,
+    mergeSuggestions: mergeSuggestionsResult.suggestions,
     uncategorizedItems,
     uncategorizedModifiers,
     openItems:        openItemsResult.items,
@@ -3909,6 +4242,6 @@ export async function loadDashboardData(
     cateringVendors, offsiteVendors,
     itemCosts, missingCosts,
     attachment, prevAttachment, attachmentTrend,
-    beverageModifiers, makeItMealModifiers,
+    beverageModifiers, makeItMealModifiers, itemModifiers,
   };
 }

@@ -63,6 +63,10 @@ interface FlatRow {
   avg_price: number; avg_price_raw: number; avg_cost: number; avg_cost_raw: number; margin: number;
   qty: number; total_cost: number; net_sales: number; total_margin: number;
   cogs_pct: number; margin_pct: number; mix_pct: number;
+  // mix_pct is the row's share of qty across ALL channels (display only, matching
+  // GAS); ch_mix_pct is its share within its own channel, which is what the
+  // Menu Mix flag was actually decided on.
+  ch_mix_pct: number;
   margin_flag: 'High' | 'Low'; mix_flag: 'High' | 'Low'; quadrant: QuadrantKey;
   menu: string; // IN-HOUSE / RASA DIGITAL / 3PD
   sls_pct: number; sls_cat_pct: number;
@@ -143,7 +147,12 @@ function addQuadrant(
   gSales: number, gQty: number, gCost: number,
 ): ChannelRow[] {
   const mThresh  = gSales > 0 ? (gSales - gCost) / gSales : 0;
-  const mmThresh = base.length > 0 ? (1 / base.length) * 0.7 : 0;
+  // n excludes items with no cost data (no R365 recipe, so cost reads 0). Their
+  // margin is fake — 100% — so they shouldn't get a vote on where the mix bar sits
+  // for everyone else. Matches getMEPinkSheets' item_count (… WHERE total_cost > 0)
+  // in lib/queries.ts. GAS counts them; this is a deliberate divergence.
+  const nCosted  = base.reduce((c, r) => c + (r.total_cost > 0 ? 1 : 0), 0);
+  const mmThresh = nCosted > 0 ? (1 / nCosted) * 0.7 : 0;
   return base.map(r => {
     const margin_pct = r.avg_price > 0 ? (r.avg_price - r.avg_cost) / r.avg_price : 0;
     const mix_pct    = gQty > 0 ? r.qty / gQty : 0;
@@ -298,9 +307,16 @@ export default function MEOverall({
     const setter = which === 'margin' ? setMarginFlagFilter : setMixFlagFilter;
     setter(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; });
   }
-  const flagMatch = (r: { margin_flag: 'High' | 'Low'; mix_flag: 'High' | 'Low' }) =>
-    (marginFlagFilter.size === 0 || marginFlagFilter.has(r.margin_flag)) &&
-    (mixFlagFilter.size    === 0 || mixFlagFilter.has(r.mix_flag));
+  const [cogsOutlierOnly, setCogsOutlierOnly] = useState(false);
+  const [zeroCostOnly,    setZeroCostOnly]    = useState(false);
+
+  const flagMatch = (r: { margin_flag: 'High' | 'Low'; mix_flag: 'High' | 'Low'; cogs_pct: number; total_cost: number }) => {
+    if (!(marginFlagFilter.size === 0 || marginFlagFilter.has(r.margin_flag))) return false;
+    if (!(mixFlagFilter.size    === 0 || mixFlagFilter.has(r.mix_flag))) return false;
+    if (zeroCostOnly && r.total_cost > 0) return false;
+    if (cogsOutlierOnly && (r.total_cost <= 0 || (r.cogs_pct >= 0.10 && r.cogs_pct <= 0.60))) return false;
+    return true;
+  };
 
   // Pink Sheet's actual displayed cost per item — same computation PinkSheets.tsx uses,
   // not the backend's raw avg_cost_ih/avg_cost_online fields.
@@ -359,10 +375,12 @@ export default function MEOverall({
         if (qty <= 0) return;
         const fc = fcMap.get(i.canonical_name);
         const ic = icMap.get(i.canonical_name.toLowerCase());
+        const rowCost = getChCost(i, c, fc, ic) * qty;
         tNS   += ns;
-        tCost += getChCost(i, c, fc, ic) * qty;
+        tCost += rowCost;
         tQty  += qty;
-        n++;
+        // Same rule as addQuadrant: items with no cost data don't count toward n.
+        if (rowCost > 0) n++;
       });
       res[c] = {
         mThresh:  tNS > 0 ? (tNS - tCost) / tNS : 0,
@@ -381,6 +399,7 @@ export default function MEOverall({
     if (ch !== 'ALL') return [];
     const t = perChThresh;
     const grandNSAll  = t.IH.totalNS  + t.LO.totalNS  + t['3PD'].totalNS;
+    const grandQtyAll = t.IH.totalQty + t.LO.totalQty + t['3PD'].totalQty;
     const catNS: Record<string, number> = {};
     safeItems.forEach(i => {
       const cat = normalizeCategory(i.category);
@@ -404,14 +423,17 @@ export default function MEOverall({
         const cogs_pct   = ns > 0 ? tc / ns : 0;
         const margin_pct = price > 0 ? margin / price : 0;
         const thresh     = t[c];
-        // % Menu Mix is the item's share of TOTAL qty across every channel (owner
-        // request 2026-07-14), not just its share within its own channel — grandQty
-        // and mixThreshold already reflect the true blended (IH+LO+3PD) totals for
-        // ch==='ALL' (computed above from rawRows). Margin stays per-channel since
-        // channel-specific pricing/cost genuinely differs; only mix was the complaint.
-        const mix_pct    = grandQty > 0 ? qty / grandQty : 0;
+        // GAS stepBuildOverallMaster has NO threshold logic — it stacks the three
+        // channel masters and inherits each row's flags from the channel it came
+        // from. So both flags are decided against THIS channel's own cutoffs: an
+        // item can be a Star in In-House and a Dog in 3PD, and shows as two rows
+        // with those two labels. Only the three share columns are recomputed over
+        // the combined set (% Menu Mix, Sls %, Sls % Category) — those are display
+        // percentages, deliberately NOT the basis of the flag (see ch_mix_pct).
+        const mix_pct    = grandQtyAll > 0 ? qty / grandQtyAll : 0;
+        const ch_mix_pct = thresh.totalQty > 0 ? qty / thresh.totalQty : 0;
         const mf:  'High' | 'Low' = margin_pct > thresh.mThresh  ? 'High' : 'Low';
-        const mxf: 'High' | 'Low' = mix_pct    > mixThreshold    ? 'High' : 'Low';
+        const mxf: 'High' | 'Low' = ch_mix_pct > thresh.mmThresh ? 'High' : 'Low';
         const quadrant: QuadrantKey =
           mxf === 'High' && mf === 'High' ? 'Star' :
           mxf === 'High' && mf === 'Low'  ? 'Plow Horse' :
@@ -420,7 +442,7 @@ export default function MEOverall({
         result.push({
           name: i.canonical_name, category: cat, sub_category: i.sub_category,
           avg_price: price, avg_price_raw: priceRaw, avg_cost: cost, avg_cost_raw: costRaw, margin, qty, total_cost: tc,
-          net_sales: ns, total_margin: totMgn, cogs_pct, margin_pct, mix_pct,
+          net_sales: ns, total_margin: totMgn, cogs_pct, margin_pct, mix_pct, ch_mix_pct,
           margin_flag: mf, mix_flag: mxf, quadrant,
           menu: MENU_LABELS[c],
           sls_pct:     grandNSAll > 0 ? ns / grandNSAll : 0,
@@ -430,7 +452,7 @@ export default function MEOverall({
       });
     });
     return result;
-  }, [safeItems, ch, fcMap, icMap, perChThresh, grandQty, mixThreshold]);
+  }, [safeItems, ch, fcMap, icMap, perChThresh]);
 
   // Source rows for quadrant counts/charts: for Overall, use the per-channel flat
   // rows (3 per item) so counts match what the Overall table actually shows; for
@@ -457,7 +479,7 @@ export default function MEOverall({
       flagMatch(r)
     );
     return sortRows(base, sortCol);
-  }, [overallFlatRowsAll, ch, search, quadFilter, marginFlagFilter, mixFlagFilter, sortCol, sortDir]);
+  }, [overallFlatRowsAll, ch, search, quadFilter, marginFlagFilter, mixFlagFilter, cogsOutlierOnly, zeroCostOnly, sortCol, sortDir]);
 
   // ── Blended (BL) table rows: IH+LO+3PD aggregated (AppScript stepBuildBlendedMaster) ──
   // Quadrant comes from full-portfolio thresholds already in `rows` — don't recompute on filtered subset.
@@ -469,7 +491,7 @@ export default function MEOverall({
       (quadFilter.size === 0 || quadFilter.has(r.quadrant)) &&
       flagMatch(r)
     );
-  }, [ch, rows, search, quadFilter, marginFlagFilter, mixFlagFilter]);
+  }, [ch, rows, search, quadFilter, marginFlagFilter, mixFlagFilter, cogsOutlierOnly, zeroCostOnly]);
 
   // filtered set for single-channel table / scatter / bar
   const filtered = useMemo(() => {
@@ -479,19 +501,26 @@ export default function MEOverall({
       (quadFilter.size === 0 || quadFilter.has(r.quadrant)) &&
       flagMatch(r)
     );
-  }, [rows, search, quadFilter, marginFlagFilter, mixFlagFilter]);
+  }, [rows, search, quadFilter, marginFlagFilter, mixFlagFilter, cogsOutlierOnly, zeroCostOnly]);
 
   const scatterByQuad = useMemo(() => {
-    const byQ: Record<QuadrantKey, Array<{ x: number; y: number; name: string; ns: number; quadrant: QuadrantKey }>> = {
+    const byQ: Record<QuadrantKey, Array<{ x: number; y: number; name: string; ns: number; quadrant: QuadrantKey; menu: string }>> = {
       Star: [], 'Plow Horse': [], Puzzle: [], Dog: [],
     };
-    rows.forEach(r => byQ[r.quadrant].push({
-      x: Math.round(r.mix_pct * 100000) / 1000,
+    // Overall plots the same per-channel rows the quadrant cards count and the
+    // table lists (quadSourceRows), one point per item × channel — not the blended
+    // per-item rows, whose quadrants are decided on different thresholds. x is then
+    // the row's share WITHIN its own channel, so a point's position agrees with the
+    // flag that coloured it; mix_pct (the blended display share) would not.
+    const src: Array<FlatRow | ChannelRow> = quadSourceRows;
+    src.forEach(r => byQ[r.quadrant].push({
+      x: Math.round(('ch_mix_pct' in r ? r.ch_mix_pct : r.mix_pct) * 100000) / 1000,
       y: Math.round(r.margin_pct * 10000) / 100,
       name: r.name, ns: r.net_sales, quadrant: r.quadrant,
+      menu: 'menu' in r ? r.menu : '',
     }));
     return byQ;
-  }, [rows]);
+  }, [quadSourceRows]);
 
   const barData = useMemo(() =>
     [...filtered]
@@ -570,7 +599,7 @@ export default function MEOverall({
 
   // ── Export helpers ──
   function exportOverallCSV() {
-    const hdr = 'Item Name,Uplifted Avg Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Menu,Category,Sub Category,Sls %,Sls % Category';
+    const hdr = 'Item Name,Uplifted Avg Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Menu Sales (3PD-uplifted),Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Menu,Category,Sub Category,Sls %,Sls % Category';
     const csvRows = overallFlatRows.map(r => [
       `"${r.name}"`, r.avg_price.toFixed(2), r.avg_price_raw.toFixed(2),
       r.avg_cost > 0 ? r.avg_cost.toFixed(2) : '', r.avg_cost_raw > 0 ? r.avg_cost_raw.toFixed(2) : '',
@@ -585,7 +614,7 @@ export default function MEOverall({
   }
 
   function exportBlendedCSV() {
-    const hdr = 'Item Name,Uplifted Avg Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
+    const hdr = 'Item Name,Uplifted Avg Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Menu Sales (3PD-uplifted),Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
     const csvRows = blendedTableRows.map(r => {
       const margin = r.avg_price - r.avg_cost;
       const totMgn = r.net_sales - r.total_cost;
@@ -607,7 +636,7 @@ export default function MEOverall({
   }
 
   function exportSingleCSV() {
-    const hdr = 'Item Name,Uplifted Avg Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Net Sales,Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Revenue Center,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
+    const hdr = 'Item Name,Uplifted Avg Price,Avg Price,Uplifted Avg Cost With Modifiers,Avg Cost,Margin,Quantity,Total Cost,Menu Sales (3PD-uplifted),Total Margin,COGS%,% Margin,% Menu Mix,Margin Level,Menu Mix,Menu Engineering - Final,Revenue Center,Category,Sub Category,Sls %,Sls % Category,Sls % Sub Category';
     const csvRows = filtered.map(r => {
       const margin = r.avg_price - r.avg_cost;
       const totMgn = r.net_sales - r.total_cost;
@@ -666,11 +695,16 @@ export default function MEOverall({
                 &nbsp;·&nbsp;Margin threshold — IH: <strong>{pct(perChThresh.IH.mThresh)}</strong>
                 {' '}· RASA Digital: <strong>{pct(perChThresh.LO.mThresh)}</strong>
                 {' '}· 3PD: <strong>{pct(perChThresh['3PD'].mThresh)}</strong>
+                &nbsp;·&nbsp;Mix threshold — IH: <strong>{(perChThresh.IH.mmThresh * 100).toFixed(3)}%</strong>
+                {' '}· RASA Digital: <strong>{(perChThresh.LO.mmThresh * 100).toFixed(3)}%</strong>
+                {' '}· 3PD: <strong>{(perChThresh['3PD'].mmThresh * 100).toFixed(3)}%</strong>
               </>
             ) : (
-              <>&nbsp;·&nbsp;Margin threshold: <strong>{pct(marginThreshold)}</strong></>
+              <>
+                &nbsp;·&nbsp;Margin threshold: <strong>{pct(marginThreshold)}</strong>
+                &nbsp;·&nbsp;Mix threshold: <strong>{(mixThreshold * 100).toFixed(3)}%</strong>
+              </>
             )}
-            &nbsp;·&nbsp;Mix threshold: <strong>{(mixThreshold * 100).toFixed(3)}%</strong>
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -749,25 +783,25 @@ export default function MEOverall({
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14, marginBottom: 14 }}>
             <QuadrantBarChart
-              title={`Star Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Net Sales (${starBarData.length} of ${quadStats.Star.count})`}
+              title={`Star Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Menu Sales (${starBarData.length} of ${quadStats.Star.count})`}
               subtitle={QUAD_DESC.Star}
               color={QUAD.Star.fill}
               data={starBarData}
             />
             <QuadrantBarChart
-              title={`Plow Horse Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Net Sales (${plowHorseBarData.length} of ${quadStats['Plow Horse'].count})`}
+              title={`Plow Horse Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Menu Sales (${plowHorseBarData.length} of ${quadStats['Plow Horse'].count})`}
               subtitle={QUAD_DESC['Plow Horse']}
               color={QUAD['Plow Horse'].fill}
               data={plowHorseBarData}
             />
             <QuadrantBarChart
-              title={`Puzzle Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Net Sales (${puzzleBarData.length} of ${quadStats.Puzzle.count})`}
+              title={`Puzzle Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Menu Sales (${puzzleBarData.length} of ${quadStats.Puzzle.count})`}
               subtitle={QUAD_DESC.Puzzle}
               color={QUAD.Puzzle.fill}
               data={puzzleBarData}
             />
             <QuadrantBarChart
-              title={`Dog Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Net Sales (${dogBarData.length} of ${quadStats.Dog.count})`}
+              title={`Dog Items — ${quadChartMode === 'top' ? 'Top' : 'Bottom'} 5 by Menu Sales (${dogBarData.length} of ${quadStats.Dog.count})`}
               subtitle={QUAD_DESC.Dog}
               color={QUAD.Dog.fill}
               data={dogBarData}
@@ -779,7 +813,14 @@ export default function MEOverall({
       {/* ── Scatter chart ── */}
       {view === 'scatter' && (
         <div style={{ background: 'var(--card)', borderRadius: 'var(--radius)', padding: '14px 16px', boxShadow: 'var(--shadow)' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 8 }}>Menu Mix % vs Margin % — {CH_LABELS[ch]}</div>
+          <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 8 }}>
+            Menu Mix % vs Margin % — {CH_LABELS[ch]}
+            {ch === 'ALL' && (
+              <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--muted)', marginLeft: 8 }}>
+                one point per item × channel · both axes measured against that row&apos;s own channel, so there is no single threshold line
+              </span>
+            )}
+          </div>
           <ResponsiveContainer width="100%" height={340}>
             <ScatterChart margin={{ top: 10, right: 24, left: 0, bottom: 24 }}>
               <CartesianGrid stroke="#f3f4f6" />
@@ -794,14 +835,20 @@ export default function MEOverall({
                   return (
                     <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px', fontSize: 11 }}>
                       <div style={{ fontWeight: 700, marginBottom: 3 }}>{p.name}</div>
-                      <div>Mix: {p.x.toFixed(3)}% · Margin: {p.y.toFixed(1)}%</div>
+                      {p.menu && <div style={{ color: 'var(--muted)' }}>{p.menu}</div>}
+                      <div>Mix: {p.x.toFixed(3)}%{ch === 'ALL' ? ' of its channel' : ''} · Margin: {p.y.toFixed(1)}%</div>
                       <div>Revenue: {fmt$R(p.ns)}</div>
                       <div style={{ color: qd.fill, fontWeight: 600 }}>{p.quadrant}</div>
                     </div>
                   );
                 }} />
-              <ReferenceLine x={mxtPct} stroke="#dc2626" strokeDasharray="4 2" strokeWidth={1.5} />
-              <ReferenceLine y={mtPct}  stroke="#dc2626" strokeDasharray="4 2" strokeWidth={1.5} />
+              {/* Overall stacks three channel masters, each classified against its OWN
+                  margin/mix cut-offs, so there is no single threshold to draw — the
+                  same reason GAS's Overall sheet carries no italic threshold rows.
+                  Drawing the blended pair here would put points on the wrong side of
+                  their own line. Quadrant colour carries the classification instead. */}
+              {ch !== 'ALL' && <ReferenceLine x={mxtPct} stroke="#dc2626" strokeDasharray="4 2" strokeWidth={1.5} />}
+              {ch !== 'ALL' && <ReferenceLine y={mtPct}  stroke="#dc2626" strokeDasharray="4 2" strokeWidth={1.5} />}
               <Legend iconType="circle" iconSize={8} formatter={v => <span style={{ fontSize: 9 }}>{v}</span>} />
               {(Object.keys(QUAD) as QuadrantKey[]).map(q => (
                 <Scatter key={q} name={q} data={scatterByQuad[q]} fill={`${QUAD[q].fill}99`} stroke={QUAD[q].fill} r={4} />
@@ -848,7 +895,7 @@ export default function MEOverall({
           OVERALL TABLE — flat list, one row per item × channel
           Matches AppScript: stepBuildOverallMaster
           19 cols: Item Name | Avg Price | Avg Cost | Margin | Qty |
-                   Total Cost | Net Sales | Total Margin | COGS% |
+                   Total Cost | Menu Sales | Total Margin | COGS% |
                    % Margin | % Menu Mix | Margin Level | Menu Mix |
                    ME Final | Menu | Category | Sub Category |
                    Sls % | Sls % Category
@@ -859,6 +906,18 @@ export default function MEOverall({
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search items…" className="srch" />
             <MultiCheckDropdown label="Margin Level" id="margin" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={marginFlagFilter} onToggle={v => toggleFlagFilter('margin', v)} />
             <MultiCheckDropdown label="Menu Mix" id="mix" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={mixFlagFilter} onToggle={v => toggleFlagFilter('mix', v)} />
+            <button onClick={() => setCogsOutlierOnly(v => !v)} title="Show only items with COGS% under 10% or over 60% (excludes $0-cost items)"
+              style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                background: cogsOutlierOnly ? '#dc2626' : '#fff', color: cogsOutlierOnly ? '#fff' : 'var(--accent)' }}>
+              COGS Outliers
+            </button>
+            {showExport && (
+              <button onClick={() => setZeroCostOnly(v => !v)} title="Show only items with no cost data ($0) — tester/admin only"
+                style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                  background: zeroCostOnly ? '#b45309' : '#fff', color: zeroCostOnly ? '#fff' : 'var(--accent)' }}>
+                Zero-Cost Items
+              </button>
+            )}
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{overallFlatRows.length} rows</span>
             {showExport && <button onClick={exportOverallCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>}
           </div>
@@ -873,19 +932,19 @@ export default function MEOverall({
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Avg Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('qty')}>Quantity{sortArrow('qty')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_cost')} title="Uplifted Avg Cost With Modifiers × Quantity">Total Cost{sortArrow('total_cost')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Avg Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Net Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Net Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Avg Price × Quantity. 3PD is valued at its delivery-menu price (×1.22), so this is higher than Item Mix's Net Sales for the same rows — they answer different questions and are not meant to match.">Menu Sales{sortArrow('net_sales')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Menu Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Menu Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Avg Price">% Margin{sortArrow('margin_pct')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('mix_pct')} title="Item qty ÷ total qty across this view">% Menu Mix{sortArrow('mix_pct')}</th>
-                <th title="High if % Margin is above the blended margin threshold ((total net sales − total cost) ÷ total net sales), else Low">Margin Level</th>
-                <th title="High if % Menu Mix is above the mix threshold ((1 ÷ item count) × 0.7), else Low">Menu Mix</th>
-                <th title="Star = High Margin Level + High Menu Mix · Plow Horse = Low Margin + High Mix · Puzzle = High Margin + Low Mix · Dog = Low Margin + Low Mix">Menu Engineering - Final</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('mix_pct')} title="Row qty ÷ total qty across all three channels. This is a display share only — the Menu Mix flag beside it is decided on the row's share WITHIN its own channel, so don't verify the flag from this column. Hover a Menu Mix cell for the figure the flag actually used.">% Menu Mix{sortArrow('mix_pct')}</th>
+                <th title="High if the row's % Margin is above its OWN channel's margin threshold ((that channel's total margin) ÷ (that channel's Menu Sales)), else Low. Each channel is judged on its own cut-off.">Margin Level</th>
+                <th title="High if the row's share of its OWN channel's qty is above that channel's mix threshold ((1 ÷ items sold in that channel) × 0.7), else Low. A low-volume channel like RASA Digital gets a lower cut-off, so its items are not held to In-House volumes.">Menu Mix</th>
+                <th title="Inherited from the row's own channel, exactly as the GAS Overall master does — the same item can be a Star in In-House and a Dog in 3PD. Star = High Margin + High Mix · Plow Horse = Low Margin + High Mix · Puzzle = High Margin + Low Mix · Dog = Low Margin + Low Mix">Menu Engineering - Final</th>
                 <th>Menu</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('category')}>Category{sortArrow('category')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sub_category')}>Sub Category{sortArrow('sub_category')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_pct')} title="Net Sales ÷ grand total Net Sales across every item in this view">Sls %{sortArrow('sls_pct')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_cat_pct')} title="Net Sales ÷ total Net Sales for this item's Category">Sls % Category{sortArrow('sls_cat_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_pct')} title="Menu Sales ÷ grand total Menu Sales across every item in this view">Sls %{sortArrow('sls_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_cat_pct')} title="Menu Sales ÷ total Menu Sales for this item's Category">Sls % Category{sortArrow('sls_cat_pct')}</th>
               </tr></thead>
               <tbody>
                 {overallFlatRows.map((r, idx) => (
@@ -902,10 +961,13 @@ export default function MEOverall({
                     <td>{fmt$(r.total_margin)}</td>
                     <td style={{ color: r.cogs_pct > 0.35 ? '#ef4444' : 'inherit' }}>{pct(r.cogs_pct)}</td>
                     <td>{pct(r.margin_pct)}</td>
-                    <td>{pct(r.mix_pct, 1)}</td>
-                    <td><span style={flagStyle(r.margin_flag)}>{r.margin_flag}</span></td>
-                    <td><span style={flagStyle(r.mix_flag)}>{r.mix_flag}</span></td>
-                    <td><span style={quadStyle(r.quadrant)}>{r.quadrant}</span></td>
+                    <td title={`${r.qty.toLocaleString()} ÷ ${(perChThresh.IH.totalQty + perChThresh.LO.totalQty + perChThresh['3PD'].totalQty).toLocaleString()} qty across all channels`}>{pct(r.mix_pct, 1)}</td>
+                    <td title={`${r.menu}: ${pct(r.margin_pct)} vs this channel's ${pct(perChThresh[r.ch].mThresh)} threshold`}>
+                      <span style={flagStyle(r.margin_flag)}>{r.margin_flag}</span></td>
+                    <td title={`${r.menu}: ${pct(r.ch_mix_pct, 1)} of this channel's qty (${r.qty.toLocaleString()} ÷ ${perChThresh[r.ch].totalQty.toLocaleString()}) vs its ${(perChThresh[r.ch].mmThresh * 100).toFixed(3)}% threshold`}>
+                      <span style={flagStyle(r.mix_flag)}>{r.mix_flag}</span></td>
+                    <td title={`${r.margin_flag} margin + ${r.mix_flag} mix, both judged against ${r.menu} alone`}>
+                      <span style={quadStyle(r.quadrant)}>{r.quadrant}</span></td>
                     <td><span style={menuBadge(r.menu)}>{r.menu}</span></td>
                     <td style={{ fontSize: 10 }}>{r.category}</td>
                     <td style={{ fontSize: 10 }}>{r.sub_category}</td>
@@ -935,7 +997,7 @@ export default function MEOverall({
           BLENDED TABLE — one aggregated row per item (IH+LO+3PD)
           Matches AppScript: stepBuildBlendedMaster
           19 cols: Item Name | Avg Price | Avg Cost | Margin | Qty |
-                   Total Cost | Net Sales | Total Margin | COGS% |
+                   Total Cost | Menu Sales | Total Margin | COGS% |
                    % Margin | % Menu Mix | Margin Level | Menu Mix |
                    ME Final | Category | Sub Category |
                    Sls % | Sls % Category | Sls % Sub Category
@@ -946,6 +1008,18 @@ export default function MEOverall({
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search items…" className="srch" />
             <MultiCheckDropdown label="Margin Level" id="margin" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={marginFlagFilter} onToggle={v => toggleFlagFilter('margin', v)} />
             <MultiCheckDropdown label="Menu Mix" id="mix" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={mixFlagFilter} onToggle={v => toggleFlagFilter('mix', v)} />
+            <button onClick={() => setCogsOutlierOnly(v => !v)} title="Show only items with COGS% under 10% or over 60% (excludes $0-cost items)"
+              style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                background: cogsOutlierOnly ? '#dc2626' : '#fff', color: cogsOutlierOnly ? '#fff' : 'var(--accent)' }}>
+              COGS Outliers
+            </button>
+            {showExport && (
+              <button onClick={() => setZeroCostOnly(v => !v)} title="Show only items with no cost data ($0) — tester/admin only"
+                style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                  background: zeroCostOnly ? '#b45309' : '#fff', color: zeroCostOnly ? '#fff' : 'var(--accent)' }}>
+                Zero-Cost Items
+              </button>
+            )}
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{blendedTableRows.length} items</span>
             {showExport && <button onClick={exportBlendedCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>}
           </div>
@@ -960,9 +1034,9 @@ export default function MEOverall({
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Avg Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('qty')}>Quantity{sortArrow('qty')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_cost')} title="Uplifted Avg Cost With Modifiers × Quantity">Total Cost{sortArrow('total_cost')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Avg Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Net Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Net Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Avg Price × Quantity. 3PD is valued at its delivery-menu price (×1.22), so this is higher than Item Mix's Net Sales for the same rows — they answer different questions and are not meant to match.">Menu Sales{sortArrow('net_sales')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Menu Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Menu Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Avg Price">% Margin{sortArrow('margin_pct')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('mix_pct')} title="Item qty ÷ total qty across this view">% Menu Mix{sortArrow('mix_pct')}</th>
                 <th title="High if % Margin is above the blended margin threshold ((total net sales − total cost) ÷ total net sales), else Low">Margin Level</th>
@@ -970,9 +1044,9 @@ export default function MEOverall({
                 <th title="Star = High Margin Level + High Menu Mix · Plow Horse = Low Margin + High Mix · Puzzle = High Margin + Low Mix · Dog = Low Margin + Low Mix">Menu Engineering - Final</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('category')}>Category{sortArrow('category')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sub_category')}>Sub Category{sortArrow('sub_category')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_pct')} title="Net Sales ÷ grand total Net Sales across every item in this view">Sls %{sortArrow('sls_pct')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_cat_pct')} title="Net Sales ÷ total Net Sales for this item's Category">Sls % Category{sortArrow('sls_cat_pct')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_sub_pct')} title="Net Sales ÷ total Net Sales for this item's Sub Category">Sls % Sub Category{sortArrow('sls_sub_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_pct')} title="Menu Sales ÷ grand total Menu Sales across every item in this view">Sls %{sortArrow('sls_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_cat_pct')} title="Menu Sales ÷ total Menu Sales for this item's Category">Sls % Category{sortArrow('sls_cat_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_sub_pct')} title="Menu Sales ÷ total Menu Sales for this item's Sub Category">Sls % Sub Category{sortArrow('sls_sub_pct')}</th>
               </tr></thead>
               <tbody>
                 {blendedTableRowsD.map(r => (
@@ -1029,6 +1103,18 @@ export default function MEOverall({
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search items…" className="srch" />
             <MultiCheckDropdown label="Margin Level" id="margin" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={marginFlagFilter} onToggle={v => toggleFlagFilter('margin', v)} />
             <MultiCheckDropdown label="Menu Mix" id="mix" open={flagDropOpen} setOpen={setFlagDropOpen} options={['High', 'Low']} selected={mixFlagFilter} onToggle={v => toggleFlagFilter('mix', v)} />
+            <button onClick={() => setCogsOutlierOnly(v => !v)} title="Show only items with COGS% under 10% or over 60% (excludes $0-cost items)"
+              style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                background: cogsOutlierOnly ? '#dc2626' : '#fff', color: cogsOutlierOnly ? '#fff' : 'var(--accent)' }}>
+              COGS Outliers
+            </button>
+            {showExport && (
+              <button onClick={() => setZeroCostOnly(v => !v)} title="Show only items with no cost data ($0) — tester/admin only"
+                style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                  background: zeroCostOnly ? '#b45309' : '#fff', color: zeroCostOnly ? '#fff' : 'var(--accent)' }}>
+                Zero-Cost Items
+              </button>
+            )}
             <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>{filtered.length} items</span>
             {showExport && <button onClick={exportSingleCSV} style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(124,58,237,0.2)', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: 'var(--accent)', fontFamily: 'inherit' }}>⬇ Export CSV</button>}
           </div>
@@ -1043,9 +1129,9 @@ export default function MEOverall({
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin')} title="Uplifted Avg Price − Uplifted Avg Cost With Modifiers">Margin{sortArrow('margin')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('qty')}>Quantity{sortArrow('qty')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_cost')} title="Uplifted Avg Cost With Modifiers × Quantity">Total Cost{sortArrow('total_cost')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Avg Price × Quantity">Net Sales{sortArrow('net_sales')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Net Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Net Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('net_sales')} title="Uplifted Avg Price × Quantity. 3PD is valued at its delivery-menu price (×1.22), so this is higher than Item Mix's Net Sales for the same rows — they answer different questions and are not meant to match.">Menu Sales{sortArrow('net_sales')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('total_margin')} title="Menu Sales − Total Cost">Total Margin{sortArrow('total_margin')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('cogs_pct')} title="Total Cost ÷ Menu Sales — cost of goods sold as a % of sales">COGS%{sortArrow('cogs_pct')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('margin_pct')} title="Margin ÷ Uplifted Avg Price">% Margin{sortArrow('margin_pct')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('mix_pct')} title="Item qty ÷ total qty across this view">% Menu Mix{sortArrow('mix_pct')}</th>
                 <th title="High if % Margin is above the blended margin threshold ((total net sales − total cost) ÷ total net sales), else Low">Margin Level</th>
@@ -1054,9 +1140,9 @@ export default function MEOverall({
                 <th>Revenue Center</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('category')}>Category{sortArrow('category')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sub_category')}>Sub Category{sortArrow('sub_category')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_pct')} title="Net Sales ÷ grand total Net Sales across every item in this view">Sls %{sortArrow('sls_pct')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_cat_pct')} title="Net Sales ÷ total Net Sales for this item's Category">Sls % Category{sortArrow('sls_cat_pct')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_sub_pct')} title="Net Sales ÷ total Net Sales for this item's Sub Category">Sls % Sub Category{sortArrow('sls_sub_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_pct')} title="Menu Sales ÷ grand total Menu Sales across every item in this view">Sls %{sortArrow('sls_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_cat_pct')} title="Menu Sales ÷ total Menu Sales for this item's Category">Sls % Category{sortArrow('sls_cat_pct')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleSort('sls_sub_pct')} title="Menu Sales ÷ total Menu Sales for this item's Sub Category">Sls % Sub Category{sortArrow('sls_sub_pct')}</th>
               </tr></thead>
               <tbody>
                 {filteredD.map(r => (
