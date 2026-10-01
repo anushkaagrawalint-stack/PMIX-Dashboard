@@ -76,6 +76,14 @@ function itemCat(i: ItemRow): string {
   return normCat(i.category);
 }
 
+// Sub-category used for grouping AND for the sub-category mix denominator —
+// vendor-grouped and open-item rows have no sub-category tier, so both
+// collapse to ''. One function, so the tree's buckets and the % denominator
+// can never drift apart (that drift is exactly the bug Mix % (Qty) had).
+function itemSub(i: ItemRow): string {
+  return (usesRawMenuGroup(i) || i.channel === 'OPEN_ITEMS') ? '' : (i.sub_category || '');
+}
+
 export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringPinkSheets = [], itemCosts = [], itemModifiers = [], selectedChannels, categoryFilter, isAdmin = false }: Props) {
   const [search,          setSearch]          = useState('');
   const [cogsOutlierOnly, setCogsOutlierOnly] = useState(false);
@@ -97,8 +105,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
   // of rows. Keyed the same way the row itself is.
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
   const itemKeyOf = (i: ItemRowX, cat: string) => {
-    const sub = (usesRawMenuGroup(i) || i.channel === 'OPEN_ITEMS') ? '' : (i.sub_category || '');
-    return `${i.canonical_name}||${i.channel}||${cat}||${sub}`;
+    return `${i.canonical_name}||${i.channel}||${cat}||${itemSub(i)}`;
   };
   const toggleItem = (k: string) => setExpandedItems(e => ({ ...e, [k]: !e[k] }));
 
@@ -282,7 +289,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     filtered.forEach(item => {
       const ch  = item.channel;
       const cat = itemCat(item);
-      const sub = (usesRawMenuGroup(item) || ch === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
+      const sub = itemSub(item);
       const key = `${item.canonical_name}|${ch}|${cat}|${sub}`;
       const ex  = map.get(key);
       if (!ex) {
@@ -323,19 +330,28 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     return { rows: rows.length, items: new Set(rows.map(r => r.canonical_name)).size };
   }, [dedupedFiltered, search, cogsOutlierOnly]);
 
-  // Category-level totals for category-wise mix %
+  // Category-level gross-sales totals, for Mix % Revenue by Category.
   const catTotals = useMemo(() => {
-    const qty   = new Map<string, number>();
-    const rev   = new Map<string, number>();
     const gross = new Map<string, number>();
     dedupedFiltered.forEach(i => {
       const cat = itemCat(i);
-      qty.set(cat,   (qty.get(cat)   ?? 0) + i.qty);
-      rev.set(cat,   (rev.get(cat)   ?? 0) + i.revenue);
       gross.set(cat, (gross.get(cat) ?? 0) + i.gross_sales);
     });
-    return { qty, rev, gross };
+    return { gross };
   }, [dedupedFiltered]);
+
+  // Item-level totals across every channel currently in view — the denominator
+  // for Mix % (Qty). A row is one item in one channel; this sums that same item's
+  // qty across ALL of its channels, so item.qty / itemQtyTotals.get(name) answers
+  // "what share of this item's total sales happened in this channel?" (owner
+  // confirmed 2026-10-01, replacing the old category-total denominator, which
+  // mismatched a single-channel numerator against an all-channel category sum).
+  const itemQtyTotals = useMemo(() => {
+    const m = new Map<string, number>();
+    dedupedFiltered.forEach(i => m.set(i.canonical_name, (m.get(i.canonical_name) ?? 0) + i.qty));
+    return m;
+  }, [dedupedFiltered]);
+
 
   // Tree: channel → category → subCategory → items
   const tree = useMemo(() => {
@@ -343,9 +359,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     dedupedFiltered.forEach(i => {
       const ch  = i.channel;
       const cat = itemCat(i);
-      // Vendor channels group by their raw Toast menu group, and open items have
-      // no sub-category at all — both sit directly under their category.
-      const sub = (usesRawMenuGroup(i) || ch === 'OPEN_ITEMS') ? '' : (i.sub_category || '');
+      const sub = itemSub(i);
       if (!out[ch])           out[ch]           = {};
       if (!out[ch][cat])      out[ch][cat]      = {};
       if (!out[ch][cat][sub]) out[ch][cat][sub] = [];
@@ -369,11 +383,17 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
       if (sortKey === 'cogs') {
         return mul * ((getCogsPct(b) ?? 0) - (getCogsPct(a) ?? 0));
       }
-      // Mix % columns are a positive-constant-denominator scaling of qty/gross_sales
-      // within the group being sorted (same category/channel), so sorting by the
-      // raw figure gives an identical order without recomputing the % here.
+      // gross_mix/gross_mix_all's denominator (category or grand total) is constant
+      // across the group being sorted, so sorting by the raw figure gives an
+      // identical order without recomputing the %. qty_mix's denominator is now
+      // per-ITEM (itemQtyTotals, see above), which varies within the group, so it
+      // has to compute the actual ratio rather than reuse that shortcut.
       if (sortKey === 'qty_mix') {
-        return mul * (b.qty - a.qty);
+        const aQ = itemQtyTotals.get(a.canonical_name) ?? 0;
+        const bQ = itemQtyTotals.get(b.canonical_name) ?? 0;
+        const aMix = aQ > 0 ? a.qty / aQ : 0;
+        const bMix = bQ > 0 ? b.qty / bQ : 0;
+        return mul * (bMix - aMix);
       }
       if (sortKey === 'gross_mix' || sortKey === 'gross_mix_all') {
         return mul * (b.gross_sales - a.gross_sales);
@@ -543,7 +563,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
   // showing a zero that reads like real data. Nothing here feeds any total.
   function renderModifierRows(item: ItemRowX, cat: string): React.ReactNode[] {
     if (!item.modifiers.length) return [];
-    const sub = (usesRawMenuGroup(item) || item.channel === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
+    const sub = itemSub(item);
     const blank = <td style={{ color: 'var(--muted)' }}>—</td>;
     return item.modifiers.map(m => (
       <tr key={`mod||${item.canonical_name}||${item.channel}||${cat}||${sub}||${m.modifier_name}`}
@@ -573,17 +593,17 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
   }
 
   function renderItemRow(item: ItemRowX, cat: string): React.ReactNode {
-    const catQ     = catTotals.qty.get(cat)   ?? 0;
+    const itemQ    = itemQtyTotals.get(item.canonical_name) ?? 0;
     const catG     = catTotals.gross.get(cat) ?? 0;
-    const qtyMix     = catQ > 0 ? (item.qty         / catQ * 100) : 0;
+    const qtyMix     = itemQ > 0 ? (item.qty         / itemQ * 100) : 0;
     const grossMix   = catG > 0 ? (item.gross_sales  / catG * 100) : 0;
     const grossMixAll = totalGrossSales > 0 ? (item.gross_sales / totalGrossSales * 100) : 0;
-    const avgCost  = getAvgCost(item);
-    const cogsPct  = getCogsPct(item);
     // Same uniqueness key dedupedFiltered already guarantees (canonical_name +
     // channel + category + sub_category) — menu_name/menu_group alone can repeat
     // across different channels for the same item, causing duplicate React keys.
-    const sub = (usesRawMenuGroup(item) || item.channel === 'OPEN_ITEMS') ? '' : (item.sub_category || '');
+    const sub      = itemSub(item);
+    const avgCost  = getAvgCost(item);
+    const cogsPct  = getCogsPct(item);
     const key      = itemKeyOf(item, cat);
     const hasMods  = item.modifiers.length > 0;
     const expanded = !!expandedItems[key];
@@ -638,9 +658,9 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     ];
     const rowsOut = sortedItems(dedupedFiltered.filter(matchesSearch)).map(item => {
       const cat = itemCat(item);
-      const catQ = catTotals.qty.get(cat) ?? 0;
+      const itemQ = itemQtyTotals.get(item.canonical_name) ?? 0;
       const catG = catTotals.gross.get(cat) ?? 0;
-      const qtyMix = catQ > 0 ? (item.qty / catQ * 100) : 0;
+      const qtyMix = itemQ > 0 ? (item.qty / itemQ * 100) : 0;
       const grossMix = catG > 0 ? (item.gross_sales / catG * 100) : 0;
       const grossMixAll = totalGrossSales > 0 ? (item.gross_sales / totalGrossSales * 100) : 0;
       const avgCost = getAvgCost(item);
@@ -804,7 +824,7 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
                 <th style={thBase}>Item</th>
                 <th style={thBase}>Menu Group</th>
                 {thSort('qty', 'QTY', 'Total quantity sold (SUM of order line quantity)')}
-                {thSort('qty_mix', 'Mix % (Qty)', 'Item qty ÷ category total qty')}
+                {thSort('qty_mix', 'Mix % (Qty)', "This channel's qty ÷ this item's total qty across every channel in view — i.e. what share of the item's own sales happened in this channel")}
                 {thSort('gross_sales', 'Gross Sales', 'SUM of pre-discount revenue (ties to Toast gross sales reports)')}
                 {thSort('gross_mix', 'Mix % Revenue by Category', 'Item gross sales ÷ category gross sales (pre-discount, ties to Toast)', { wrap: true })}
                 {thSort('revenue', 'Net Sales', 'Net sales after discounts (line_total)')}
