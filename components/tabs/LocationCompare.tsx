@@ -23,7 +23,8 @@ const METRIC_LABELS: Record<Metric, string> = {
 export default function LocationCompare({ data, makeItMealModifiers }: { data: DashboardData; makeItMealModifiers: MakeItMealModifierRow[] }) {
   const { locationItems, items, locations } = data;
 
-  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(false);
+  // Defaults ON (owner request 2026-10-01, Point 7) — see Overview.tsx for why.
+  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(true);
 
   // canonical_name|channel|location_code → make-it-a-meal qty + real price.
   // Unlike ItemMix/Overview (canonical_name|channel only), this tab attributes

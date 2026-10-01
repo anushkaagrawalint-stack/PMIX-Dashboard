@@ -53,7 +53,11 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
           channelItems, weeklyByChannel, dailyByChannel,
           prevChannelItems, prevMEItems } = data;
 
-  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(false);
+  // Defaults ON (owner request 2026-10-01, Point 7) — Make It a Meal's own
+  // priced modifier revenue is included by default rather than needing an
+  // opt-in click, closing most of the remaining revenue gap to Toast out of
+  // the box. Still a checkbox, not baked in, so it can be turned off.
+  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(true);
   // isFiltered already forces every KPI onto the client-computed (kpiItems) path
   // instead of the server-precomputed `summary` totals — Make It a Meal needs the
   // same treatment, since `summary.net_revenue` has no per-item hook to add the
