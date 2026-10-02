@@ -109,6 +109,7 @@ type QtyMode = '%' | '#';
 const RECOGNIZED_SECTIONS = new Set([
   'Base','1/2 Base','Main','1/2 Main','Extra Main','Extra Veggie',
   'Sauce','Veggie','Topping','Chutney + Dressing','Make It Meal','Flavor',
+  'Combo/Basket','Family Meal',
 ]);
 
 function mergeSections(sections: SectionData[]): SectionData[] {

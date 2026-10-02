@@ -1688,6 +1688,18 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
     rows_ AS (
       SELECT
         COALESCE(bf.clean, d.raw_parent) AS parent_item,
+        -- analytics.modifier_type is keyed on (modifier_name, item_type) alone —
+        -- it has no concept of WHICH option group a pick came from, so a modifier
+        -- offered both as a free included pick (Add Veggies) and a paid add-on
+        -- (Add Extra Veggies) gets one classification applied to every occurrence
+        -- of that name, merging the paid qty into the free section (owner-reported
+        -- 2026-10-01: Spinach 552 vs Toast's 446; That Fire Hot Sauce's "Make it a
+        -- Meal" picks folding into Chutney + Dressing instead of Make It Meal).
+        -- These groups exist SPECIFICALLY to carry a different section from their
+        -- base-group counterpart, so for these the group wins over the per-name
+        -- lookup, full stop — checked before the "no lookup entry" fallback below.
+        CASE WHEN LOWER(${toastGroupExpr}) IN ('add extra veggies', 'add an extra main', 'make it a meal', 'round it out')
+             THEN ${toastGroupSectionSql(toastGroupExpr)}
         -- When our own lookup has no entry for a modifier, don't dump it into
         -- "Topping" — work out the section from the group Toast filed it under
         -- (owner request 2026-09-28). Toast is usually far closer to the truth:
@@ -1696,7 +1708,7 @@ export async function getMEPinkSheetDetails(dr: DateRange): Promise<PinkSheetDet
         --   1. the group→section mapping below (owner-defined 2026-09-28)
         --   2. failing that, Toast's own group name verbatim
         --   3. failing that (no group at all — free-text order notes), 'Other'
-        CASE WHEN d.from_item_type AND COALESCE(uc.unit_cost, 0) > 0
+             WHEN d.from_item_type AND COALESCE(uc.unit_cost, 0) > 0
                   AND d.pit_item_type ILIKE '%online%'
              THEN CASE WHEN d.pit_item_type ILIKE 'kids meal%' THEN 'Drink'
                        ELSE ${toastGroupSectionSql(toastGroupExpr)} END
@@ -2852,6 +2864,9 @@ function toastGroupSectionSql(src: string): string {
     WHEN LOWER(${src}) LIKE 'flavor?%'
       OR LOWER(${src}) LIKE 'juice flavor?%'
       OR LOWER(${src}) IN ('maine root flavor?','kids homemade juice')  THEN 'Flavor'
+    WHEN LOWER(${src}) IN ('combo naan basket size','plain naan basket size',
+                                  'garlic naan basket size')              THEN 'Combo/Basket'
+    WHEN LOWER(${src}) IN ('family meal','family meal feast')            THEN 'Family Meal'
     ELSE COALESCE(${src}, 'Other')
   END
 )`;
