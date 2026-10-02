@@ -67,7 +67,14 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
   const [selectedChannels, setChannels]     = useState<string[]>([]);
   const [chOpen, setChOpen]                 = useState(false);
   const [categoryFilter, setCategory]       = useState('all');
-  const [selectedLocations, setLocations]   = useState<string[]>([]);
+  // Default to Open Locations only from P7 onward (owner request 2026-09-28) —
+  // Ballpark closed around then, and leaving it selected silently drags averages
+  // and per-location comparisons down with a store that sells nothing. Periods
+  // before P7 still default to every location, since all of them were trading.
+  const [selectedLocations, setLocations]   = useState<string[]>(() =>
+    data.dateRange.start >= '2026-06-29'
+      ? data.locations.filter(l => l.is_open).map(l => l.location_code)
+      : []);
   const [locOpen, setLocOpen]               = useState(false);
 
   const { dateRange: dr, summary } = data;
@@ -127,15 +134,8 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
     [isRealMenuSelected, data.locationItems],
   );
 
-  const locLabel = selectedLocations.length === 0
-    ? 'All Locations'
-    : selectedLocations.length === 1
-      ? (data.locations.find(l => l.location_code === selectedLocations[0])?.display_name ?? selectedLocations[0])
-      : `${selectedLocations.length} Locations`;
-
-  // Tester-only "Open Locations" quick-select — always recomputed from the
-  // live open/closed status (analytics.location_status via data.locations),
-  // never a hardcoded list.
+  // "Open Locations" quick-select — always recomputed from the live open/closed
+  // status (analytics.location_status via data.locations), never a hardcoded list.
   const openLocationCodes = useMemo(
     () => data.locations.filter(l => l.is_open).map(l => l.location_code),
     [data.locations],
@@ -143,6 +143,14 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
   const isOpenLocationsSelected = selectedLocations.length > 0
     && selectedLocations.length === openLocationCodes.length
     && openLocationCodes.every(c => selectedLocations.includes(c));
+
+  const locLabel = selectedLocations.length === 0
+    ? 'All Locations'
+    : isOpenLocationsSelected
+      ? 'Open Locations'
+      : selectedLocations.length === 1
+        ? (data.locations.find(l => l.location_code === selectedLocations[0])?.display_name ?? selectedLocations[0])
+        : `${selectedLocations.length} Locations`;
 
   const normCat = normalizeCategory;
 
@@ -173,6 +181,17 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
   // Uses exact (canonical_name, channel) location totals from locationItems.
   // Proportional split is only needed within same (canonical_name, channel) across different
   // menu_groups — which is uncommon and much more accurate than channel-level approximation.
+  // Modifier rows honour the location filter too. Everything else feeding Item Mix
+  // is location-scoped, so leaving these unscoped made a modifier's qty include
+  // closed/deselected stores while the item row above it did not — Extra Lamb
+  // Kebab read 3/$15.60 against Toast's 2/$10.40 (owner-reported 2026-09-30).
+  const locationFilteredItemModifiers = useMemo(
+    () => selectedLocations.length === 0
+      ? data.itemModifiers
+      : data.itemModifiers.filter(m => selectedLocations.includes(m.location_code)),
+    [data.itemModifiers, selectedLocations],
+  );
+
   const locationBaseItems = useMemo((): ItemRow[] => {
     if (selectedLocations.length === 0) return realItems;
 
@@ -897,7 +916,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
 
       {/* ── TAB CONTENT ── */}
       {tab === 'overview'   && <Overview         data={filteredData} selectedChannels={selectedChannels} categoryFilter={categoryFilter} selectedLocations={selectedLocations} makeItMealModifiers={locationFilteredMakeItMealModifiers} />}
-      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} cateringPinkSheets={data.cateringPinkSheets} itemCosts={locationFilteredItemCosts} makeItMealModifiers={locationFilteredMakeItMealModifiers} selectedChannels={selectedChannels} categoryFilter={categoryFilter} isAdmin={isAdmin} />}
+      {tab === 'itemmix'    && <ItemMix          items={locationBaseItems} pinkSheets={locationFilteredPinkSheets} pinkSheetDetails={locationFilteredPinkSheetDetails} cateringPinkSheets={data.cateringPinkSheets} itemCosts={locationFilteredItemCosts} itemModifiers={locationFilteredItemModifiers} selectedChannels={selectedChannels} categoryFilter={categoryFilter} isAdmin={isAdmin} />}
       {/* entreemix/byo/meoverall/pinksheets: location dropdown commented out pending v2
           validation — always pass blended, all-location data here regardless of the
           global location filter (the location-scaled memos stay wired for itemmix). */}
@@ -916,7 +935,7 @@ export default function Dashboard({ data, isAdmin, role, visibleTabs, currentEma
         />
       )}
       {tab === 'bikky'      && <CustomerRetention bikky={filteredBikky} meItems={finalMEItems} items={locationBaseItems} period={activeBikkyPeriod} isAdmin={isAdmin} />}
-      {tab === 'renames'    && <RenamesAudit     renames={data.renames} role={role} />}
+      {tab === 'renames'    && <RenamesAudit     renames={data.renames} mergeDecisions={data.mergeDecisions} mergeSuggestions={data.mergeSuggestions} role={role} />}
       {tab === 'renamesdemo' && visibleTabs.includes('renamesdemo') && <RenamesDemo renames={data.renamesDemo} />}
       {tab === 'needs'      && <NeedsReview      needsReview={data.needsReview} uncategorizedItems={data.uncategorizedItems} uncategorizedModifiers={data.uncategorizedModifiers} missingCosts={data.missingCosts} periods={data.periods} isAdmin={isAdmin} />}
       {tab === 'openitems'  && <OpenItems        openItemsSummary={data.openItemsSummary} openItems={data.openItems} />}

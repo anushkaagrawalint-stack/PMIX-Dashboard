@@ -53,7 +53,11 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
           channelItems, weeklyByChannel, dailyByChannel,
           prevChannelItems, prevMEItems } = data;
 
-  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(false);
+  // Defaults ON (owner request 2026-10-01, Point 7) — Make It a Meal's own
+  // priced modifier revenue is included by default rather than needing an
+  // opt-in click, closing most of the remaining revenue gap to Toast out of
+  // the box. Still a checkbox, not baked in, so it can be turned off.
+  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(true);
   // isFiltered already forces every KPI onto the client-computed (kpiItems) path
   // instead of the server-precomputed `summary` totals — Make It a Meal needs the
   // same treatment, since `summary.net_revenue` has no per-item hook to add the
@@ -432,7 +436,16 @@ export default function Overview({ data, selectedChannels, categoryFilter, selec
         <div className="kc b">
           <div className="kl">Avg Margin</div>
           <div className="kv">{(kpiAvgMargin * 100).toFixed(1)}%</div>
-          <div className="ks">{isFiltered ? 'filtered' : 'In-House · RASA Digital · 3PD only'}</div>
+          {/* Says WHY the scope is narrower, not just which channels — sitting next
+              to four KPIs that include every channel, the bare channel list read as
+              an inconsistency rather than a deliberate scope (owner request
+              2026-09-28). Full reason on hover. */}
+          <div
+            className="ks"
+            title="Catering and EzCater have no recipe costs in R365 yet, so no margin can be calculated for them. This covers the channels that do have cost data; it will widen once those costs exist."
+          >
+            {isFiltered ? 'filtered' : 'In-House · RASA Digital · 3PD — channels with cost data'}
+          </div>
           {showDelta && prevKpi!.avgMargin !== null &&
             <DeltaBadge curr={kpiAvgMargin} prev={prevKpi!.avgMargin} vsLabel={prevLabel} isRate />}
         </div>

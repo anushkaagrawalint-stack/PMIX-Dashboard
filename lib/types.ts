@@ -297,6 +297,43 @@ export interface RenameRow {
   first_seen:       string;
 }
 
+// ─── Merge decisions (Renames Audit review workflow) ─────────────────────────
+// A decision that two raw item names are (or are NOT) the same dish. 'confirmed'
+// rows drive byo_fix in every query; 'rejected' rows only record that a pair was
+// reviewed and deliberately left separate, so it stops being re-suggested.
+export interface MergeDecisionRow {
+  raw_name:   string;
+  clean_name: string;
+  decision:   'confirmed' | 'rejected';
+  source:     'seeded' | 'user';
+  decided_by: string | null;
+  updated_at: string;
+  qty:        number;   // lifetime qty currently sitting under raw_name
+}
+
+// A candidate the system thinks might be the same dish, awaiting a yes/no.
+//   guid_rename  — one Toast button, two names, date ranges sequential (strong)
+//   vendor_label — different buttons whose names match once a vendor label is
+//                  stripped (weak — a guess that needs human judgement)
+export interface MergeSuggestionRow {
+  raw_name:      string;
+  suggested_name: string;
+  kind:          'guid_rename' | 'vendor_label';
+  raw_qty:       number;
+  suggested_qty: number;
+  detail:        string;   // why it was suggested, shown in the UI
+}
+
+// One Toast button typed under many unrelated names — NOT a rename, and the
+// reason the Renames Audit list is currently misleading (owner report 2026-09-23).
+export interface ReusedButtonRow {
+  item_guid:  string;
+  names:      string[];
+  total_qty:  number;
+  first_seen: string;
+  last_seen:  string;
+}
+
 // ─── Renames demo (tester-only) — broader definition: same canonical_name sold
 // under a vendor/event-tagged variant (Fooda, Aramark, Gameday, etc.), not just
 // literal canonical_name changes on a stable item_key. See getRenamesDemo().
@@ -512,6 +549,27 @@ export interface MakeItMealModifierRow {
   price:          number;
 }
 
+// ─── Item Mix modifier rows ──────────────────────────────────────────────────
+// One row per (parent item, modifier, channel) so Item Mix can show modifiers
+// nested under the item they were ordered on, the way Toast's Product Mix does.
+// Verified against Toast 2026-09-29: a parent item's qty/revenue is its OWN line
+// only — modifier amounts are shown as child rows and are NOT rolled up. Adding
+// them would have moved FOOD - IN HOUSE from 16,456/$178,819 to 24,108/$185,190,
+// which is not what Toast reports.
+//   is_special_request — Toast recorded no option group for it, i.e. free text a
+//   guest typed ("chili lime vinaigrette on the side please"), not a real modifier.
+export interface ItemModifierRow {
+  parent_item:        string;
+  modifier_name:      string;
+  channel:            string;
+  location_code:      string;
+  option_group:       string | null;
+  qty:                number;
+  gross_sales:        number;
+  avg_price:          number;
+  is_special_request: boolean;
+}
+
 // ─── Root dashboard data bundle ───────────────────────────────────────────────
 export interface DashboardData {
   dateRange:          DateRange;
@@ -541,6 +599,8 @@ export interface DashboardData {
   channelCategories:  ChannelCategoryRow[];
   renames:            RenameRow[];
   renamesDemo:        RenameDemoRow[];
+  mergeDecisions:     MergeDecisionRow[];
+  mergeSuggestions:   MergeSuggestionRow[];
   needsReview:          NeedsReviewRow[];
   uncategorizedItems:   UncategorizedItemRow[];
   uncategorizedModifiers: UncategorizedModifierRow[];
@@ -559,6 +619,7 @@ export interface DashboardData {
   prevAttachment:     AttachmentData | null; // prev-period, for "vs previous" KPI deltas
   attachmentTrend:    AttachmentTrendData; // weekly attach-rate trend within the selected date range
   beverageModifiers:  BeverageModifierRow[]; // drinks sold as a modifier (e.g. kids-meal drink choice), for the Analytics tab's Beverages section
-  makeItMealModifiers: MakeItMealModifierRow[]; // fact_modifiers "Make it a Meal" picks, for Item Mix's admin/tester-only checkbox
+  makeItMealModifiers: MakeItMealModifierRow[]; // "Make it a Meal" picks — Overview / Location Compare / Customer Retention
+  itemModifiers:      ItemModifierRow[];        // every modifier grouped under its parent item, for Item Mix's modifier hierarchy
 }
 

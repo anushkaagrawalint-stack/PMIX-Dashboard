@@ -539,6 +539,19 @@ export default function AttachmentAnalytics({
 
   return (
     <div>
+      {/* Rahul asked why Overall exceeds Drink+Side+Sweet (2026-09-23). The maths was
+          right but nothing on the page said what either figure meant, so the gap read
+          as a bug. Stated here rather than only in a tooltip. */}
+      <div className="info-banner purple" style={{ marginBottom: 10 }}>
+        <i className="ti ti-info-circle" />
+        <div>
+          <strong>Overall rate</strong> counts every attached item and divides by main checks &mdash; a check with
+          a drink <em>and</em> a side counts twice, so it behaves like &ldquo;attached items per check&rdquo;.
+          <strong> Drink / Side / Sweet</strong> each count a check once however many of that category
+          are on it. Main items are excluded from Overall &mdash; a second entree is another entree, not an up-sell.
+        </div>
+      </div>
+
       {/* ── Headline KPI cards ── */}
       <div className="krow k4">
         <div className="kc a">
@@ -670,10 +683,10 @@ export default function AttachmentAnalytics({
               <tr>
                 <th style={{ textAlign: 'left', cursor: 'pointer' }} onClick={() => handleBdSort('name')}>{breakdownLabel}{bdSortArrow('name')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => handleBdSort('mainChecks')}>Main Checks{bdSortArrow('mainChecks')}</th>
-                <th style={{ cursor: 'pointer', color: CAT_COLOR.Drink }} onClick={() => handleBdSort('drinkRate')}>Drink %{bdSortArrow('drinkRate')}</th>
-                <th style={{ cursor: 'pointer', color: CAT_COLOR.Side }} onClick={() => handleBdSort('sideRate')}>Side %{bdSortArrow('sideRate')}</th>
-                <th style={{ cursor: 'pointer', color: CAT_COLOR.Sweet }} onClick={() => handleBdSort('sweetRate')}>Sweet %{bdSortArrow('sweetRate')}</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => handleBdSort('rate')}>Overall Rate{bdSortArrow('rate')}</th>
+                <th style={{ cursor: 'pointer', color: CAT_COLOR.Drink }} onClick={() => handleBdSort('drinkRate')} title="Drink % — the share of main checks that had at least one drink on them. A check with two drinks still counts once, so this is a share of checks, not a count of items. Drink, Side and Sweet are each measured this way and are not meant to add up to the Overall Rate, which counts every attached item.">Drink %{bdSortArrow('drinkRate')}</th>
+                <th style={{ cursor: 'pointer', color: CAT_COLOR.Side }} onClick={() => handleBdSort('sideRate')} title="Side % — the share of main checks that had at least one side on them. A check with two sides still counts once, so this is a share of checks, not a count of items. Drink, Side and Sweet are each measured this way and are not meant to add up to the Overall Rate, which counts every attached item.">Side %{bdSortArrow('sideRate')}</th>
+                <th style={{ cursor: 'pointer', color: CAT_COLOR.Sweet }} onClick={() => handleBdSort('sweetRate')} title="Sweet % — the share of main checks that had at least one sweet on them. A check with two sweets still counts once, so this is a share of checks, not a count of items. Drink, Side and Sweet are each measured this way and are not meant to add up to the Overall Rate, which counts every attached item.">Sweet %{bdSortArrow('sweetRate')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => handleBdSort('rate')} title="Overall Rate — every attached item on a main check, divided by the number of main checks. A check with a drink and a side counts once for each, so this measures attached items per check rather than the share of checks that had an attachment, and it can exceed 100%. Drink, Side and Sweet each count a check only once however many items of that category are on it, so they are not directly comparable with this figure and will not sum to it. Main items are excluded — a second entree is another entree, not an up-sell.">Overall Rate{bdSortArrow('rate')}</th>
               </tr>
             </thead>
             <tbody>
@@ -786,7 +799,8 @@ export default function AttachmentAnalytics({
                 <th rowSpan={tableMode === 'detail' ? 2 : 1} style={{ textAlign: 'left', minWidth: 170, verticalAlign: 'bottom', zIndex: 3, cursor: 'pointer' }} onClick={() => handleTableSort('name')}>
                   Item / Modifier{tableSortArrow('name')}
                 </th>
-                <th rowSpan={tableMode === 'detail' ? 2 : 1} style={{ cursor: 'pointer', minWidth: 90, verticalAlign: 'bottom', borderLeft: '2px solid var(--border)', zIndex: 3 }} onClick={() => handleTableSort('overall')}>
+                <th rowSpan={tableMode === 'detail' ? 2 : 1} style={{ cursor: 'pointer', minWidth: 90, verticalAlign: 'bottom', borderLeft: '2px solid var(--border)', zIndex: 3 }} onClick={() => handleTableSort('overall')}
+                    title="Overall Rate for this item — the number of main checks this item appeared on, divided by all main checks. This is a per-item figure, so unlike the Overall Rate in the breakdown above it counts each check once and stays at or below 100%.">
                   Overall Rate{tableSortArrow('overall')}
                 </th>
                 {tableCols.map(l => tableMode === 'percent' ? (

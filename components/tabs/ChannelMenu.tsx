@@ -39,7 +39,8 @@ export default function ChannelMenu({ data, makeItMealModifiers }: { data: Dashb
   const [desc, setDesc]       = useState(true);
   const [topView, setTopView] = useState<'pct' | 'exact'>('pct');
   const [showBottom, setShowBottom] = useState(false);
-  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(false);
+  // Defaults ON (owner request 2026-10-01, Point 7) — see Overview.tsx for why.
+  const [includeMakeItMeal, setIncludeMakeItMeal] = useState(true);
 
   function toggleSort(key: SortKey) {
     if (sort === key) setDesc(d => !d);
