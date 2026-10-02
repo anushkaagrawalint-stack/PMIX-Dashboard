@@ -566,6 +566,11 @@ export interface ItemModifierRow {
   option_group:       string | null;
   qty:                number;
   gross_sales:        number;
+  // Equals gross_sales exactly — Toast's own Product Mix report never puts a
+  // Discount or Refund amount on a modifier line, even when its parent item
+  // line carries one (confirmed against a live Toast export, 2026-10-02). Not
+  // an estimate: this is Toast's own convention, mirrored exactly.
+  net_sales:          number;
   avg_price:          number;
   is_special_request: boolean;
 }

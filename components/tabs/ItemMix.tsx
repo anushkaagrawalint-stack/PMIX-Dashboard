@@ -136,6 +136,9 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
     const m = new Map<string, ItemModifierRow[]>();
     combined.forEach(r => {
       r.gross_sales = Math.round(r.gross_sales * 100) / 100;
+      // Always equal to gross_sales (see ItemModifierRow) — derived here rather
+      // than summed independently, so it can never drift from it by a rounding step.
+      r.net_sales   = r.gross_sales;
       r.avg_price   = r.qty > 0 ? Math.round((r.gross_sales / r.qty) * 100) / 100 : 0;
       const key = `${r.parent_item}|${r.channel}`;
       const arr = m.get(key);
@@ -583,7 +586,12 @@ export default function ItemMix({ items, pinkSheets, pinkSheetDetails, cateringP
         <td style={{ textAlign: 'right', fontSize: 11, color: 'var(--muted)' }}>
           {m.gross_sales > 0 ? fmt$2(m.gross_sales) : '—'}
         </td>
-        {blank}{blank}{blank}{blank}{blank}
+        {blank}
+        <td style={{ textAlign: 'right', fontSize: 11, color: 'var(--muted)' }}
+            title="Equals Gross Sales — Toast never puts a Discount or Refund amount on a modifier line, even when its parent item line carries one.">
+          {m.net_sales > 0 ? fmt$2(m.net_sales) : '—'}
+        </td>
+        {blank}{blank}{blank}
         <td style={{ textAlign: 'right', fontSize: 11, color: 'var(--muted)' }}>
           {m.avg_price > 0 ? fmt$2(m.avg_price) : '—'}
         </td>

@@ -2172,6 +2172,13 @@ export async function getItemModifiers(dr: DateRange): Promise<ItemModifierRow[]
       option_group:       (r.option_group ?? null) as string | null,
       qty:                Number(r.qty),
       gross_sales:        Number(r.gross_sales),
+      // Toast's own Product Mix report never puts a Discount amt or Refund amt on
+      // a modifier line, even when its parent item line carries one — confirmed
+      // directly against a Toast export (owner, 2026-10-02): a Grain Bowl line
+      // showing $837.76 Discount had every modifier beneath it at $0 Discount /
+      // $0 Refund. So Net item amt = Gross item amt for a modifier, exactly,
+      // always — this mirrors that, not an estimate or allocation of any kind.
+      net_sales:          Number(r.gross_sales),
       avg_price:          Number(r.avg_price ?? 0),
       is_special_request: Boolean(r.is_special_request),
     }));
