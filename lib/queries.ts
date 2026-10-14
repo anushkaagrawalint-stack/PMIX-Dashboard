@@ -2019,6 +2019,34 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         AND RIGHT(period,4)::INT * 100 + SUBSTRING(period,2,2)::INT <= sp.pnum
       ORDER BY RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
       LIMIT 1
+    ),
+    -- Fallback for catering items whose base cost R365 only ever exports through
+    -- the MODIFIER cost sheet, never the item cost sheet — confirmed for 31 items
+    -- (owner-reported 2026-10-14: "Coconut Harvest Bowl - Catering" $3.1930 etc.),
+    -- including the $0.2330 figure from an earlier, unresolved email thread
+    -- ("Grain Bowl - Catering"). R365 names these "MI <item name> - Catering",
+    -- distinct from the "MI Catering - Additional Item - <modifier>" pattern real
+    -- modifier picks use, and they match no fact_modifiers canonical_name at all
+    -- — they are base item costs, just filed in the wrong sheet. Generic by
+    -- design (not a hardcoded name list) so a FUTURE item R365 exports the same
+    -- way is picked up automatically rather than silently showing $0 again; safe
+    -- because the final join below only uses a row if it matches a real catering
+    -- order's parent_item, so an unsold/ambiguous name here is simply never used.
+    catering_mod_sheet_base AS (
+      SELECT DISTINCT ON (canonical) canonical AS name, cost_per_portion AS cost
+      FROM (
+        SELECT
+          COALESCE(bf.clean, TRIM(SUBSTRING(r.clean_name FROM '^(.*) - Catering$'))) AS canonical,
+          r.cost_per_portion, r.period
+        FROM analytics.r365_modifier_cost r
+        LEFT JOIN byo_fix bf ON bf.raw = TRIM(SUBSTRING(r.clean_name FROM '^(.*) - Catering$'))
+        CROSS JOIN selected_period sp
+        WHERE r.recipe_name LIKE 'MI % - Catering'
+          AND r.cost_per_portion > 0
+          AND (RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT) <= sp.pnum
+      ) t
+      WHERE canonical IS NOT NULL
+      ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
     )
     SELECT
       o.parent_item AS canonical_name,
@@ -2026,8 +2054,8 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
       o.qty::BIGINT AS qty,
       COALESCE(
         CASE o.channel_raw
-          WHEN 'CATERING'     THEN COALESCE(hcc.avg_cost, cb.cost)
-          WHEN 'CATERING_3PD' THEN COALESCE(hc3.avg_cost, c3.cost)
+          WHEN 'CATERING'     THEN COALESCE(hcc.avg_cost, cb.cost, cms.cost)
+          WHEN 'CATERING_3PD' THEN COALESCE(hc3.avg_cost, c3.cost, cms.cost)
           WHEN 'OFFSITE'      THEN ob.cost
           WHEN 'EZCATER'      THEN ezb.cost
           WHEN 'OPEN_ITEMS'   THEN opb.cost
@@ -2040,6 +2068,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
     LEFT JOIN offsite_base      ob  ON LOWER(ob.name)  = LOWER(o.parent_item)
     LEFT JOIN ezcater_base      ezb ON LOWER(ezb.name) = LOWER(o.parent_item)
     LEFT JOIN open_base         opb ON LOWER(opb.name) = LOWER(o.parent_item)
+    LEFT JOIN catering_mod_sheet_base cms ON LOWER(cms.name) = LOWER(o.parent_item)
     LEFT JOIN LATERAL (
       SELECT avg_cost FROM harvest_chicken_catering WHERE o.parent_item = 'Harvest Chicken Bowl'
     ) hcc ON true
