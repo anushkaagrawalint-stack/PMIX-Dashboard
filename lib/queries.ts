@@ -1802,6 +1802,58 @@ const CATERING_MOD_ALIAS_CTE = `mod_alias(raw_norm, target_norm) AS (VALUES
   ('unsweetened black tea', 'unsweetened spiced tea')
 )`;
 
+// ─── Modifier-cost-sheet fallback for catering-type base costs ───────────────
+// R365 sometimes never gives an item its own row in the ITEM cost sheet at
+// all, only ever pricing it through the MODIFIER cost sheet (recipe_name
+// "MI <item>", or "MI <item> - Catering" for the catering-suffixed form) —
+// confirmed for ~20 items across Catering/Offsite/EZCater (owner-reported
+// 2026-10-14). Two shapes:
+//   - catering: clean_name ends " - Catering" (Grain Bowl - Catering, etc.)
+//   - bare: no suffix at all (Cucumber Raita, Masala Chai Cookies, Foodworks
+//     BYO Bowl before its item-cost row existed, etc.) — used by Offsite/
+//     EZCater, which don't get a distinct suffix of their own in this sheet.
+// Both are generic by construction, not a hardcoded name list, and safe by
+// construction: every call site joins a result ON LOWER(name) = LOWER(the
+// real order's parent_item), so a row that doesn't match a real order simply
+// never gets used — an unsold or ambiguous name here is harmless.
+// `periodCte`/`periodCol` let each call site plug in its own already-defined
+// current-period CTE (name and pnum-column differ by call site).
+function modSheetCateringBaseSql(periodCte: string, periodCol: string): string {
+  return `
+    SELECT DISTINCT ON (canonical) canonical AS name, cost_per_portion AS cost
+    FROM (
+      SELECT
+        COALESCE(bf.clean, TRIM(SUBSTRING(r.clean_name FROM '^(.*) - Catering$'))) AS canonical,
+        r.cost_per_portion, r.period
+      FROM analytics.r365_modifier_cost r
+      LEFT JOIN byo_fix bf ON bf.raw = TRIM(SUBSTRING(r.clean_name FROM '^(.*) - Catering$'))
+      CROSS JOIN ${periodCte}
+      WHERE r.recipe_name LIKE 'MI % - Catering'
+        AND r.cost_per_portion > 0
+        AND (RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT) <= ${periodCol}
+    ) t
+    WHERE canonical IS NOT NULL
+    ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+  `;
+}
+function modSheetBareBaseSql(periodCte: string, periodCol: string): string {
+  return `
+    SELECT DISTINCT ON (canonical) canonical AS name, cost_per_portion AS cost
+    FROM (
+      SELECT COALESCE(bf.clean, r.clean_name) AS canonical, r.cost_per_portion, r.period
+      FROM analytics.r365_modifier_cost r
+      LEFT JOIN byo_fix bf ON bf.raw = r.clean_name
+      CROSS JOIN ${periodCte}
+      WHERE r.recipe_name LIKE 'MI %'
+        AND r.clean_name NOT LIKE '% - %'
+        AND r.cost_per_portion > 0
+        AND (RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT) <= ${periodCol}
+    ) t
+    WHERE canonical IS NOT NULL
+    ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
+  `;
+}
+
 export async function getCateringPinkSheetDetails(dr: DateRange): Promise<CateringPinkSheetDetailRow[]> {
   const db = pool();
   const { rows } = await db.query(`
@@ -2020,34 +2072,16 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
       ORDER BY RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
       LIMIT 1
     ),
-    -- Fallback for catering items whose base cost R365 only ever exports through
-    -- the MODIFIER cost sheet, never the item cost sheet — confirmed for 31 items
-    -- (owner-reported 2026-10-14: "Coconut Harvest Bowl - Catering" $3.1930 etc.),
-    -- including the $0.2330 figure from an earlier, unresolved email thread
-    -- ("Grain Bowl - Catering"). R365 names these "MI <item name> - Catering",
-    -- distinct from the "MI Catering - Additional Item - <modifier>" pattern real
-    -- modifier picks use, and they match no fact_modifiers canonical_name at all
-    -- — they are base item costs, just filed in the wrong sheet. Generic by
-    -- design (not a hardcoded name list) so a FUTURE item R365 exports the same
-    -- way is picked up automatically rather than silently showing $0 again; safe
-    -- because the final join below only uses a row if it matches a real catering
-    -- order's parent_item, so an unsold/ambiguous name here is simply never used.
-    catering_mod_sheet_base AS (
-      SELECT DISTINCT ON (canonical) canonical AS name, cost_per_portion AS cost
-      FROM (
-        SELECT
-          COALESCE(bf.clean, TRIM(SUBSTRING(r.clean_name FROM '^(.*) - Catering$'))) AS canonical,
-          r.cost_per_portion, r.period
-        FROM analytics.r365_modifier_cost r
-        LEFT JOIN byo_fix bf ON bf.raw = TRIM(SUBSTRING(r.clean_name FROM '^(.*) - Catering$'))
-        CROSS JOIN selected_period sp
-        WHERE r.recipe_name LIKE 'MI % - Catering'
-          AND r.cost_per_portion > 0
-          AND (RIGHT(r.period,4)::INT * 100 + SUBSTRING(r.period,2,2)::INT) <= sp.pnum
-      ) t
-      WHERE canonical IS NOT NULL
-      ORDER BY canonical, RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
-    )
+    -- Fallback for items whose base cost R365 only ever exports through the
+    -- MODIFIER cost sheet, never the item cost sheet (owner-reported
+    -- 2026-10-14) — see modSheetCateringBaseSql/modSheetBareBaseSql above for
+    -- the full explanation. Confirmed for ~20 items across Catering ("Coconut
+    -- Harvest Bowl - Catering" $3.1930, "Grain Bowl - Catering" $0.2330 — the
+    -- latter the unresolved figure from an earlier email thread) and Offsite/
+    -- EZCater (bare names: "Cucumber Raita", "Masala Chai Cookies" before it
+    -- had an item-cost row).
+    catering_mod_sheet_base AS (${modSheetCateringBaseSql('selected_period sp', 'sp.pnum')}),
+    mod_sheet_bare_base AS (${modSheetBareBaseSql('selected_period sp', 'sp.pnum')})
     SELECT
       o.parent_item AS canonical_name,
       ${CATERING_CHANNEL_CASE.replace('channel_raw', 'o.channel_raw')} AS channel,
@@ -2056,8 +2090,8 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
         CASE o.channel_raw
           WHEN 'CATERING'     THEN COALESCE(hcc.avg_cost, cb.cost, cms.cost)
           WHEN 'CATERING_3PD' THEN COALESCE(hc3.avg_cost, c3.cost, cms.cost)
-          WHEN 'OFFSITE'      THEN ob.cost
-          WHEN 'EZCATER'      THEN ezb.cost
+          WHEN 'OFFSITE'      THEN COALESCE(ob.cost, msb.cost)
+          WHEN 'EZCATER'      THEN COALESCE(ezb.cost, msb.cost)
           WHEN 'OPEN_ITEMS'   THEN opb.cost
         END, 0)::NUMERIC AS base_cost,
       ROUND(COALESCE(mc.total_mod_cost, 0)::NUMERIC, 4) AS total_mod_cost
@@ -2069,6 +2103,7 @@ export async function getCateringPinkSheets(dr: DateRange): Promise<CateringPink
     LEFT JOIN ezcater_base      ezb ON LOWER(ezb.name) = LOWER(o.parent_item)
     LEFT JOIN open_base         opb ON LOWER(opb.name) = LOWER(o.parent_item)
     LEFT JOIN catering_mod_sheet_base cms ON LOWER(cms.name) = LOWER(o.parent_item)
+    LEFT JOIN mod_sheet_bare_base msb ON LOWER(msb.name) = LOWER(o.parent_item)
     LEFT JOIN LATERAL (
       SELECT avg_cost FROM harvest_chicken_catering WHERE o.parent_item = 'Harvest Chicken Bowl'
     ) hcc ON true
@@ -3764,6 +3799,11 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
       ORDER BY canonical,
                RIGHT(period,4)::INT DESC, SUBSTRING(period,2,2)::INT DESC
     ),
+    -- Same modifier-cost-sheet fallback as getCateringPinkSheets (see
+    -- modSheetCateringBaseSql/modSheetBareBaseSql above) — Item Mix's COGS
+    -- fallback reads this same cost map, so it needs the same protection.
+    catering_mod_sheet_base AS (${modSheetCateringBaseSql('max_pk', 'max_pk.pk')}),
+    mod_sheet_bare_base AS (${modSheetBareBaseSql('max_pk', 'max_pk.pk')}),
     all_names AS (
       SELECT name FROM ih_base
       UNION SELECT name FROM online_base
@@ -3774,6 +3814,8 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
       UNION SELECT name FROM offsite_base
       UNION SELECT name FROM ezcater_base
       UNION SELECT name FROM open_items_base
+      UNION SELECT name FROM catering_mod_sheet_base
+      UNION SELECT name FROM mod_sheet_bare_base
       UNION SELECT 'Harvest Chicken Bowl' FROM harvest_chicken_catering
       UNION SELECT 'Harvest Chicken Bowl' FROM harvest_chicken_catering_3pd
     )
@@ -3781,10 +3823,10 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
       n.name                                                    AS canonical_name,
       COALESCE(ih.cost, fb.cost, mi.cost, 0)::NUMERIC          AS ih_cost,
       COALESCE(ol.cost, fb.cost, mi.cost, 0)::NUMERIC          AS online_cost,
-      COALESCE(hcc.avg_cost, ct.cost, 0)::NUMERIC               AS catering_cost,
-      COALESCE(hc3.avg_cost, c3.cost, 0)::NUMERIC               AS catering_3pd_cost,
-      COALESCE(off.cost, 0)::NUMERIC                            AS offsite_cost,
-      COALESCE(ezb.cost, 0)::NUMERIC                            AS ezcater_cost,
+      COALESCE(hcc.avg_cost, ct.cost, cms.cost, 0)::NUMERIC     AS catering_cost,
+      COALESCE(hc3.avg_cost, c3.cost, cms.cost, 0)::NUMERIC     AS catering_3pd_cost,
+      COALESCE(off.cost, msb.cost, 0)::NUMERIC                  AS offsite_cost,
+      COALESCE(ezb.cost, msb.cost, 0)::NUMERIC                  AS ezcater_cost,
       COALESCE(oi.cost, 0)::NUMERIC                             AS open_items_cost
     FROM all_names n
     LEFT JOIN ih_base          ih  ON LOWER(ih.name)  = LOWER(n.name)
@@ -3796,6 +3838,8 @@ export async function getItemCosts(dr: DateRange): Promise<ItemCostRow[]> {
     LEFT JOIN offsite_base     off ON LOWER(off.name) = LOWER(n.name)
     LEFT JOIN ezcater_base     ezb ON LOWER(ezb.name) = LOWER(n.name)
     LEFT JOIN open_items_base  oi  ON LOWER(oi.name)  = LOWER(n.name)
+    LEFT JOIN catering_mod_sheet_base cms ON LOWER(cms.name) = LOWER(n.name)
+    LEFT JOIN mod_sheet_bare_base      msb ON LOWER(msb.name) = LOWER(n.name)
     LEFT JOIN LATERAL (
       SELECT avg_cost FROM harvest_chicken_catering WHERE n.name = 'Harvest Chicken Bowl'
     ) hcc ON true
