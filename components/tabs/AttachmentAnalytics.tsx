@@ -196,7 +196,6 @@ export default function AttachmentAnalytics({
 
   const totalMainChecks = current.mainChecks;
   const merged   = current.merged;
-  const distinctNames = merged.length;
 
   const highest = merged[0];
   const prevHighestRate = highest && prev ? prev.merged.find(r => r.name === highest.name)?.rate : undefined;
@@ -553,7 +552,7 @@ export default function AttachmentAnalytics({
       </div>
 
       {/* ── Headline KPI cards ── */}
-      <div className="krow k4">
+      <div className="krow k3">
         <div className="kc a">
           <div className="kl">Total Main Checks</div>
           <div className="kv">{fmtInt(totalMainChecks)}</div>
@@ -571,11 +570,6 @@ export default function AttachmentAnalytics({
           <div className="kv" style={{ fontSize: 16 }}>{bestLocation ? locName(bestLocation.code) : '—'}</div>
           <div className="ks">{bestLocation ? `${fmtPct(bestLocation.rate)} attachment rate` : 'No data'}</div>
           {bestLocation && <DeltaBadge curr={bestLocation.rate} prev={bestLocation.prevRate} vsLabel={prevLabel} isRate />}
-        </div>
-        <div className="kc g">
-          <div className="kl">Distinct Names</div>
-          <div className="kv">{fmtInt(distinctNames)}</div>
-          <div className="ks">Unique Main/Sweet/Side/Drink items in the report</div>
         </div>
       </div>
 
