@@ -1009,7 +1009,7 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
                          'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
                          'PLATES','CLASSIC INDIAN PLATES',
                          'BURRITOS','INDIAN BURRITOS',
-                         'KIDS','KIDS MEAL'
+                         'KIDS','KIDS MEAL','FAMILY MEALS'
                        )
                        OR cs.canonical_name IN (
                          'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
@@ -1027,7 +1027,7 @@ export async function getMEItems(dr: DateRange): Promise<MERow[]> {
                          'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
                          'PLATES','CLASSIC INDIAN PLATES',
                          'BURRITOS','INDIAN BURRITOS',
-                         'KIDS','KIDS MEAL'
+                         'KIDS','KIDS MEAL','FAMILY MEALS'
                        )
                        OR cs.canonical_name IN (
                          'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
@@ -1338,7 +1338,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
-            'PLATES','CLASSIC INDIAN PLATES','BURRITOS','INDIAN BURRITOS','KIDS','KIDS MEAL'
+            'PLATES','CLASSIC INDIAN PLATES','BURRITOS','INDIAN BURRITOS','KIDS','KIDS MEAL','FAMILY MEALS'
           )
           OR fol.canonical_name IN (
             'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
@@ -1363,7 +1363,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
-            'PLATES','CLASSIC INDIAN PLATES','BURRITOS','INDIAN BURRITOS','KIDS','KIDS MEAL'
+            'PLATES','CLASSIC INDIAN PLATES','BURRITOS','INDIAN BURRITOS','KIDS','KIDS MEAL','FAMILY MEALS'
           )
           OR fol.canonical_name IN (
             'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
@@ -1400,7 +1400,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
-            'PLATES','CLASSIC INDIAN PLATES','BURRITOS','INDIAN BURRITOS','KIDS','KIDS MEAL'
+            'PLATES','CLASSIC INDIAN PLATES','BURRITOS','INDIAN BURRITOS','KIDS','KIDS MEAL','FAMILY MEALS'
           )
           OR fol.canonical_name IN (
             'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
@@ -1427,7 +1427,7 @@ export async function getMEPinkSheets(dr: DateRange): Promise<PinkSheetRow[]> {
         AND (
           UPPER(fol.menu_group) IN (
             'BOWLS','BUILD YOUR OWN BOWL','BYO','CHEF CURATED BOWLS',
-            'PLATES','CLASSIC INDIAN PLATES','BURRITOS','INDIAN BURRITOS','KIDS','KIDS MEAL'
+            'PLATES','CLASSIC INDIAN PLATES','BURRITOS','INDIAN BURRITOS','KIDS','KIDS MEAL','FAMILY MEALS'
           )
           OR fol.canonical_name IN (
             'Side of Main','Side of Grain','Side of Sauce','Side of Veggie',
