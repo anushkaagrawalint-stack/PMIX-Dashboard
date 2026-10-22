@@ -295,6 +295,13 @@ export interface RenameRow {
   lifetime_revenue: number;
   location_count:   number;
   first_seen:       string;
+  // True when the underlying Toast item has no fixed menu entry (menu_name IS
+  // NULL on its order lines) — a generic "open item" button reused for
+  // unrelated one-off things (delivery fees, event samples, staffing), not a
+  // dish that got renamed. These groups mix real dish names in with non-food
+  // labels and should be called out separately, never shown as a real item's
+  // rename history (owner-reported 2026-10-22, the "Tzedek event" button).
+  is_open_item:     boolean;
 }
 
 // ─── Merge decisions (Renames Audit review workflow) ─────────────────────────

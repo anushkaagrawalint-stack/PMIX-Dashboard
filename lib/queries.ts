@@ -2753,12 +2753,23 @@ export async function getRenames(): Promise<RenameRow[]> {
   const db = pool();
   try {
     const { rows } = await db.query(`
-      SELECT item_guid, display_name,
-             first_seen::TEXT AS first_used, last_seen::TEXT AS last_used,
-             lifetime_qty, lifetime_gross, locations
-      FROM analytics.item_name_history
-      WHERE names_for_item > 1
-      ORDER BY item_guid, first_seen
+      SELECT h.item_guid, h.display_name,
+             h.first_seen::TEXT AS first_used, h.last_seen::TEXT AS last_used,
+             h.lifetime_qty, h.lifetime_gross, h.locations,
+             -- Toast's own "no fixed menu entry" signal (menu_name IS NULL) — the
+             -- same test getItems' IS_OPEN uses on fact_order_lines, joined here
+             -- through dim_item on item_guid/item_key. Ground truth: this item_guid
+             -- is a generic reused button, not a dish, regardless of what any
+             -- individual name on it happens to look like (owner-reported
+             -- 2026-10-22: the "Tzedek event" button types real dish names like
+             -- "Paneer Tikka Bowl" alongside "Delivery Fee"/"Staffing").
+             BOOL_OR(d.menu_name IS NULL) AS is_open_item
+      FROM analytics.item_name_history h
+      LEFT JOIN public.dim_item d ON d.item_guid = h.item_guid
+      WHERE h.names_for_item > 1
+      GROUP BY h.item_guid, h.display_name, h.first_seen, h.last_seen,
+               h.lifetime_qty, h.lifetime_gross, h.locations
+      ORDER BY h.item_guid, h.first_seen
     `);
     await db.end();
 
@@ -2787,6 +2798,7 @@ export async function getRenames(): Promise<RenameRow[]> {
         lifetime_revenue: g.reduce((s, r) => s + Number(r.lifetime_gross), 0),
         location_count:   Math.max(...g.map(r => Number(r.locations))),
         first_seen:       g[0].first_used as string,
+        is_open_item:     g.some(r => r.is_open_item === true),
       };
     }).sort((a, b) => b.lifetime_qty - a.lifetime_qty);
   } catch (err) {

@@ -388,61 +388,92 @@ export default function RenamesAudit({
       )}
 
       {/* ── Name history (the original table) ─────────────────────────────── */}
-      {section === 'history' && (
-        <div className="tw">
-          <div className="tscroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Canonical name (current)</th>
-                  <th>Name history</th>
-                  <th>Lifetime Qty</th>
-                  <th>Lifetime $</th>
-                  <th>Locations</th>
-                  <th>First seen</th>
-                </tr>
-              </thead>
-              <tbody>
-                {renames.filter(r => hit(r.canonical_name, ...r.all_names)).map(r => (
-                  <tr key={r.canonical_name}>
-                    <td style={{ fontWeight: 700 }}>{r.canonical_name}</td>
-                    <td>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        {r.name_history.map(h => {
-                          const isCurrent = h.name === r.canonical_name;
-                          return (
-                            <div key={h.name} style={{ fontSize: 10, display: 'flex', gap: 5, alignItems: 'baseline' }}>
-                              <span style={{
-                                fontWeight: isCurrent ? 700 : 400,
-                                color: isCurrent ? 'var(--text)' : '#9ca3af',
-                                textDecoration: isCurrent ? 'none' : 'line-through',
-                              }}>{h.name}</span>
-                              <span style={{ color: 'var(--muted)' }}>
-                                {h.first_used} → {isCurrent ? 'present' : h.last_used}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </td>
-                    <td>{r.lifetime_qty.toLocaleString()}</td>
-                    <td>{fmt$(r.lifetime_revenue)}</td>
-                    <td>
-                      <span style={{
-                        display: 'inline-block', background: '#f3f0fb', color: '#381d7c',
-                        borderRadius: 4, padding: '1px 7px', fontSize: 10, fontWeight: 700,
-                      }}>
-                        {r.location_count}
-                      </span>
-                    </td>
-                    <td style={{ fontSize: 10, color: 'var(--muted)' }}>{r.first_seen}</td>
+      {section === 'history' && (() => {
+        const matching = renames.filter(r => hit(r.canonical_name, ...r.all_names));
+        const dishes     = matching.filter(r => !r.is_open_item);
+        const openButtons = matching.filter(r => r.is_open_item);
+
+        const historyTable = (rows: typeof matching) => (
+          <div className="tw">
+            <div className="tscroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Canonical name (current)</th>
+                    <th>Name history</th>
+                    <th>Lifetime Qty</th>
+                    <th>Lifetime $</th>
+                    <th>Locations</th>
+                    <th>First seen</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {rows.map(r => (
+                    <tr key={r.canonical_name}>
+                      <td style={{ fontWeight: 700 }}>{r.canonical_name}</td>
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          {r.name_history.map(h => {
+                            const isCurrent = h.name === r.canonical_name;
+                            return (
+                              <div key={h.name} style={{ fontSize: 10, display: 'flex', gap: 5, alignItems: 'baseline' }}>
+                                <span style={{
+                                  fontWeight: isCurrent ? 700 : 400,
+                                  color: isCurrent ? 'var(--text)' : '#9ca3af',
+                                  textDecoration: isCurrent ? 'none' : 'line-through',
+                                }}>{h.name}</span>
+                                <span style={{ color: 'var(--muted)' }}>
+                                  {h.first_used} → {isCurrent ? 'present' : h.last_used}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </td>
+                      <td>{r.lifetime_qty.toLocaleString()}</td>
+                      <td>{fmt$(r.lifetime_revenue)}</td>
+                      <td>
+                        <span style={{
+                          display: 'inline-block', background: '#f3f0fb', color: '#381d7c',
+                          borderRadius: 4, padding: '1px 7px', fontSize: 10, fontWeight: 700,
+                        }}>
+                          {r.location_count}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: 10, color: 'var(--muted)' }}>{r.first_seen}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      )}
+        );
+
+        return (
+          <>
+            <div style={{ fontSize: 11, fontWeight: 700, margin: '4px 0 8px' }}>
+              Dishes ({dishes.length})
+            </div>
+            {historyTable(dishes)}
+
+            {openButtons.length > 0 && (
+              <>
+                <div className="info-banner" style={{
+                  margin: '20px 0 8px', background: '#fff7ed', border: '1px solid #fdba74',
+                  borderRadius: 8, padding: '8px 12px', fontSize: 11, color: '#9a3412',
+                }}>
+                  <strong>Reused open-item buttons ({openButtons.length})</strong> — these are generic
+                  Toast buttons with no fixed menu entry, typed over for unrelated one-off things
+                  (delivery fees, event samples, staffing charges). The name shown is whatever was
+                  typed most recently, not a real dish — these are not renames, don&apos;t treat them
+                  as one item&apos;s history.
+                </div>
+                {historyTable(openButtons)}
+              </>
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }
